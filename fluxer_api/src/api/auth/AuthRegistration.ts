@@ -54,7 +54,7 @@ import * as AuthSession from './AuthSession';
 import * as AuthUtility from './AuthUtility';
 import type {IRegistrationRiskEvaluator} from './services/IRegistrationRiskEvaluator';
 
-const DEFAULT_MINIMUM_AGE = 13;
+const DEFAULT_MINIMUM_AGE = 18;
 
 function getRetryAfterSeconds(result: RateLimitResult): number {
 	return result.retryAfter ?? Math.max(0, Math.ceil((result.resetTime.getTime() - Date.now()) / 1000));
