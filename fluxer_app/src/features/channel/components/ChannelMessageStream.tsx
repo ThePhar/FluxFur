@@ -34,7 +34,7 @@ interface RenderChannelStreamProps {
 	highlightedMessageId: string | null;
 	messageDisplayCompact: boolean;
 	messageGroupSpacing: number;
-	revealedMessageId: string | null;
+	unblurredMessageId: string | null;
 	onMessageEdit?: (target: HTMLElement) => void;
 	onReveal?: (messageId: string | null) => void;
 	messageRowClassName?: string;
@@ -54,7 +54,7 @@ export function renderChannelStream(props: RenderChannelStreamProps): Array<Reac
 		highlightedMessageId,
 		messageDisplayCompact,
 		messageGroupSpacing,
-		revealedMessageId,
+		unblurredMessageId,
 		onMessageEdit,
 		onReveal,
 		messageRowClassName,
@@ -115,9 +115,6 @@ export function renderChannelStream(props: RenderChannelStreamProps): Array<Reac
 		const unreadDividerBeforeMessageId = getUnreadDividerBeforeMessageId(pendingStreamItems, suppressUnreadIndicator);
 		const firstMessageHasUnreadDivider = unreadDividerBeforeMessageId === pendingMessages[0].id;
 		pushSpacerIfNeeded(groupKind, groupKey, firstMessageHasUnreadDivider);
-		const getUnreadDividerVisibility = (messageId: string, position: 'before' | 'after') => {
-			return position === 'before' && unreadDividerBeforeMessageId === messageId;
-		};
 		nodes.push(
 			<MessageGroup
 				key={groupKey}
@@ -127,7 +124,8 @@ export function renderChannelStream(props: RenderChannelStreamProps): Array<Reac
 				highlightedMessageId={highlightedMessageId}
 				messageDisplayCompact={messageDisplayCompact}
 				flashKey={pendingFlashKey}
-				getUnreadDividerVisibility={getUnreadDividerVisibility}
+				showUnreadDividerSlots={true}
+				unreadDividerBeforeMessageId={unreadDividerBeforeMessageId}
 				idPrefix="chat-messages"
 				messageRowClassName={messageRowClassName}
 				messageActionsClassName={messageActionsClassName}
@@ -182,14 +180,14 @@ export function renderChannelStream(props: RenderChannelStreamProps): Array<Reac
 				registerKey(item.key, 'BlockedMessageGroups', i, {
 					groupId: item.key ?? null,
 					itemCount: Array.isArray(item.content) ? item.content.length : 0,
-					revealed: item.key === revealedMessageId,
+					revealed: item.key === unblurredMessageId,
 					variant,
 				});
 				pushSpacerIfNeeded('regular', item.key ?? `${variant}-${i}`);
 				nodes.push(
 					<BlockedMessageGroups
 						key={item.key}
-						revealed={item.key === revealedMessageId}
+						revealed={item.key === unblurredMessageId}
 						messageGroups={item.content as Array<ChannelStreamItem>}
 						onReveal={onReveal ?? (() => {})}
 						compact={messageDisplayCompact}

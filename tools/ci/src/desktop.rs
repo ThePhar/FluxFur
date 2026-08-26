@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::common::{
-    CalverEnv, CommandSpec, append_github_env, append_github_output, append_github_path, capture,
-    collect_files, command_succeeds, copy_dir_contents, count_files, count_files_min_depth,
-    download_file, download_s3_prefix, env_bool, env_string, join_s3_key, output_bytes,
-    output_text, parse_bool, path_to_s3_key, remove_dir_if_exists, remove_file_if_exists,
-    require_any_env, require_env, require_home, resolve_calver, run_command, runner_temp,
-    s3_client, title_case, trim_option, upload_directory_to_s3, upload_directory_to_s3_overwrite,
+    CalverEnv, CommandSpec, S3UploadPlanItem, append_github_env, append_github_output,
+    append_github_path, capture, collect_files, command_succeeds, copy_dir_contents, count_files,
+    count_files_min_depth, directory_upload_plan, download_file, download_s3_prefix, env_bool,
+    env_string, join_s3_key, output_bytes, output_text, parse_bool, path_to_s3_key,
+    remove_dir_if_exists, remove_file_if_exists, require_any_env, require_env, require_home,
+    resolve_calver, run_command, runner_temp, s3_client, title_case, trim_option,
+    upload_directory_to_s3, upload_s3_plan_append_only, upload_s3_plan_overwrite,
 };
 use crate::functions::write_json_pretty;
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -121,14 +122,14 @@ const PLATFORMS: &[Platform] = &[
         platform: "windows",
         arch: "x64",
         desktop_variant: DEFAULT_DESKTOP_VARIANT,
-        os: "blacksmith-32vcpu-windows-2025",
+        os: "windows-2025",
         electron_arch: "x64",
     },
     Platform {
         platform: "windows",
         arch: "arm64",
         desktop_variant: DEFAULT_DESKTOP_VARIANT,
-        os: "blacksmith-32vcpu-windows-2025",
+        os: "windows-2025",
         electron_arch: "arm64",
     },
     Platform {
@@ -142,14 +143,14 @@ const PLATFORMS: &[Platform] = &[
         platform: "linux",
         arch: "x64",
         desktop_variant: DEFAULT_DESKTOP_VARIANT,
-        os: "blacksmith-32vcpu-ubuntu-2404",
+        os: "ubuntu-24.04",
         electron_arch: "x64",
     },
     Platform {
         platform: "linux",
         arch: "arm64",
         desktop_variant: DEFAULT_DESKTOP_VARIANT,
-        os: "blacksmith-32vcpu-ubuntu-2404-arm",
+        os: "ubuntu-24.04-arm",
         electron_arch: "arm64",
     },
 ];
@@ -896,10 +897,32 @@ fn apt_get(args: &[&str]) -> Result<()> {
 }
 
 fn install_msvc_arm64_tools_step() -> Result<()> {
-    let installer =
-        Path::new(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\setup.exe");
-    let install_path = Path::new(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools");
-    run_command(CommandSpec::new(installer).args([
+    let program_files_x86 = env::var_os("ProgramFiles(x86)")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("ProgramFiles(x86) is not set on the Windows runner"))?;
+    let installer_dir = program_files_x86
+        .join("Microsoft Visual Studio")
+        .join("Installer");
+    let installer = installer_dir.join("setup.exe");
+    let vswhere = installer_dir.join("vswhere.exe");
+    ensure!(
+        vswhere.is_file(),
+        "Visual Studio locator not found: {}",
+        vswhere.display()
+    );
+
+    let install_path = resolve_visual_studio_install_path(&vswhere)?;
+    if let Some(linker) = find_msvc_arm64_linker(&install_path)? {
+        println!("ARM64 cross link.exe: {}", linker.display());
+        return Ok(());
+    }
+    ensure!(
+        installer.is_file(),
+        "Visual Studio installer not found: {}",
+        installer.display()
+    );
+
+    run_command(CommandSpec::new(&installer).args([
         "modify",
         "--installPath",
         install_path.to_string_lossy().as_ref(),
@@ -923,30 +946,66 @@ fn install_msvc_arm64_tools_step() -> Result<()> {
         "VS installer did not finish within the timeout."
     );
 
-    let mut found = false;
+    let linker = find_msvc_arm64_linker(&install_path)?.ok_or_else(|| {
+        anyhow!(
+            "ARM64 cross-build tools were not installed under {}\\VC\\Tools\\MSVC\\*\\bin\\HostX64\\arm64",
+            install_path.display()
+        )
+    })?;
+    println!("ARM64 cross link.exe: {}", linker.display());
+    Ok(())
+}
+
+fn resolve_visual_studio_install_path(vswhere: &Path) -> Result<PathBuf> {
+    let output = output_text(CommandSpec::new(vswhere).args([
+        "-products",
+        "*",
+        "-latest",
+        "-prerelease",
+        "-property",
+        "installationPath",
+    ]))?;
+    let paths = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    ensure!(
+        paths.len() == 1,
+        "vswhere returned {} Visual Studio installation paths; expected exactly one",
+        paths.len()
+    );
+    let install_path = PathBuf::from(paths[0]);
+    ensure!(
+        install_path.is_dir(),
+        "vswhere returned a missing Visual Studio installation: {}",
+        install_path.display()
+    );
+    println!("Visual Studio installation: {}", install_path.display());
+    Ok(install_path)
+}
+
+fn find_msvc_arm64_linker(install_path: &Path) -> Result<Option<PathBuf>> {
     let msvc_root = install_path.join("VC").join("Tools").join("MSVC");
-    if msvc_root.exists() {
-        for entry in fs::read_dir(&msvc_root)
-            .with_context(|| format!("Failed to read {}", msvc_root.display()))?
-        {
-            let candidate = entry?
-                .path()
-                .join("bin")
-                .join("HostX64")
-                .join("arm64")
-                .join("link.exe");
-            if candidate.exists() {
-                println!("ARM64 cross link.exe: {}", candidate.display());
-                found = true;
-            }
+    if !msvc_root.is_dir() {
+        return Ok(None);
+    }
+    let mut linkers = Vec::new();
+    for entry in fs::read_dir(&msvc_root)
+        .with_context(|| format!("Failed to read {}", msvc_root.display()))?
+    {
+        let candidate = entry?
+            .path()
+            .join("bin")
+            .join("HostX64")
+            .join("arm64")
+            .join("link.exe");
+        if candidate.is_file() {
+            linkers.push(candidate);
         }
     }
-    ensure!(
-        found,
-        "ARM64 cross-build tools were not installed under {}\\*\\bin\\HostX64\\arm64.",
-        msvc_root.display()
-    );
-    Ok(())
+    linkers.sort();
+    Ok(linkers.pop())
 }
 
 fn windows_installer_process_running() -> Result<bool> {
@@ -1822,7 +1881,16 @@ fn create_portable_zip_windows_step() -> Result<()> {
 }
 
 const FLUXER_WINDOWS_SIGNER_COMMON_NAME: &str = "Fluxer Platform AB";
-const THIRD_PARTY_PUBLISHER_ALLOWLIST: &[&str] = &[];
+const THIRD_PARTY_WINDOWS_SIGNATURE_ALLOWLIST: &[(&str, &str)] = &[
+    (
+        "d3dcompiler_47.dll",
+        "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+    ),
+    (
+        "dxil.dll",
+        "CN=Microsoft Windows, O=Microsoft Corporation, L=Redmond, S=Washington, C=US",
+    ),
+];
 const KNOWN_OPTIONAL_WINDOWS_PE_INVENTORY: &[&str] = &["fluxer-vulkan-layer.win32-ia32-msvc.dll"];
 const WINDOWS_NATIVE_ADDON_STEMS: &[&str] = &[
     "hardware-encoder",
@@ -2143,7 +2211,7 @@ fn assert_fluxer_signed(row: &SignatureRow) -> Result<()> {
     Ok(())
 }
 
-fn assert_third_party_signed(row: &SignatureRow) -> Result<()> {
+fn assert_third_party_signed(row: &SignatureRow, relative: &str) -> Result<()> {
     ensure!(
         row.status == "Valid",
         "Authenticode status is {} (expected Valid)",
@@ -2153,11 +2221,13 @@ fn assert_third_party_signed(row: &SignatureRow) -> Result<()> {
         .subject
         .as_deref()
         .ok_or_else(|| anyhow!("Authenticode signature has no signer certificate subject"))?;
-    let common_name = certificate_common_name(subject)
-        .ok_or_else(|| anyhow!("Signer subject has no CN= component: {subject}"))?;
     ensure!(
-        THIRD_PARTY_PUBLISHER_ALLOWLIST.contains(&common_name),
-        "Signer CN '{common_name}' is not an allowlisted third-party publisher"
+        THIRD_PARTY_WINDOWS_SIGNATURE_ALLOWLIST
+            .iter()
+            .any(|(allowed_path, allowed_subject)| {
+                relative.eq_ignore_ascii_case(allowed_path) && subject == *allowed_subject
+            }),
+        "Signer subject '{subject}' is not allowlisted for {relative}"
     );
     ensure!(
         row.ts_subject.is_some(),
@@ -2166,10 +2236,10 @@ fn assert_third_party_signed(row: &SignatureRow) -> Result<()> {
     Ok(())
 }
 
-fn assert_signed_by_known_publisher(row: &SignatureRow) -> Result<()> {
+fn assert_signed_by_known_publisher(row: &SignatureRow, relative: &str) -> Result<()> {
     match assert_fluxer_signed(row) {
         Ok(()) => Ok(()),
-        Err(fluxer_error) => assert_third_party_signed(row)
+        Err(fluxer_error) => assert_third_party_signed(row, relative)
             .map_err(|third_party_error| anyhow!("{fluxer_error}; {third_party_error}")),
     }
 }
@@ -2332,22 +2402,20 @@ fn verify_windows_pe_signatures(
             ));
             continue;
         };
-        if let Err(error) = assert_signed_by_known_publisher(row) {
+        if let Err(error) = assert_signed_by_known_publisher(row, &relative) {
             failures.push(format!("{relative}: {error}"));
         }
     }
     ensure!(
         failures.is_empty(),
-        "{label}: {} of {} Windows binaries are not signed by '{}':\n{}",
+        "{label}: {} of {} Windows binaries do not have an approved signature:\n{}",
         failures.len(),
         files.len(),
-        FLUXER_WINDOWS_SIGNER_COMMON_NAME,
         failures.join("\n")
     );
     println!(
-        "{label}: verified {} Windows binaries signed by '{}'.",
-        files.len(),
-        FLUXER_WINDOWS_SIGNER_COMMON_NAME
+        "{label}: verified {} Windows binary signatures.",
+        files.len()
     );
     Ok(())
 }
@@ -3090,11 +3158,62 @@ async fn upload_payload_directory<F>(
 where
     F: Fn(&Path) -> bool,
 {
+    let plan = desktop_payload_upload_plan(s3_prefix, payload_root, include)?;
     if overwrite_existing {
-        upload_directory_to_s3_overwrite(client, bucket, s3_prefix, payload_root, include).await
+        let stats = upload_s3_plan_overwrite(client, bucket, plan).await?;
+        println!(
+            "Overwrite upload complete for s3://{bucket}/{s3_prefix}: uploaded {}",
+            stats.uploaded
+        );
     } else {
-        upload_directory_to_s3(client, bucket, s3_prefix, payload_root, include).await
+        let stats = upload_s3_plan_append_only(client, bucket, plan).await?;
+        println!(
+            "Append-only upload complete for s3://{bucket}/{s3_prefix}: uploaded {}, skipped existing {}",
+            stats.uploaded, stats.skipped_existing
+        );
     }
+    Ok(())
+}
+
+fn desktop_payload_upload_plan<F>(
+    s3_prefix: &str,
+    payload_root: &Path,
+    include: F,
+) -> Result<Vec<S3UploadPlanItem>>
+where
+    F: Fn(&Path) -> bool,
+{
+    Ok(directory_upload_plan(s3_prefix, payload_root, include)?
+        .into_iter()
+        .map(|item| {
+            let cache_control = desktop_object_cache_control(&item.key);
+            item.with_cache_control(cache_control)
+        })
+        .collect())
+}
+
+pub(crate) const MUTABLE_DOWNLOAD_CACHE_CONTROL: &str = "public, max-age=300";
+pub(crate) const VERSIONED_ARTIFACT_CACHE_CONTROL: &str = "public, max-age=31536000";
+
+fn desktop_object_cache_control(key: &str) -> &'static str {
+    if is_versioned_desktop_artifact_key(key) {
+        VERSIONED_ARTIFACT_CACHE_CONTROL
+    } else {
+        MUTABLE_DOWNLOAD_CACHE_CONTROL
+    }
+}
+
+fn is_versioned_desktop_artifact_key(key: &str) -> bool {
+    if !key.starts_with("desktop/") {
+        return false;
+    }
+    let Some(filename) = key.rsplit('/').next() else {
+        return false;
+    };
+    if filename.is_empty() {
+        return false;
+    }
+    !is_payload_metadata_key(Path::new(filename)) && !filename.ends_with(".yaml")
 }
 
 fn should_overwrite_payload(s3_prefix: &str, test_build: bool) -> bool {
@@ -3321,6 +3440,68 @@ mod tests {
     use crate::common::{directory_upload_plan, parse_version_instant, s3_directory_prefix};
     use chrono::{DateTime, TimeZone, Utc};
 
+    #[test]
+    fn every_uploaded_desktop_object_carries_a_cache_instruction() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("desktop").join("stable").join("darwin");
+        fs::create_dir_all(root.join("arm64")).unwrap();
+        fs::write(root.join("arm64").join("Fluxer-1.2.3-arm64.dmg"), "dmg").unwrap();
+        fs::write(root.join("arm64").join("manifest.json"), "{}").unwrap();
+        fs::write(root.join("arm64").join("latest-mac.yml"), "version: 1").unwrap();
+
+        let plan =
+            desktop_payload_upload_plan("desktop", temp.path().join("desktop").as_path(), |_| true)
+                .unwrap();
+
+        assert!(
+            !plan.is_empty(),
+            "the sample payload produced no upload plan"
+        );
+        for item in &plan {
+            assert!(
+                item.cache_control.is_some(),
+                "{} would be stored with no cache instruction at all",
+                item.key
+            );
+        }
+    }
+
+    #[test]
+    fn the_stored_lifetime_follows_the_key_not_the_upload_batch() {
+        assert_eq!(
+            desktop_object_cache_control("desktop/stable/darwin/arm64/Fluxer-1.2.3-arm64.dmg"),
+            VERSIONED_ARTIFACT_CACHE_CONTROL
+        );
+        assert_eq!(
+            desktop_object_cache_control(
+                "desktop/stable/darwin/arm64/Fluxer-1.2.3-arm64.dmg.sha256"
+            ),
+            VERSIONED_ARTIFACT_CACHE_CONTROL
+        );
+        assert_eq!(
+            desktop_object_cache_control("desktop/stable/darwin/arm64/manifest.json"),
+            MUTABLE_DOWNLOAD_CACHE_CONTROL,
+            "the release pointer must stay reachable when it moves"
+        );
+        assert_eq!(
+            desktop_object_cache_control("desktop/stable/win32/x64/latest.yml"),
+            MUTABLE_DOWNLOAD_CACHE_CONTROL
+        );
+        assert_eq!(
+            desktop_object_cache_control("desktop/stable/win32/x64/RELEASES.json"),
+            MUTABLE_DOWNLOAD_CACHE_CONTROL
+        );
+        assert_eq!(
+            desktop_object_cache_control("desktop-test/canary/linux/x64/Fluxer-1.2.3.AppImage"),
+            MUTABLE_DOWNLOAD_CACHE_CONTROL,
+            "test artifacts are overwritten in place, so they are not immutable"
+        );
+        assert_ne!(
+            VERSIONED_ARTIFACT_CACHE_CONTROL, MUTABLE_DOWNLOAD_CACHE_CONTROL,
+            "the two policies collapsed into one, so this test proves nothing"
+        );
+    }
+
     fn dt(year: i32, month: u32, day: u32, hour: u32, minute: u32, second: u32) -> DateTime<Utc> {
         Utc.with_ymd_and_hms(year, month, day, hour, minute, second)
             .single()
@@ -3406,9 +3587,9 @@ mod tests {
         assert_eq!(
             selected,
             vec![
-                "{\"platform\":\"windows\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"blacksmith-32vcpu-windows-2025\",\"electron_arch\":\"arm64\"}",
-                "{\"platform\":\"linux\",\"arch\":\"x64\",\"desktop_variant\":\"default\",\"os\":\"blacksmith-32vcpu-ubuntu-2404\",\"electron_arch\":\"x64\"}",
-                "{\"platform\":\"linux\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"blacksmith-32vcpu-ubuntu-2404-arm\",\"electron_arch\":\"arm64\"}",
+                "{\"platform\":\"windows\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"windows-2025\",\"electron_arch\":\"arm64\"}",
+                "{\"platform\":\"linux\",\"arch\":\"x64\",\"desktop_variant\":\"default\",\"os\":\"ubuntu-24.04\",\"electron_arch\":\"x64\"}",
+                "{\"platform\":\"linux\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"ubuntu-24.04-arm\",\"electron_arch\":\"arm64\"}",
             ]
         );
     }
@@ -3446,9 +3627,9 @@ mod tests {
         assert_eq!(
             selected,
             vec![
-                "{\"platform\":\"windows\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"blacksmith-32vcpu-windows-2025\",\"electron_arch\":\"arm64\"}",
-                "{\"platform\":\"linux\",\"arch\":\"x64\",\"desktop_variant\":\"default\",\"os\":\"blacksmith-32vcpu-ubuntu-2404\",\"electron_arch\":\"x64\"}",
-                "{\"platform\":\"linux\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"blacksmith-32vcpu-ubuntu-2404-arm\",\"electron_arch\":\"arm64\"}",
+                "{\"platform\":\"windows\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"windows-2025\",\"electron_arch\":\"arm64\"}",
+                "{\"platform\":\"linux\",\"arch\":\"x64\",\"desktop_variant\":\"default\",\"os\":\"ubuntu-24.04\",\"electron_arch\":\"x64\"}",
+                "{\"platform\":\"linux\",\"arch\":\"arm64\",\"desktop_variant\":\"default\",\"os\":\"ubuntu-24.04-arm\",\"electron_arch\":\"arm64\"}",
             ]
         );
     }

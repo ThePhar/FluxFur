@@ -10,16 +10,14 @@ import {
 	selectSyncedFieldMachineModel,
 	transitionSyncedFieldMachineSnapshot,
 } from '@app/features/user/state/SyncedFieldStateMachine';
+import type {SyncedPreferences, SyncedPreferencesField} from '@app/features/user/state/SyncedPreferencesEngine';
 import {create, equals, type Message, type MessageInitShape, toBinary} from '@bufbuild/protobuf';
 import type {GenMessage} from '@bufbuild/protobuf/codegenv2';
-import type {SyncedPreferences} from '@fluxer/schema/src/domains/user/SyncedPreferencesCodec';
 import {comparer, reaction, runInAction} from 'mobx';
 
 export {verifyRoundtripStability};
 
 const logger = new Logger('SyncedField');
-
-export type SyncedPreferencesField = Exclude<keyof SyncedPreferences, '$typeName' | '$unknown' | 'sanitizeUrls'>;
 
 function isMessageSchema(value: unknown): value is GenMessage<Message> {
 	return (
@@ -223,7 +221,7 @@ export async function makeSyncedField<
 		reaction(
 			() => ({
 				snapshot: getRemoteSnapshot(),
-				userId: SessionManager.userId,
+				userId: SessionManager?.userId ?? null,
 				hydrated: UserSettings.isHydrated(),
 			}),
 			({snapshot, userId, hydrated}) => {

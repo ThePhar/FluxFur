@@ -97,7 +97,7 @@ import {
 	resolveTypedEmojiShortcodes,
 	resolveTypedEmojiToken,
 } from '@app/features/messaging/utils/TypedEmojiShortcodeUtils';
-import {ComponentDispatch} from '@app/features/platform/utils/ComponentBus';
+import {ComponentBus} from '@app/features/platform/utils/ComponentBus';
 import {useSlowmode} from '@app/features/slowmode/hooks/useSlowmode';
 import * as ContextMenuCommands from '@app/features/ui/commands/ContextMenuCommands';
 import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
@@ -120,7 +120,7 @@ import type React from 'react';
 import {useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState} from 'react';
 
 const PLUS_MENU_DOUBLE_CLICK_MS = 500;
-const MESSAGE_SCROLLER_SELECTOR = '[data-fluxer-scroll-container="true"]';
+const MESSAGE_SCROLLER_SELECTOR = '[data-flx="channel.messages.scroller"][data-fluxer-scroll-container="true"]';
 const MESSAGE_SCROLLER_BOTTOM_THRESHOLD = 16;
 const getActiveMessageScroller = (): HTMLElement | null =>
 	document.querySelector<HTMLElement>(MESSAGE_SCROLLER_SELECTOR);
@@ -286,13 +286,17 @@ export const LexicalChannelTextareaContent = observer(
 			previousValueRef.current = initialDraftRef.current.display;
 			rememberSegmentsForValue(initialDraftRef.current.display, initialDraftRef.current.segments);
 		}
+		const [wireValue, setWireValue] = useState(() =>
+			segmentManagerRef.current.displayToActual(initialDraftRef.current.display),
+		);
 		const handleEditorChange = useCallback(
-			(display: string, segments: Array<MentionSegment>) => {
+			(display: string, segments: Array<MentionSegment>, wire: string) => {
 				editorDisplayRef.current = display;
 				segmentManagerRef.current.setSegments(segments);
 				previousValueRef.current = display;
 				rememberSegmentsForValue(display, segments);
 				setValue(display);
+				setWireValue(wire);
 			},
 			[previousValueRef, rememberSegmentsForValue, segmentManagerRef],
 		);
@@ -342,10 +346,7 @@ export const LexicalChannelTextareaContent = observer(
 		const sendMentionConfirmationEvent = useCallback((event: MentionConfirmationEvent) => {
 			setMentionConfirmationSnapshot((snapshot) => transitionMentionConfirmationSnapshot(snapshot, event));
 		}, []);
-		const currentMentionConfirmationSourceContent = useMemo(
-			() => displayToActual(value).trim(),
-			[displayToActual, value],
-		);
+		const currentMentionConfirmationSourceContent = useMemo(() => wireValue.trim(), [wireValue]);
 		const currentMentionConfirmationSourceContentRef = useRef(currentMentionConfirmationSourceContent);
 		const pendingMentionConfirmationRef = useRef<MentionConfirmationInfo | null>(pendingMentionConfirmation);
 		const handleSendMessageRef = useRef(handleSendMessage);
@@ -514,8 +515,8 @@ export const LexicalChannelTextareaContent = observer(
 			[channel, i18n],
 		);
 		const trimmedMessageContent = useMemo(
-			() => resolveTypedEmojiContent(displayToActual(value).trim()),
-			[displayToActual, resolveTypedEmojiContent, value],
+			() => resolveTypedEmojiContent(wireValue.trim()),
+			[resolveTypedEmojiContent, wireValue],
 		);
 		const hasMessageContent = useMemo(() => hasVisibleMessageContent(trimmedMessageContent), [trimmedMessageContent]);
 		const isSubmissionBlockedBySlowmode = useMemo(() => {
@@ -689,7 +690,7 @@ export const LexicalChannelTextareaContent = observer(
 				wasAtBottomBeforeComposerBoundaryChange.current &&
 				(stickerBoundaryChanged || (attachmentBoundaryChanged && Messages.getMessages(channel.id).hasMoreAfter))
 			) {
-				ComponentDispatch.dispatch('FORCE_JUMP_TO_PRESENT', {channelId: channel.id});
+				ComponentBus.dispatch('FORCE_JUMP_TO_PRESENT', {channelId: channel.id});
 			}
 			previousComposerBoundaryState.current = {channelId: channel.id, hasAttachments, hasPendingSticker};
 			const scrollerElement = getActiveMessageScroller();
@@ -789,7 +790,7 @@ export const LexicalChannelTextareaContent = observer(
 			replyingMessage,
 		]);
 		useEffect(() => {
-			return ComponentDispatch.subscribe('TEXTAREA_DISMISS_AFFORDANCE', (request?: unknown) => {
+			return ComponentBus.subscribe('TEXTAREA_DISMISS_AFFORDANCE', (request?: unknown) => {
 				const dismissalRequest = request as ChannelComposerDismissalRequest | undefined;
 				if (dismissalRequest?.channelId !== channel.id) {
 					return false;
@@ -863,7 +864,7 @@ export const LexicalChannelTextareaContent = observer(
 		}, [canSubmit, channel, hasAttachments, onSubmit]);
 		const handleArrowUpEmpty = useCallback(() => {
 			if (KeyboardMode.keyboardModeEnabled) {
-				ComponentDispatch.dispatch('FOCUS_BOTTOMMOST_MESSAGE', {channelId: channel.id});
+				ComponentBus.dispatch('FOCUS_BOTTOMMOST_MESSAGE', {channelId: channel.id});
 				return;
 			}
 			const message = Messages.getLastEditableMessage(channel.id);
@@ -909,7 +910,7 @@ export const LexicalChannelTextareaContent = observer(
 						Number.MAX_SAFE_INTEGER,
 					);
 		useEffect(() => {
-			const unsubscribe = ComponentDispatch.subscribe('FOCUS_TEXTAREA', (payload?: unknown) => {
+			const unsubscribe = ComponentBus.subscribe('FOCUS_TEXTAREA', (payload?: unknown) => {
 				const payloadValue = payload === null || payload === undefined ? {} : payload;
 				const {channelId, enterKeyboardMode} = payloadValue as {
 					channelId?: string;
@@ -944,7 +945,7 @@ export const LexicalChannelTextareaContent = observer(
 		}, [editingMessageId, mobileLayout.enabled, textareaInputDisabled]);
 		useEffect(() => {
 			if (textareaInputDisabled) return;
-			const unsubscribe = ComponentDispatch.subscribe('TEXTAREA_UPLOAD_FILE', (payload?: unknown) => {
+			const unsubscribe = ComponentBus.subscribe('TEXTAREA_UPLOAD_FILE', (payload?: unknown) => {
 				const payloadValue = payload === null || payload === undefined ? {} : payload;
 				const {channelId} = payloadValue as {channelId?: string};
 				if (channelId && channelId !== channel.id) return;
@@ -953,7 +954,7 @@ export const LexicalChannelTextareaContent = observer(
 			return unsubscribe;
 		}, [channel.id, textareaInputDisabled, handleFileButtonClick]);
 		useEffect(() => {
-			const unsubscribe = ComponentDispatch.subscribe('TEXTAREA_SEND_VOICE_MESSAGE', (payload?: unknown) => {
+			const unsubscribe = ComponentBus.subscribe('TEXTAREA_SEND_VOICE_MESSAGE', (payload?: unknown) => {
 				const payloadValue = payload === null || payload === undefined ? {} : payload;
 				const {channelId} = payloadValue as {channelId?: string};
 				if (channelId && channelId !== channel.id) return undefined;

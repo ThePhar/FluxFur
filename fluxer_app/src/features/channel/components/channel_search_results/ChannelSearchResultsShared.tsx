@@ -14,9 +14,9 @@ import {msg} from '@lingui/core/macro';
 import type {IconProps} from '@phosphor-icons/react';
 import {
 	ChatCenteredDotsIcon,
+	ChatCircleIcon,
 	ClockClockwiseIcon,
 	ClockCounterClockwiseIcon,
-	EnvelopeSimpleIcon,
 	GlobeIcon,
 	HashIcon,
 	SparkleIcon,
@@ -78,6 +78,15 @@ export const NO_RESULTS_DESCRIPTOR = msg({
 export const TRY_A_DIFFERENT_SEARCH_QUERY_DESCRIPTOR = msg({
 	message: 'Try a different search query.',
 	comment: 'Body copy under the no-results heading suggesting the user adjust their query.',
+});
+export const NOTHING_TO_SEARCH_FOR_DESCRIPTOR = msg({
+	message: 'Nothing to search for',
+	comment: 'Heading shown when the submitted search query produced no filter and no text the server could search on.',
+});
+export const NO_PART_OF_THIS_QUERY_APPLIED_DESCRIPTOR = msg({
+	message: 'No part of {query} could be applied. Fix the underlined value or add something to search for.',
+	comment:
+		'Body copy under the nothing-to-search-for heading. Preserve {query}; it is the text the user submitted and is inserted by code.',
 });
 export const GO_TO_PAGE_DESCRIPTOR = msg({
 	message: 'Go to page {page}',
@@ -153,7 +162,7 @@ export const getSortModeOptions = (i18n: I18n): Array<{mode: ChannelSearchSortMo
 ];
 const SCOPE_ICON_COMPONENTS: Record<MessageSearchScope, React.ComponentType<IconProps>> = {
 	current: HashIcon,
-	all_dms: EnvelopeSimpleIcon,
+	all_dms: ChatCircleIcon,
 	open_dms: ChatCenteredDotsIcon,
 	all_guilds: GlobeIcon,
 	all: UsersIcon,

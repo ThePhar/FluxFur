@@ -41,7 +41,7 @@ const AuthLayoutContent = observer(function AuthLayoutContent({children}: {child
 	const registerFormDraftsRef = useRef<Map<string, AuthRegisterFormDraft>>(new Map());
 	const scrollerRef = useRef<ScrollerHandle>(null);
 	const location = useLocation();
-	const {patternReady, splashLoaded, splashDimensions} = useAuthBackground(splashUrl, foodPatternUrl);
+	const {patternReady, splashDimensions} = useAuthBackground(splashUrl, foodPatternUrl);
 	const handleSetSplashUrl = useCallback(
 		(url: string | null) => {
 			if (splashUrlRef.current === url) return;
@@ -69,7 +69,7 @@ const AuthLayoutContent = observer(function AuthLayoutContent({children}: {child
 		};
 	}, []);
 	useEffect(() => {
-		scrollerRef.current?.scrollToTop();
+		scrollerRef.current?.jumpToStartEdge();
 	}, [location.pathname]);
 	const splashScale = useMemo(() => {
 		if (!splashDimensions) return null;
@@ -196,7 +196,6 @@ const AuthLayoutContent = observer(function AuthLayoutContent({children}: {child
 						>
 							<AuthBackground
 								splashUrl={splashUrl}
-								splashLoaded={splashLoaded}
 								splashDimensions={splashDimensions}
 								splashScale={splashScale}
 								patternReady={patternReady}

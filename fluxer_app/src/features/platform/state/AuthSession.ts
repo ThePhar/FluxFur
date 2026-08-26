@@ -11,7 +11,6 @@ import accountStorage, {
 	type UserData,
 } from '@app/features/auth/state/AccountStorage';
 import Sudo from '@app/features/auth/state/AuthSudo';
-import GatewayConnection from '@app/features/gateway/transport/GatewayConnection';
 import {
 	type Account,
 	type AuthSessionMachineEvent,
@@ -31,7 +30,6 @@ import AppStorage from '@app/features/platform/state/PersistentStorage';
 import {http} from '@app/features/platform/transport/RestTransport';
 import {Logger} from '@app/features/platform/utils/AppLogger';
 import LocalPresence from '@app/features/presence/state/LocalPresence';
-import LayerManager from '@app/features/ui/state/LayerManager';
 import {action, makeAutoObservable} from 'mobx';
 
 export {type Account, SessionState};
@@ -99,10 +97,22 @@ function createDefaultAuthSessionDependencies(): AuthSessionDependencies {
 		appStorage: AppStorage,
 		http,
 		getRuntimeSnapshot: () => RuntimeConfig.getSnapshot(),
-		closeLayers: () => LayerManager.closeAll(),
+		closeLayers: () => {
+			void import('@app/features/ui/state/LayerManager').then((module) => {
+				module.default.closeAll();
+			});
+		},
 		clearSudoToken: () => Sudo.clearToken(),
-		sendInvisiblePresence: (reason) => GatewayConnection.sendInvisiblePresenceForCurrentSession(reason),
-		cleanupGatewaySession: () => GatewayConnection.logout(),
+		sendInvisiblePresence: (reason) => {
+			void import('@app/features/gateway/transport/GatewayConnection').then((module) => {
+				module.default.sendInvisiblePresenceForCurrentSession(reason);
+			});
+		},
+		cleanupGatewaySession: () => {
+			void import('@app/features/gateway/transport/GatewayConnection').then((module) => {
+				module.default.logout();
+			});
+		},
 		resetSyncedUserSettings: () => {
 			void import('@app/features/user/state/UserSettings').then((module) => {
 				module.default.handleAccountTransition();
@@ -298,11 +308,14 @@ export class AuthSessionManager {
 		}
 		this.send({type: 'initialize.start'});
 		try {
-			await this.loadStoredAccounts();
 			const storedToken = parseStoredSessionValue(this.deps.appStorage.getItem(AuthSessionStorageKey.Token));
 			const storedUserId = parseStoredSessionValue(this.deps.appStorage.getItem(AuthSessionStorageKey.UserId));
+			await this.loadStoredAccounts();
 			logger.debug(`Loaded from storage: token=${storedToken ? 'present' : 'null'}, userId=${storedUserId ?? 'null'}`);
-			const storedAccount = storedUserId ? this._snapshot.context.accounts.get(storedUserId) : undefined;
+			let storedAccount = storedUserId ? this._snapshot.context.accounts.get(storedUserId) : undefined;
+			if (storedToken && storedUserId && storedAccount?.token !== storedToken) {
+				storedAccount = this.recoverStoredActiveAccount(storedToken, storedUserId, storedAccount);
+			}
 			if (storedToken && storedUserId && storedAccount?.token === storedToken) {
 				this.send({type: 'initialize.tokenLoaded', token: storedToken, userId: storedUserId});
 				this.deps.restoreLocalPresenceIntent(storedAccount.presenceIntent ?? null);
@@ -316,6 +329,25 @@ export class AuthSessionManager {
 			logger.error('Initialization failed', error);
 			this.send({type: 'initialize.failed', error});
 		}
+	}
+
+	private recoverStoredActiveAccount(token: string, userId: string, existing?: Account): Account {
+		const instance = this.deps.getRuntimeSnapshot();
+		const account: Account = {
+			userId,
+			token,
+			userData: existing?.userData,
+			presenceIntent: existing?.presenceIntent ?? null,
+			lastActive: this.deps.now(),
+			instance,
+			isValid: true,
+		};
+		this.send({type: 'account.upsert', account});
+		void this.deps.accountStorage
+			.stashAccountData(userId, token, account.userData, instance, account.presenceIntent)
+			.catch((error) => logger.warn('Failed to persist recovered active account', error));
+		logger.info('Recovered stored active account after local account data was unavailable');
+		return account;
 	}
 
 	private async loadStoredAccounts(): Promise<void> {

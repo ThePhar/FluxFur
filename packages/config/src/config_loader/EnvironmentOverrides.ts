@@ -85,6 +85,10 @@ const NAMED_FLUXER_ENV_OVERRIDES: Record<string, NamedEnvOverride> = {
 		path: ['services', 'api', 'presigned_downloads_enabled'],
 		parse: parseEnvValue,
 	},
+	FLUXER_API_PRESIGNED_HARVEST_DOWNLOADS_ENABLED: {
+		path: ['services', 'api', 'presigned_harvest_downloads_enabled'],
+		parse: parseEnvValue,
+	},
 	FLUXER_API_WORKER_MODE: {path: ['services', 'api', 'worker', 'mode']},
 	FLUXER_API_WORKER_LANE: {path: ['services', 'api', 'worker', 'lane']},
 	FLUXER_API_WORKER_TASK: {path: ['services', 'api', 'worker', 'task']},
@@ -262,6 +266,7 @@ const NAMED_FLUXER_ENV_OVERRIDES: Record<string, NamedEnvOverride> = {
 	FLUXER_LIVEKIT_API_KEY: {path: ['integrations', 'voice', 'api_key']},
 	FLUXER_LIVEKIT_API_SECRET: {path: ['integrations', 'voice', 'api_secret']},
 	FLUXER_LIVEKIT_URL: {path: ['integrations', 'voice', 'url']},
+	FLUXER_LIVEKIT_INTERNAL_URL: {path: ['integrations', 'voice', 'internal_url']},
 	FLUXER_LIVEKIT_WEBHOOK_URL: {path: ['integrations', 'voice', 'webhook_url']},
 	FLUXER_LIVEKIT_DEFAULT_REGION: {path: ['integrations', 'voice', 'default_region'], parse: parseEnvValue},
 	FLUXER_SEARCH_ENGINE: {path: ['integrations', 'search', 'engine']},

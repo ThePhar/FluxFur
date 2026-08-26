@@ -106,6 +106,25 @@ fn parse_inline_with_context(
                 position += 2;
                 continue;
             }
+            if next == b':'
+                && let Some(result) = links::parse_emoji_shortcode(parser, &text[position + 1..])
+                && let Node::Emoji {
+                    kind: EmojiKind::Standard { raw, .. },
+                } = &result.node
+            {
+                accumulated.extend_from_slice(raw.as_bytes());
+                position += 1 + result.advance;
+                continue;
+            }
+            if let Some(emoji) = parser
+                .emoji_context()
+                .standard_at(base_offset + position + 1)
+                && text[position + 1..].starts_with(&emoji.raw)
+            {
+                accumulated.extend_from_slice(emoji.raw.as_bytes());
+                position += 1 + emoji.len;
+                continue;
+            }
             if is_escapable_character(next)
                 || is_ordered_list_marker_dot_escape(text, position)
                 || is_word_dot_escape(text, position)
