@@ -93,6 +93,7 @@ export interface MasterConfig {
 			ip_ban_exempt_ips: Array<string>;
 			presigned_attachment_uploads_enabled: boolean;
 			presigned_downloads_enabled: boolean;
+			presigned_harvest_downloads_enabled: boolean;
 			unfurl_ignored_hosts: Array<string>;
 			embeds: {
 				oembed_html_enabled: boolean;
@@ -242,6 +243,7 @@ export interface MasterConfig {
 			api_key: string;
 			api_secret: string;
 			url: string;
+			internal_url: string;
 			webhook_url: string;
 			default_region?: {
 				id: string;

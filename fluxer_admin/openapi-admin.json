@@ -9896,8 +9896,6 @@
 					"GLOBAL_IP_BANNED",
 					"GLOBAL_IP_TEMPORARILY_BANNED",
 					"IP_BANNED",
-					"RESIDENTIAL_PROXY_BLOCKED",
-					"TOR_BLOCKED",
 					"MAX_ANIMATED_EMOJIS",
 					"MAX_APPLICATIONS",
 					"MAX_BOOKMARKS",
@@ -13669,7 +13667,7 @@
 						"required": ["participants"]
 					},
 					"referenced_message": {
-						"description": "The message that this message is replying to or forwarding",
+						"description": "The reply target. Present and populated when the target resolved, present and null when the target is gone, absent when this message carries no default reference. Clients must tell null apart from absent by key presence.",
 						"nullable": true,
 						"type": "object",
 						"properties": {

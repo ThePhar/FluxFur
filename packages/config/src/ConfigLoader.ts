@@ -94,6 +94,7 @@ function defaultConfig(): MasterConfig {
 				ip_ban_exempt_ips: [],
 				presigned_attachment_uploads_enabled: false,
 				presigned_downloads_enabled: false,
+				presigned_harvest_downloads_enabled: true,
 				unfurl_ignored_hosts: [],
 				embeds: {
 					oembed_html_enabled: false,
@@ -194,6 +195,7 @@ function defaultConfig(): MasterConfig {
 				api_key: '',
 				api_secret: '',
 				url: '',
+				internal_url: '',
 				webhook_url: '',
 			},
 			search: {

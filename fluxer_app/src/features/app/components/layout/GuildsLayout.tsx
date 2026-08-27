@@ -90,7 +90,7 @@ import {openMacPermissionsModal} from '@app/features/permissions/system/commands
 import MacPermissions from '@app/features/permissions/system/state/MacPermissions';
 import {useLocation} from '@app/features/platform/components/router/RouterReact';
 import {Platform} from '@app/features/platform/types/Platform';
-import {ComponentDispatch} from '@app/features/platform/utils/ComponentBus';
+import {ComponentBus} from '@app/features/platform/utils/ComponentBus';
 import ReadStates from '@app/features/read_state/state/ReadStates';
 import {getRemScaleForDocument} from '@app/features/theme/layout/RemFromPx';
 import {AxisOrientation, type VerticalEdge} from '@app/features/ui/AxisOrientation';
@@ -184,7 +184,7 @@ function resolveGuildFolderId(folderId: number | null): number {
 
 function resolveGuildListScrollerNode(scroller: ScrollerHandle | null): HTMLElement | null {
 	if (scroller == null) return null;
-	return scroller.getScrollerNode();
+	return scroller.getViewportElement();
 }
 
 type GuildNavigationRow =
@@ -665,7 +665,7 @@ function getDMScrollIndicatorSeverity(channelId: string): ScrollIndicatorSeverit
 	const unreadState = getChannelUnreadState({
 		unreadCount: ReadStates.getPrivateChannelUnreadCount(channelId),
 		mentionCount,
-		isMuted: UserGuildSettings.isChannelMuted(null, channelId),
+		isMuted: UserGuildSettings.isChannelDirectlyMuted(null, channelId),
 		showFadedUnreadOnMutedChannels: Accessibility.showFadedUnreadOnMutedChannels,
 	});
 	if (mentionCount > 0) return 'mention';
@@ -674,8 +674,8 @@ function getDMScrollIndicatorSeverity(channelId: string): ScrollIndicatorSeverit
 }
 
 function getGuildScrollIndicatorSeverity(guildId: string): ScrollIndicatorSeverity | null {
-	if (GuildReadState.getMentionCount(guildId) > 0) return 'mention';
-	if (GuildReadState.hasUnread(guildId)) return 'unread';
+	if (GuildReadState.mentionCountForGuild(guildId) > 0) return 'mention';
+	if (GuildReadState.guildIsUnread(guildId)) return 'unread';
 	return null;
 }
 
@@ -1327,10 +1327,10 @@ const GUILD_RAIL_INDICATORS_BY_TOKEN: Record<string, SkeletonGuildRailItemIndica
 function resolveGuildRailIndicator(guildIds: ReadonlyArray<string>): SkeletonGuildRailItemIndicator {
 	let hasUnread = false;
 	for (const guildId of guildIds) {
-		if (GuildReadState.getMentionCount(guildId) > 0) {
+		if (GuildReadState.mentionCountForGuild(guildId) > 0) {
 			return SkeletonGuildRailItemIndicator.MENTION;
 		}
-		if (GuildReadState.hasUnread(guildId)) {
+		if (GuildReadState.guildIsUnread(guildId)) {
 			hasUnread = true;
 		}
 	}
@@ -1583,7 +1583,7 @@ const GuildList = observer(() => {
 	const visibleDMListRows = useFrameBatchedDMListRows(targetDMListRows);
 	const shouldRenderGuildListItems = hasUnavailableGuilds || organizedItems.length > 0;
 	const initialGuildListScrollTop = useMemo(() => {
-		const liveScrollTop = untracked(() => Dimension.getGuildListDimensions().scrollTop);
+		const liveScrollTop = untracked(() => Dimension.currentGuildListDimensions().scrollTop);
 		if (liveScrollTop > 0) {
 			return liveScrollTop;
 		}
@@ -1859,7 +1859,7 @@ const GuildList = observer(() => {
 				const node = scrollTargetRegistry.getTargetNode(targetId);
 				const scroller = scrollRef.current;
 				if (node == null || scroller == null) return false;
-				scroller.scrollIntoViewNode({
+				scroller.revealElement({
 					node,
 					alignment,
 					animate: Accessibility.useSmoothScrolling,
@@ -2166,7 +2166,7 @@ export const GuildsLayout = observer(({children}: {children: React.ReactNode}) =
 	useEffect(() => {
 		if (prevNagbarCount.current !== activeNagbars.length) {
 			prevNagbarCount.current = activeNagbars.length;
-			ComponentDispatch.dispatch('LAYOUT_RESIZED');
+			ComponentBus.dispatch('LAYOUT_RESIZED');
 		}
 	}, [activeNagbars.length]);
 	useEffect(() => {

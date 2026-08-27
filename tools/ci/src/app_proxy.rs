@@ -147,13 +147,16 @@ fn build_and_extract_command() -> Result<CommandSpec> {
         )
         .env(
             "CACHE_FROM",
-            env::var("CACHE_FROM")
-                .unwrap_or_else(|_| "type=gha,scope=fluxer-app-proxy".to_string()),
+            env::var("CACHE_FROM").unwrap_or_else(|_| default_app_proxy_cache_ref()),
         )
         .env(
             "CACHE_TO",
-            env::var("CACHE_TO")
-                .unwrap_or_else(|_| "type=gha,scope=fluxer-app-proxy,mode=max".to_string()),
+            env::var("CACHE_TO").unwrap_or_else(|_| {
+                format!(
+                    "{},mode=max,image-manifest=true,oci-mediatypes=true,ignore-error=true",
+                    default_app_proxy_cache_ref()
+                )
+            }),
         )
         .env(
             "DOCKER_BUILD_SUMMARY",
@@ -163,6 +166,11 @@ fn build_and_extract_command() -> Result<CommandSpec> {
             "DOCKER_BUILD_RECORD_UPLOAD",
             env::var("DOCKER_BUILD_RECORD_UPLOAD").unwrap_or_else(|_| "false".to_string()),
         ))
+}
+
+fn default_app_proxy_cache_ref() -> String {
+    let owner = ghcr_owner().unwrap_or_else(|_| "fluxerapp".to_string());
+    format!("type=registry,ref=ghcr.io/{owner}/fluxer-app-proxy:buildcache-amd64")
 }
 
 fn ghcr_owner() -> Result<String> {
@@ -513,6 +521,14 @@ mod tests {
             Some(IMMUTABLE_ASSET_CACHE_CONTROL)
         );
         assert!(plan[0].repair_existing_metadata);
+    }
+
+    #[test]
+    fn uploaded_assets_carry_the_same_policy_the_app_proxy_serves() {
+        assert_eq!(
+            IMMUTABLE_ASSET_CACHE_CONTROL,
+            "public, max-age=31536000, immutable"
+        );
     }
 
     #[test]

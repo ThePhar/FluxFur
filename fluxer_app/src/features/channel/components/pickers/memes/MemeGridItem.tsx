@@ -14,7 +14,7 @@ import {EditFavoriteMemeModal} from '@app/features/expressions/components/modals
 import type {FavoriteMeme} from '@app/features/expressions/models/FavoriteMeme';
 import {isKeyboardActivationKey} from '@app/features/input/utils/KeyboardUtils';
 import {buildMediaProxyURL, buildStaticGifPreviewURL} from '@app/features/messaging/utils/MediaProxyUtils';
-import {ComponentDispatch} from '@app/features/platform/utils/ComponentBus';
+import {ComponentBus} from '@app/features/platform/utils/ComponentBus';
 import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
 import {modal} from '@app/features/ui/commands/ModalCommands';
 import FocusRing from '@app/features/ui/focus_ring/FocusRing';
@@ -106,9 +106,13 @@ export const MemeGridItem = observer(
 		const videoPool = useGifVideoPool();
 		const isAudio = meme.contentType.startsWith('audio/');
 		const isVideo = meme.contentType.startsWith('video/');
-		const shouldAnimateGif = useShouldAnimate({kind: 'gif', isHovering: isVideoPreviewActive});
-		const shouldRenderVideoPreview = !isAudio && isVideo && isVideoPreviewActive && shouldAnimateGif;
 		const isGifImage = !isVideo && meme.contentType.toLowerCase().includes('gif');
+		const shouldAnimateGif = useShouldAnimate({
+			kind: 'gif',
+			isAnimated: !isAudio && (isVideo || isGifImage),
+			isHovering: isVideoPreviewActive,
+		});
+		const shouldRenderVideoPreview = !isAudio && isVideo && isVideoPreviewActive && shouldAnimateGif;
 		const thumbnailSrc = isGifImage && !shouldAnimateGif ? buildStaticGifPreviewURL(meme.url) : meme.url;
 		const videoPreviewStartTime = meme.duration && meme.duration > 0 ? meme.duration / 2 : null;
 		usePooledVideo({
@@ -118,7 +122,6 @@ export const MemeGridItem = observer(
 			autoPlay: shouldRenderVideoPreview,
 			enabled: shouldRenderVideoPreview,
 			preload: 'auto',
-			useBlobCache: false,
 			playbackStartTime: videoPreviewStartTime ?? 0,
 		});
 		const clearHoverPreviewTimeout = useCallback(() => {
@@ -157,7 +160,7 @@ export const MemeGridItem = observer(
 		const handleClick = (event: React.MouseEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement>) => {
 			const shiftKey = 'shiftKey' in event ? event.shiftKey : false;
 			MemesPicker.trackMemeUsage(meme.id);
-			ComponentDispatch.dispatch('FAVORITE_MEME_SELECT', {meme, autoSend: !shiftKey});
+			ComponentBus.dispatch('FAVORITE_MEME_SELECT', {meme, autoSend: !shiftKey});
 			if (!shiftKey) onClose?.();
 		};
 		const handleEdit = (event: React.MouseEvent) => {

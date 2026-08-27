@@ -48,9 +48,9 @@ class AutoAck {
 					if (!channelId) {
 						return {windowId, channelId: null, isAtBottom: false, canAutoAck: false};
 					}
-					const isAtBottom = Dimension.isAtBottom(channelId) ?? false;
+					const isAtBottom = Dimension.channelPinnedToEnd(channelId) ?? false;
 					const readState = ReadStates.getIfExists(channelId);
-					const isManualAck = readState?.isManualAck ?? false;
+					const ackedManually = readState?.ackedManually ?? false;
 					const channel = Channels.getChannel(channelId);
 					const isGuildVoiceCallExpanded =
 						channel?.type === ChannelTypes.GUILD_VOICE
@@ -63,7 +63,7 @@ class AutoAck {
 						activeVoiceCallFullscreenScopeKey: VoiceCallFullscreen.activeScopeKey,
 					});
 					const isMediaViewerOpen = MediaViewer.isOpen;
-					const canAutoAck = !isManualAck && isWindowFocused && isTextChatVisible && !isMediaViewerOpen;
+					const canAutoAck = !ackedManually && isWindowFocused && isTextChatVisible && !isMediaViewerOpen;
 					return {windowId, channelId, isAtBottom, canAutoAck};
 				},
 				(conditions) => {

@@ -31,9 +31,10 @@ import {
 	collectMessageModelGuildMemberUserIds,
 	collectWireMessageGuildMemberUserIds,
 } from '@app/features/messaging/utils/MessageMemberLoadUtils';
-import type {
-	ApiAttachmentMetadata,
-	ApiMessageEditAttachmentMetadata,
+import {
+	type ApiAttachmentMetadata,
+	type ApiMessageEditAttachmentMetadata,
+	normalizeMessageContent,
 } from '@app/features/messaging/utils/MessageRequestUtils';
 import * as IARCommands from '@app/features/moderation/commands/IARCommands';
 import * as NavigationCommands from '@app/features/navigation/commands/NavigationCommands';
@@ -42,7 +43,7 @@ import {http} from '@app/features/platform/transport/RestTransport';
 import {HttpError} from '@app/features/platform/types/EndpointError';
 import type {RestResponse} from '@app/features/platform/types/TransportTypes';
 import {Logger} from '@app/features/platform/utils/AppLogger';
-import {ComponentDispatch} from '@app/features/platform/utils/ComponentBus';
+import {ComponentBus} from '@app/features/platform/utils/ComponentBus';
 import {failureCode} from '@app/features/platform/utils/ResponseInspection';
 import * as ReadStateCommands from '@app/features/read_state/commands/ReadStateCommands';
 import ReadStates from '@app/features/read_state/state/ReadStates';
@@ -100,7 +101,7 @@ export interface JumpToMessageOptions {
 	messageId: string;
 	flash?: boolean;
 	offset?: number;
-	returnTargetId?: string | null;
+	returnToMessageId?: string | null;
 	returnChannelId?: string | null;
 	returnGuildId?: string | null;
 	jumpType?: JumpType;
@@ -141,7 +142,7 @@ function makeFetchKey(
 	return (
 		`${channelId}${SEP}${before ?? ''}${SEP}${after ?? ''}${SEP}${limit}${SEP}${throwOnError}${SEP}` +
 		`${jump.present ? '1' : '0'}${SEP}${jump.messageId ?? ''}${SEP}${jump.offset ?? 0}${SEP}` +
-		`${jump.flash ? '1' : '0'}${SEP}${jump.returnMessageId ?? ''}${SEP}` +
+		`${jump.flash ? '1' : '0'}${SEP}${jump.returnToMessageId ?? ''}${SEP}` +
 		`${jump.returnChannelId ?? ''}${SEP}${jump.returnGuildId ?? ''}${SEP}${jump.jumpType ?? ''}`
 	);
 }
@@ -291,14 +292,14 @@ interface SendMessageParams {
 	tts?: boolean;
 }
 
-export function jumpToPresent(channelId: string, limit = MAX_MESSAGES_PER_CHANNEL): void {
+export function jumpToLiveEdge(channelId: string, limit = MAX_MESSAGES_PER_CHANNEL): void {
 	NavigationCommands.clearMessageIdForChannel(channelId);
 	logger.debug(`Jumping to present in channel ${channelId}`);
 	ReadStateCommands.clearStickyUnread(channelId);
 	const jump: JumpOptions = {
 		present: true,
 	};
-	if (Messages.hasPresent(channelId)) {
+	if (Messages.hasNewestMessages(channelId)) {
 		Messages.handleLoadMessagesSuccessCached({channelId, jump, limit});
 	} else {
 		fetchMessages(channelId, null, null, limit, jump);
@@ -310,7 +311,7 @@ export function jumpToMessage({
 	messageId,
 	flash = true,
 	offset,
-	returnTargetId,
+	returnToMessageId,
 	returnChannelId,
 	returnGuildId,
 	jumpType,
@@ -320,7 +321,7 @@ export function jumpToMessage({
 		messageId: messageId as MessageId,
 		flash,
 		offset,
-		returnMessageId: returnTargetId as MessageId | null | undefined,
+		returnToMessageId: returnToMessageId as MessageId | null | undefined,
 		returnChannelId,
 		returnGuildId,
 		jumpType,
@@ -337,10 +338,10 @@ function getMessageFetchCacheHit(
 	if (jump?.messageId && messages.has(jump.messageId, false)) {
 		return 'jump';
 	}
-	if (before && messages.hasBeforeCached(before)) {
+	if (before && messages.canServeOlderFrom(before)) {
 		return 'before';
 	}
-	if (after && messages.hasAfterCached(after)) {
+	if (after && messages.canServeNewerFrom(after)) {
 		return 'after';
 	}
 	return null;
@@ -728,12 +729,12 @@ export function revealMessage(channelId: string, messageId: string | null): void
 export function startReply(channelId: string, messageId: string, mentioning: boolean): void {
 	logger.debug(`Starting reply to message ${messageId} in channel ${channelId}, mentioning=${mentioning}`);
 	MessageReply.startReply(channelId, messageId, mentioning);
-	ComponentDispatch.dispatch('FOCUS_TEXTAREA', {channelId});
+	ComponentBus.dispatch('FOCUS_TEXTAREA', {channelId});
 	window.requestAnimationFrame(() => {
-		ComponentDispatch.dispatch('FOCUS_TEXTAREA', {channelId});
+		ComponentBus.dispatch('FOCUS_TEXTAREA', {channelId});
 	});
 	window.setTimeout(() => {
-		ComponentDispatch.dispatch('FOCUS_TEXTAREA', {channelId});
+		ComponentBus.dispatch('FOCUS_TEXTAREA', {channelId});
 	}, 300);
 }
 
@@ -814,6 +815,7 @@ export async function forward(
 	optionalMessage?: string,
 ): Promise<boolean> {
 	logger.debug(`Forwarding message ${messageReference.message_id} to ${channelIds.length} channels`);
+	const normalizedComment = optionalMessage == null ? null : normalizeMessageContent(optionalMessage);
 	try {
 		for (const channelId of channelIds) {
 			const nonce = SnowflakeUtils.fromTimestamp(Date.now());
@@ -835,11 +837,12 @@ export async function forward(
 				return false;
 			}
 			SlowmodeCommands.confirmMessageSend(channelId, forwardedMessage.timestamp);
-			if (optionalMessage) {
+			if (normalizedComment != null && normalizedComment.content.length > 0) {
 				const commentNonce = SnowflakeUtils.fromTimestamp(Date.now() + 1);
 				const commentMessage = await send(channelId, {
-					content: optionalMessage,
+					content: normalizedComment.content,
 					nonce: commentNonce,
+					flags: normalizedComment.flags,
 				});
 				if (!commentMessage) {
 					logger.warn(`Forward comment send failed in channel ${channelId}`);
