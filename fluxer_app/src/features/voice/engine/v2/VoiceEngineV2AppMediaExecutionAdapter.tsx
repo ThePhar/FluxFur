@@ -48,6 +48,7 @@ import {
 import type {VoiceStateSyncPartial} from '@app/features/voice/engine/VoiceStateSyncTypes';
 import {
 	enforceLocalMediaPublicationCap,
+	getLocalCameraPublications,
 	getLocalMicrophonePublications,
 	getPrimaryLocalMicrophonePublication,
 } from '@app/features/voice/engine/VoiceTrackPublicationUtils';
@@ -65,7 +66,7 @@ import {
 	isMutedOrDeafened,
 	isPermissionDeniedError,
 } from '@app/features/voice/engine/v2/VoiceEngineV2AppAdapterAssertions';
-import {getCameraVideoPreset} from '@app/features/voice/engine/v2/VoiceEngineV2AppCameraResolutionPresets';
+import {getCameraCaptureDimensions} from '@app/features/voice/engine/v2/VoiceEngineV2AppCameraResolutionPresets';
 import {
 	runCameraTransition,
 	type VoiceEngineV2AppCameraTransitionOutcome,
@@ -97,7 +98,11 @@ import LocalVoiceState from '@app/features/voice/state/LocalVoiceState';
 import ParticipantVolume from '@app/features/voice/state/ParticipantVolume';
 import VoiceSettings from '@app/features/voice/state/VoiceSettings';
 import {buildMicrophonePublishOptions} from '@app/features/voice/utils/AudioPublishOptions';
-import {applyBackgroundProcessor} from '@app/features/voice/utils/VideoBackgroundProcessor';
+import {
+	buildCameraPublishOptions,
+	findVideoPublishCodecPolicyViolation,
+} from '@app/features/voice/utils/CodecCapabilityDetector';
+import {applyBackgroundProcessor, clearCameraVideoProcessor} from '@app/features/voice/utils/VideoBackgroundProcessor';
 import {
 	removeVoiceInputProcessor,
 	syncVoiceInputProcessor,
@@ -125,11 +130,13 @@ import type {
 	LocalVideoTrack,
 	Room,
 	TrackPublishOptions,
+	VideoCaptureOptions,
 } from 'livekit-client';
 import {Track} from 'livekit-client';
 
 const logger = new Logger('VoiceEngineV2AppMediaExecutionAdapter');
 const LOCAL_SPEAKING_ANALYSER_INTERVAL_MS = 50;
+const CAMERA_PUBLISH_CODEC_CORRECTION_MAX = 1;
 export const REPUBLISH_MICROPHONE_GUARD_MS = 150;
 type VoiceMuteReason = VoiceEngineV2AppVoiceMuteReason;
 
@@ -366,11 +373,11 @@ export class VoiceEngineV2AppMediaExecutionAdapter extends Store {
 		);
 		this.transitionMediaState({type: 'permission.warmup.start'});
 		const devicePermission = VoiceDevicePermissionState.getState().permissionStatus;
-		if (MediaPermission.isMicrophoneGranted() || devicePermission === 'granted') {
+		if (MediaPermission.isMicrophoneGranted() || devicePermission.audio === 'granted') {
 			this.transitionMediaState({type: 'permission.warmup.granted'});
 			return true;
 		}
-		if (MediaPermission.isMicrophoneExplicitlyDenied() || devicePermission === 'denied') {
+		if (MediaPermission.isMicrophoneExplicitlyDenied() || devicePermission.audio === 'denied') {
 			this.transitionMediaState({type: 'permission.warmup.denied'});
 			this.handleMicrophonePermissionDenied();
 			return false;
@@ -1133,8 +1140,24 @@ export class VoiceEngineV2AppMediaExecutionAdapter extends Store {
 		assert.ok(participant, 'camera transition requires a local participant');
 		assertBoolean(enabled, 'publishCameraTransition.enabled');
 		await this.enforceCameraPublicationCap(participant, enabled ? 'before camera enable' : 'before camera disable');
-		const videoResolution = getCameraVideoPreset(VoiceSettings.getCameraResolution());
-		await participant.setCameraEnabled(enabled, {resolution: videoResolution, ...restOptions});
+		if (!enabled) {
+			this.unbindCameraLifecycle();
+			const cameraTrack = getLocalCameraPublications(participant)[0]?.track as LocalVideoTrack | undefined;
+			if (cameraTrack != null) {
+				await clearCameraVideoProcessor(cameraTrack);
+			}
+		}
+		const captureOptions: VideoCaptureOptions = {
+			resolution: getCameraCaptureDimensions(VoiceSettings.getCameraResolution()),
+			...restOptions,
+		};
+		if (enabled) {
+			const publishOptions = buildCameraPublishOptions();
+			await participant.setCameraEnabled(true, captureOptions, publishOptions);
+			await this.enforceCameraPublishCodecPolicy(participant, publishOptions);
+		} else {
+			await participant.setCameraEnabled(false, captureOptions);
+		}
 		await this.enforceCameraPublicationCap(participant, enabled ? 'after camera enable' : 'after camera disable');
 		if (enabled) {
 			await this.applyBackgroundToCamera(participant);
@@ -1145,6 +1168,31 @@ export class VoiceEngineV2AppMediaExecutionAdapter extends Store {
 			this.bindCameraLifecycle(cameraTrack);
 		} else {
 			this.unbindCameraLifecycle();
+		}
+	}
+
+	private async enforceCameraPublishCodecPolicy(
+		participant: Room['localParticipant'],
+		initialPublishOptions: TrackPublishOptions,
+	): Promise<void> {
+		let publishOptions = initialPublishOptions;
+		for (let corrections = 0; ; corrections++) {
+			const publication = getLocalCameraPublications(participant)[0];
+			const track = publication?.videoTrack as LocalVideoTrack | undefined;
+			const requested = publishOptions.videoCodec;
+			if (!publication || !track || !requested) return;
+			const violation = findVideoPublishCodecPolicyViolation(requested, publication.options?.videoCodec ?? track.codec);
+			if (!violation) return;
+			logger.warn('Camera published a codec outside the publish policy', {...violation, corrections});
+			if (corrections >= CAMERA_PUBLISH_CODEC_CORRECTION_MAX || !violation.alternative) {
+				await participant.setCameraEnabled(false);
+				throw new Error(
+					`camera negotiated ${violation.negotiated} after requesting ${violation.requested}; no allowed codec could be published`,
+				);
+			}
+			await participant.unpublishTrack(track, false);
+			publishOptions = buildCameraPublishOptions(violation.alternative);
+			await participant.publishTrack(track, {...publishOptions, source: Track.Source.Camera});
 		}
 	}
 
@@ -1228,6 +1276,8 @@ export class VoiceEngineV2AppMediaExecutionAdapter extends Store {
 		if (!cameraTrack) {
 			return;
 		}
+		this.unbindCameraLifecycle();
+		await clearCameraVideoProcessor(cameraTrack as LocalVideoTrack);
 		await participant.unpublishTrack(cameraTrack);
 		await this.publishCameraTransition(activeRoom, true, {deviceId: VoiceSettings.getVideoDeviceId()});
 		updateLocalParticipantFromRoom(activeRoom);

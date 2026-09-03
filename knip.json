@@ -23,13 +23,30 @@
 		"fluxer_desktop/src/main/Autostart.ts": ["exports"],
 		"fluxer_desktop/src/main/LinuxDesktopEntry.ts": ["exports"],
 		"fluxer_desktop/src/main/NotificationState.ts": ["exports", "types"],
-		"fluxer_desktop/src/main/WindowsVulkanGameCaptureLayer.ts": ["exports"],
 		"packages/schema/src/domains/geolocation/GeolocationSchemas.ts": ["exports"],
 		"pnpm-workspace.yaml": ["catalog"]
 	},
 	"workspaces": {
 		".": {
+			"ignoreDependencies": ["vite"],
 			"project": ["scripts/**/*.mjs"]
+		},
+		"fluxer_api": {
+			"ignoreDependencies": [
+				"@elastic/elasticsearch",
+				"@hono/node-server",
+				"@messageformat/core",
+				"@messageformat/parser",
+				"@vvo/tzdb",
+				"emoji-regex",
+				"ioredis",
+				"maxmind",
+				"nodemailer",
+				"pg",
+				"pino",
+				"undici",
+				"validator"
+			]
 		},
 		"fluxer_app": {
 			"entry": ["lingui.config.js", "scripts/build-sw.mjs", "scripts/Generate*.ts"],
@@ -47,7 +64,7 @@
 				"native/*/test/**/*.mjs"
 			],
 			"project": ["src/**/*.{ts,tsx,mjs,js}", "scripts/**/*.mjs", "native/**/*.{js,mjs,cjs,d.ts}"],
-			"ignoreDependencies": ["electron-builder"]
+			"ignoreDependencies": ["electron-builder", "electron-builder-squirrel-windows"]
 		},
 		"packages/openapi": {
 			"entry": ["src/GenerateOpenAPISpec.ts"],

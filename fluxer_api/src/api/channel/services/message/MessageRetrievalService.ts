@@ -63,11 +63,14 @@ export class MessageRetrievalService {
 		userId: UserID;
 		channelId: ChannelID;
 		messageId?: MessageID;
+		authChannel?: AuthenticatedChannel;
 	}): Promise<MessageResponseAccessContext> {
-		const authChannel = await this.channelAuthService.getChannelAuthenticated({
-			userId: params.userId,
-			channelId: params.channelId,
-		});
+		const authChannel =
+			params.authChannel ??
+			(await this.channelAuthService.getChannelAuthenticated({
+				userId: params.userId,
+				channelId: params.channelId,
+			}));
 		if (params.messageId && !(await this.canAccessMessage(authChannel, params.messageId))) {
 			throw new UnknownMessageError();
 		}
@@ -100,6 +103,34 @@ export class MessageRetrievalService {
 		const repairedMessage = await this.processingService.repairMentionsOnRead(message, authChannel.channel);
 		await this.extendAttachments([repairedMessage]);
 		return repairedMessage;
+	}
+
+	async getMessagesByIds({
+		userId,
+		channelId,
+		messageIds,
+	}: {
+		userId: UserID;
+		channelId: ChannelID;
+		messageIds: Array<MessageID>;
+	}): Promise<Map<string, Message>> {
+		const authChannel = await this.channelAuthService.getChannelAuthenticated({userId, channelId});
+		const canReadMessageHistory =
+			!authChannel.guild || (await authChannel.hasPermission(Permissions.READ_MESSAGE_HISTORY));
+		const cutoff = authChannel.guild?.message_history_cutoff ?? null;
+		const readableIds = messageIds.filter(
+			(messageId) => canReadMessageHistory || (cutoff != null && this.isMessageAfterCutoff(messageId, cutoff)),
+		);
+		const found = (
+			await Promise.all(
+				readableIds.map((messageId) => this.channelRepository.messages.getMessage(channelId, messageId)),
+			)
+		).filter((message): message is Message => message != null);
+		const repairedMessages = await Promise.all(
+			found.map((message) => this.processingService.repairMentionsOnRead(message, authChannel.channel)),
+		);
+		await this.extendAttachments(repairedMessages);
+		return new Map(repairedMessages.map((message) => [message.id.toString(), message] as const));
 	}
 
 	async searchMessages({
@@ -181,7 +212,9 @@ export class MessageRetrievalService {
 				}),
 			),
 		);
-		const messageResponses = foundMessages.filter((message): message is MessageResponse => message !== null);
+		const messageResponses = foundMessages
+			.filter((message): message is MessageResponse => message !== null)
+			.map(({referenced_message: _referencedMessage, ...searchMessage}) => searchMessage);
 		return {
 			channels: messageResponses.length > 0 ? [await this.mapSearchChannelResponse(channel, userId, requestCache)] : [],
 			messages: messageResponses,

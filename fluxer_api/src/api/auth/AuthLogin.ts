@@ -29,7 +29,7 @@ import type {KVAccountDeletionQueueService} from '../infrastructure/KVAccountDel
 import {REGISTRATION_PENDING_APPROVAL_TRAIT, REGISTRATION_REJECTED_TRAIT} from '../instance/InstanceConfigRepository';
 import type {InviteService} from '../invite/InviteService';
 import {Logger} from '../Logger';
-import type {RequestCache} from '../middleware/RequestCacheMiddleware';
+import {createRequestCache} from '../middleware/RequestCacheMiddleware';
 import {getInstanceConfigRepository} from '../middleware/ServiceSingletons';
 import type {User} from '../models/User';
 import {lookupGeoip} from '../utils/IpUtils';
@@ -38,18 +38,8 @@ import * as AuthPassword from './AuthPassword';
 import * as AuthSession from './AuthSession';
 import * as AuthUtility from './AuthUtility';
 
-function createRequestCache(): RequestCache {
-	const userPartials = new Map();
-	const messageMentionChannels = new Map();
-	return {
-		userPartials,
-		messageMentionChannels,
-		clear: () => {
-			userPartials.clear();
-			messageMentionChannels.clear();
-		},
-	};
-}
+const DUMMY_ARGON2_HASH =
+	'$argon2id$v=19$m=65536,t=3,p=4$fT6tGpAyxFiz+n1RbkRqWQ$v05UT17QGeqhsgRjcVjIWcGw6gUDYeCcAA8FiZ63MtA';
 
 interface LoginParams {
 	data: LoginRequest;
@@ -207,7 +197,7 @@ export async function login(
 	const {inviteService, kvDeletionQueue} = deps;
 	const skipRateLimits = config.dev.testModeEnabled || config.dev.disableRateLimits;
 	const emailRateLimit = await rateLimit.checkLimit({
-		identifier: `login:email:${data.email}`,
+		identifier: `login:email:${data.email.toLowerCase()}`,
 		maxAttempts: 5,
 		windowMs: ms('15 minutes'),
 	});
@@ -234,9 +224,16 @@ export async function login(
 		]);
 	}
 	AuthUtility.assertNonBotUser(ctx, user);
+	if (!user.passwordHash) {
+		await AuthPassword.verifyPassword(ctx, {password: data.password, passwordHash: DUMMY_ARGON2_HASH});
+		throw InputValidationError.fromCodes([
+			{path: 'email', code: ValidationErrorCodes.INVALID_EMAIL_OR_PASSWORD},
+			{path: 'password', code: ValidationErrorCodes.INVALID_EMAIL_OR_PASSWORD},
+		]);
+	}
 	const isMatch = await AuthPassword.verifyPassword(ctx, {
 		password: data.password,
-		passwordHash: user.passwordHash!,
+		passwordHash: user.passwordHash,
 	});
 	if (!isMatch) {
 		throw InputValidationError.fromCodes([
@@ -359,13 +356,36 @@ export async function login(
 
 const MFA_TICKET_MAX_ATTEMPTS = 5;
 const MFA_USER_MAX_ATTEMPTS = 10;
-const MFA_USER_ATTEMPTS_WINDOW = seconds('15 minutes');
+
+async function consumeMfaAttempt(
+	ctx: ApiContext,
+	{userId, ticket, field}: {userId: string; ticket: string; field: string},
+): Promise<void> {
+	const {cache, rateLimit} = ctx.services;
+	const userLimit = await rateLimit.checkLimit({
+		identifier: `mfa:user:${userId}`,
+		maxAttempts: MFA_USER_MAX_ATTEMPTS,
+		windowMs: ms('15 minutes'),
+	});
+	if (!userLimit.allowed) {
+		throw InputValidationError.fromCode(field, ValidationErrorCodes.INVALID_CODE);
+	}
+	const ticketLimit = await rateLimit.checkLimit({
+		identifier: `mfa:ticket:${ticket}`,
+		maxAttempts: MFA_TICKET_MAX_ATTEMPTS,
+		windowMs: ms('5 minutes'),
+	});
+	if (!ticketLimit.allowed) {
+		await cache.delete(`mfa-ticket:${ticket}`);
+		throw InputValidationError.fromCode(field, ValidationErrorCodes.INVALID_CODE);
+	}
+}
 
 export async function loginMfaTotp(
 	ctx: ApiContext,
 	{code, ticket, request}: LoginMfaTotpParams,
 ): Promise<LoginTokenResult> {
-	const {users, cache} = ctx.services;
+	const {users, cache, rateLimit} = ctx.services;
 	const userId = await cache.get<string>(`mfa-ticket:${ticket}`);
 	if (!userId) {
 		throw InputValidationError.fromCode('code', ValidationErrorCodes.SESSION_TIMEOUT);
@@ -378,32 +398,19 @@ export async function loginMfaTotp(
 	if (!user.totpSecret || !user.authenticatorTypes?.has(UserAuthenticatorTypes.TOTP)) {
 		throw InputValidationError.fromCode('code', ValidationErrorCodes.TOTP_NOT_ENABLED);
 	}
-	const userAttemptsKey = `mfa-user-attempts:${user.id}`;
-	const userAttempts = (await cache.get<number>(userAttemptsKey)) ?? 0;
-	if (userAttempts >= MFA_USER_MAX_ATTEMPTS) {
-		throw InputValidationError.fromCode('code', ValidationErrorCodes.INVALID_CODE);
-	}
+	await consumeMfaAttempt(ctx, {userId: user.id.toString(), ticket, field: 'code'});
 	const isValid = await AuthMfa.verifyMfaCode(ctx, {
 		userId: user.id,
 		mfaSecret: user.totpSecret,
 		code,
 		allowBackup: true,
 	});
-	const attemptsKey = `mfa-ticket-attempts:${ticket}`;
 	if (!isValid) {
-		await cache.set(userAttemptsKey, userAttempts + 1, MFA_USER_ATTEMPTS_WINDOW);
-		const attempts = ((await cache.get<number>(attemptsKey)) ?? 0) + 1;
-		if (attempts >= MFA_TICKET_MAX_ATTEMPTS) {
-			await cache.delete(`mfa-ticket:${ticket}`);
-			await cache.delete(attemptsKey);
-		} else {
-			await cache.set(attemptsKey, attempts, seconds('5 minutes'));
-		}
 		throw InputValidationError.fromCode('code', ValidationErrorCodes.INVALID_CODE);
 	}
 	await cache.delete(`mfa-ticket:${ticket}`);
-	await cache.delete(attemptsKey);
-	await cache.delete(userAttemptsKey);
+	await rateLimit.resetLimit(`mfa:ticket:${ticket}`);
+	await rateLimit.resetLimit(`mfa:user:${user.id}`);
 	const [token] = await AuthSession.createAuthSession(ctx, {
 		user,
 		origin: AuthSession.resolveSessionOrigin(ctx, request),
@@ -415,7 +422,7 @@ export async function loginMfaWebAuthn(
 	ctx: ApiContext,
 	{response, challenge, ticket, request}: LoginMfaWebAuthnParams,
 ): Promise<LoginTokenResult> {
-	const {users, cache} = ctx.services;
+	const {users, cache, rateLimit} = ctx.services;
 	const userId = await cache.get<string>(`mfa-ticket:${ticket}`);
 	if (!userId) {
 		throw InputValidationError.fromCode('ticket', ValidationErrorCodes.SESSION_TIMEOUT);
@@ -425,8 +432,11 @@ export async function loginMfaWebAuthn(
 		throw new UnknownUserError();
 	}
 	AuthUtility.assertNonBotUser(ctx, user);
+	await consumeMfaAttempt(ctx, {userId: user.id.toString(), ticket, field: 'ticket'});
 	await AuthMfa.verifyWebAuthnAuthentication(ctx, user.id, response, challenge, 'mfa', ticket);
 	await cache.delete(`mfa-ticket:${ticket}`);
+	await rateLimit.resetLimit(`mfa:ticket:${ticket}`);
+	await rateLimit.resetLimit(`mfa:user:${user.id}`);
 	const [token] = await AuthSession.createAuthSession(ctx, {
 		user,
 		origin: AuthSession.resolveSessionOrigin(ctx, request),

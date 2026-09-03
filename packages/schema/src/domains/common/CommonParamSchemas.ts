@@ -39,12 +39,6 @@ export const InviteCodeParam = z.object({
 
 export type InviteCodeParam = z.infer<typeof InviteCodeParam>;
 
-export const PackIdParam = z.object({
-	pack_id: SnowflakeType.describe('The ID of the pack'),
-});
-
-export type PackIdParam = z.infer<typeof PackIdParam>;
-
 export const ApplicationIdParam = z.object({
 	id: SnowflakeType.describe('The ID of the application'),
 });
@@ -173,20 +167,6 @@ export const GuildIdStickerIdParam = z.object({
 
 export type GuildIdStickerIdParam = z.infer<typeof GuildIdStickerIdParam>;
 
-export const PackIdEmojiIdParam = z.object({
-	pack_id: SnowflakeType.describe('The ID of the pack'),
-	emoji_id: SnowflakeType.describe('The ID of the emoji'),
-});
-
-export type PackIdEmojiIdParam = z.infer<typeof PackIdEmojiIdParam>;
-
-export const PackIdStickerIdParam = z.object({
-	pack_id: SnowflakeType.describe('The ID of the pack'),
-	sticker_id: SnowflakeType.describe('The ID of the sticker'),
-});
-
-export type PackIdStickerIdParam = z.infer<typeof PackIdStickerIdParam>;
-
 export const GiftCodeParam = z.object({
 	code: createStringType(1, 32).describe('The gift code'),
 });
@@ -245,12 +225,6 @@ export const CredentialIdParam = z.object({
 });
 
 export type CredentialIdParam = z.infer<typeof CredentialIdParam>;
-
-export const ScheduledMessageIdParam = z.object({
-	scheduled_message_id: SnowflakeType.describe('The ID of the scheduled message'),
-});
-
-export type ScheduledMessageIdParam = z.infer<typeof ScheduledMessageIdParam>;
 
 const ArchiveSubjectTypeEnum = z
 	.enum(['user', 'guild'])

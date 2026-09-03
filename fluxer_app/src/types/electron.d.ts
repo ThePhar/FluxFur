@@ -483,7 +483,6 @@ export interface ElectronAPI {
 	passkeyIsSupported?(): Promise<boolean>;
 	passkeyRegister?(options: unknown, requestContext?: {pin?: string}): Promise<RegistrationResponseJSON>;
 	passkeyAuthenticate?(options: unknown, requestContext?: {pin?: string}): Promise<AuthenticationResponseJSON>;
-	onRpcNavigate?(callback: (path: string) => void): () => void;
 	getOpenH264Status?(): Promise<OpenH264Status>;
 	setOpenH264Enabled?(enabled: boolean): Promise<OpenH264Status>;
 	virtmic?: VirtmicApi;
@@ -696,8 +695,6 @@ export interface NativeScreenCaptureSource {
 	targetPid?: number;
 }
 
-export type GameCaptureInjectionMethod = 'auto' | 'remote-thread' | 'set-windows-hook';
-
 export interface NativeScreenCaptureRect {
 	x: number;
 	y: number;
@@ -711,7 +708,6 @@ export interface NativeScreenCaptureStartOptions {
 	width?: number;
 	height?: number;
 	frameRate?: number;
-	injectionMethod?: GameCaptureInjectionMethod;
 	captureId?: string;
 	colorRange?: 'full' | 'limited';
 	colorSpace?: 'rec709' | 'srgb';
@@ -747,7 +743,7 @@ export interface NativeScreenCaptureLifecycleMessage {
 	source?: NativeScreenCaptureLifecycleSource;
 }
 
-export type NativeScreenCaptureStrategy = 'game-hook' | 'dxgi-duplication' | 'window-gdi' | string;
+export type NativeScreenCaptureStrategy = 'wgc' | 'dxgi-duplication' | 'window-gdi' | string;
 
 export interface NativeScreenCaptureDiagnostics {
 	state?: number;
@@ -762,8 +758,6 @@ export interface NativeScreenCaptureDiagnostics {
 	droppedFrameCounter?: number;
 	lastPresentTimestampUs?: number;
 	lastError?: number;
-	requestedInjectionMethod?: string;
-	injectionMethod?: string;
 	activeStrategy?: NativeScreenCaptureStrategy;
 	lastFallbackReason?: string;
 	backend?: string;

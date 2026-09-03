@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use crate::common::{
-    CommandSpec, command_succeeds, output_text, remove_file_if_exists, run_command,
-};
+use crate::common::{CommandSpec, command_succeeds, output_text, run_command};
 use crate::desktop::MACOS_UNIVERSAL_ARCH;
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use clap::Args;
@@ -309,7 +307,9 @@ fn build_desktop_native_addon(addon_root: &Path, addon: &DesktopNativeAddon) -> 
         DesktopNativeSpecialBuild::Webauthn => {
             copy_webauthn_linux_shared_libraries(&built.out_file, addon_root)?
         }
-        DesktopNativeSpecialBuild::WinGameCapture => build_win_game_capture_artifacts(addon_root)?,
+        DesktopNativeSpecialBuild::WinGameCapture => {
+            remove_stale_win_game_capture_outputs(addon_root, &built.out_file)?
+        }
     }
     Ok(())
 }
@@ -413,6 +413,8 @@ fn build_rust_node_addon_for_arch(
     );
     sign_macos_node_addon(&out_file, platform)?;
     assert_no_redistributable_runtime_imports(&out_file, platform)?;
+    assert_system32_dependent_load_flag(&out_file, platform)?;
+    assert_no_disabled_win_game_capture_capabilities(&out_file, addon, platform)?;
     Ok(BuiltNodeAddon {
         out_file,
         source,
@@ -668,252 +670,40 @@ fn should_bundle_linux_library(library_name: &str) -> bool {
     .any(|prefix| library_name.starts_with(prefix))
 }
 
-#[derive(Debug, Clone, Copy)]
-struct HookLayerArch {
-    arch: &'static str,
-    target: &'static str,
-    tag: &'static str,
-}
-
-const WIN_GAME_CAPTURE_ARCHES: &[HookLayerArch] = &[
-    HookLayerArch {
-        arch: "x64",
-        target: "x86_64-pc-windows-msvc",
-        tag: "win32-x64-msvc",
-    },
-    HookLayerArch {
-        arch: "ia32",
-        target: "i686-pc-windows-msvc",
-        tag: "win32-ia32-msvc",
-    },
-    HookLayerArch {
-        arch: "arm64",
-        target: "aarch64-pc-windows-msvc",
-        tag: "win32-arm64-msvc",
-    },
-];
-
-fn build_win_game_capture_artifacts(root: &Path) -> Result<()> {
-    let primary_arch = electron_arch();
-    for arch in WIN_GAME_CAPTURE_ARCHES {
-        let required_for_primary_runtime =
-            arch.arch == primary_arch || (primary_arch == "x64" && arch.arch == "ia32");
-        build_win_game_capture_hook(root, arch, required_for_primary_runtime)?;
-        build_win_game_capture_vulkan_layer(root, arch, arch.arch == primary_arch)?;
-        build_win_game_capture_inject_helper(root, arch, required_for_primary_runtime)?;
+fn remove_stale_win_game_capture_outputs(root: &Path, primary_node: &Path) -> Result<()> {
+    let primary_node_name = primary_node
+        .file_name()
+        .and_then(OsStr::to_str)
+        .ok_or_else(|| {
+            anyhow!(
+                "Invalid win-game-capture output path: {}",
+                primary_node.display()
+            )
+        })?;
+    let mut stale = fs::read_dir(root)
+        .with_context(|| format!("Failed to read {}", root.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    stale.retain(|path| {
+        if !path.is_file() {
+            return false;
+        }
+        let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
+            return false;
+        };
+        file_name.starts_with("fluxer-game-hook.")
+            || file_name.starts_with("fluxer-inject-helper.")
+            || file_name.starts_with("fluxer-vulkan-layer.")
+            || (file_name.starts_with("win-game-capture.")
+                && file_name.ends_with(".node")
+                && file_name != primary_node_name)
+    });
+    stale.sort();
+    for path in stale {
+        fs::remove_file(&path).with_context(|| format!("Failed to remove {}", path.display()))?;
+        println!("[win-game-capture] removed stale output {}", path.display());
     }
     Ok(())
-}
-
-fn build_win_game_capture_hook(root: &Path, arch: &HookLayerArch, required: bool) -> Result<()> {
-    build_win_game_capture_extra(
-        "game-capture hook",
-        root,
-        &root.join("hook"),
-        "fluxer_game_hook",
-        &format!("fluxer-game-hook.{}.dll", arch.tag),
-        arch,
-        required,
-    )
-}
-
-fn build_win_game_capture_vulkan_layer(
-    root: &Path,
-    arch: &HookLayerArch,
-    required: bool,
-) -> Result<()> {
-    let layer_dll_name = format!("fluxer-vulkan-layer.{}.dll", arch.tag);
-    build_win_game_capture_extra(
-        "Vulkan game-capture layer",
-        root,
-        &root.join("vulkan-layer"),
-        "fluxer_vulkan_layer",
-        &layer_dll_name,
-        arch,
-        required,
-    )?;
-    let manifest_path = root.join(format!("fluxer-vulkan-layer.{}.json", arch.tag));
-    if !root.join(&layer_dll_name).exists() {
-        remove_file_if_exists(&manifest_path)?;
-        println!(
-            "[win-game-capture] no {layer_dll_name}; not emitting {} so packages never ship a manifest pointing at an absent layer",
-            manifest_path.display()
-        );
-        return Ok(());
-    }
-    fs::write(&manifest_path, vulkan_layer_manifest(&layer_dll_name))
-        .with_context(|| format!("Failed to write {}", manifest_path.display()))?;
-    println!("[win-game-capture] emitted {}", manifest_path.display());
-    Ok(())
-}
-
-fn build_win_game_capture_inject_helper(
-    root: &Path,
-    arch: &HookLayerArch,
-    required: bool,
-) -> Result<()> {
-    let helper_root = root.join("inject-helper");
-    ensure_rust_target_or_skip(arch, "inject-helper", required)?;
-    if !try_cargo_build("inject-helper", &helper_root, arch.target) {
-        if required {
-            bail!(
-                "[win-game-capture] required {} inject-helper build failed",
-                arch.arch
-            );
-        }
-        return Ok(());
-    }
-    let helper_source = helper_root
-        .join("target")
-        .join(arch.target)
-        .join("release")
-        .join("fluxer-inject-helper.exe");
-    let helper_out = root.join(format!("fluxer-inject-helper.{}.exe", arch.tag));
-    copy_optional_win_game_capture_artifact(
-        &helper_source,
-        &helper_out,
-        &format!("{} inject-helper", arch.arch),
-        required,
-    )
-}
-
-fn build_win_game_capture_extra(
-    label: &str,
-    root: &Path,
-    cargo_root: &Path,
-    crate_name: &str,
-    output_name: &str,
-    arch: &HookLayerArch,
-    required: bool,
-) -> Result<()> {
-    ensure_rust_target_or_skip(arch, label, required)?;
-    if !try_cargo_build(label, cargo_root, arch.target) {
-        if required {
-            bail!(
-                "[win-game-capture] required {} {} build failed",
-                arch.arch,
-                label
-            );
-        }
-        return Ok(());
-    }
-    let source = cargo_root
-        .join("target")
-        .join(arch.target)
-        .join("release")
-        .join(cargo_dynamic_library_file_name(crate_name, "win32")?);
-    let output = root.join(output_name);
-    copy_optional_win_game_capture_artifact(
-        &source,
-        &output,
-        &format!("{} {label}", arch.arch),
-        required,
-    )
-}
-
-fn ensure_rust_target_or_skip(arch: &HookLayerArch, label: &str, required: bool) -> Result<()> {
-    if rust_target_installed(arch.target) {
-        return Ok(());
-    }
-    let message = format!(
-        "[win-game-capture] {} {} {}: rust target {} not installed",
-        if required {
-            "missing required"
-        } else {
-            "skipping"
-        },
-        arch.arch,
-        label,
-        arch.target
-    );
-    if required {
-        bail!(message);
-    }
-    eprintln!("{message}");
-    Ok(())
-}
-
-fn rust_target_installed(target: &str) -> bool {
-    let rustup = env::var_os("RUSTUP").unwrap_or_else(|| OsString::from("rustup"));
-    match output_text(CommandSpec::new(rustup).args(["target", "list", "--installed"])) {
-        Ok(output) => output.lines().any(|line| line.trim() == target),
-        Err(error) => {
-            eprintln!(
-                "[win-game-capture] could not query rustup for target {target}; assuming present: {error:#}"
-            );
-            true
-        }
-    }
-}
-
-fn try_cargo_build(label: &str, cwd: &Path, target: &str) -> bool {
-    println!("[win-game-capture] building {label} target={target}");
-    run_command(
-        CommandSpec::new(resolve_cargo_bin())
-            .args([
-                OsString::from("build"),
-                OsString::from("--release"),
-                OsString::from("--target"),
-                OsString::from(target),
-                OsString::from("--manifest-path"),
-                cwd.join("Cargo.toml").into_os_string(),
-            ])
-            .current_dir(cwd),
-    )
-    .map(|_| true)
-    .unwrap_or_else(|error| {
-        eprintln!(
-            "[win-game-capture] skipping {label} for {target}: cargo build failed: {error:#}"
-        );
-        false
-    })
-}
-
-fn copy_optional_win_game_capture_artifact(
-    source: &Path,
-    output: &Path,
-    label: &str,
-    required: bool,
-) -> Result<()> {
-    if !source.exists() {
-        let message = format!(
-            "[win-game-capture] expected {} after {label} build",
-            source.display()
-        );
-        if required {
-            bail!(message);
-        }
-        eprintln!("{message}; skipping copy");
-        return Ok(());
-    }
-    fs::copy(source, output).with_context(|| {
-        format!(
-            "Failed to copy {} to {}",
-            source.display(),
-            output.display()
-        )
-    })?;
-    println!("[win-game-capture] emitted {}", output.display());
-    Ok(())
-}
-
-fn vulkan_layer_manifest(layer_dll_name: &str) -> String {
-    format!(
-        "{{\n\
-\t\"file_format_version\": \"1.2.0\",\n\
-\t\"layer\": {{\n\
-\t\t\"name\": \"VK_LAYER_FLUXER_game_capture\",\n\
-\t\t\"type\": \"GLOBAL\",\n\
-\t\t\"library_path\": \".\\\\\\\\{layer_dll_name}\",\n\
-\t\t\"api_version\": \"1.0.0\",\n\
-\t\t\"implementation_version\": \"1\",\n\
-\t\t\"description\": \"Fluxer Vulkan game capture layer\",\n\
-\t\t\"disable_environment\": {{\n\
-\t\t\t\"DISABLE_FLUXER_VULKAN_CAPTURE\": \"\"\n\
-\t\t}}\n\
-\t}}\n\
-}}\n"
-    )
 }
 
 fn assert_no_redistributable_runtime_imports(node_file_path: &Path, platform: &str) -> Result<()> {
@@ -933,6 +723,78 @@ fn assert_no_redistributable_runtime_imports(node_file_path: &Path, platform: &s
             .collect::<Vec<_>>()
             .join("\n")
     )
+}
+
+const DISABLED_WIN_GAME_CAPTURE_BINARY_MARKERS: &[&[u8]] = &[
+    b"CreateRemoteThread",
+    b"VirtualAllocEx",
+    b"VirtualFreeEx",
+    b"WriteProcessMemory",
+    b"SetWindowsHookExW",
+    b"fluxer-inject-helper.",
+];
+
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u16 = 0x0800;
+
+fn read_dependent_load_flags(file_path: &Path) -> Option<u16> {
+    let buffer = fs::read(file_path).ok()?;
+    let pe = PeFile { buffer };
+    let header = pe.parse_header()?;
+    if header.load_config_directory_rva == 0 {
+        return None;
+    }
+    let offset = pe.rva_to_offset(&header.sections, header.load_config_directory_rva)?;
+    if offset + 4 > pe.buffer.len() {
+        return None;
+    }
+    let size = pe.u32(offset) as usize;
+    let flags_offset = if header.is_pe32_plus { 0x4e } else { 0x36 };
+    if size <= flags_offset + 2 || offset + flags_offset + 2 > pe.buffer.len() {
+        return None;
+    }
+    Some(pe.u16(offset + flags_offset))
+}
+
+fn assert_system32_dependent_load_flag(node_file_path: &Path, platform: &str) -> Result<()> {
+    if platform != "win32" {
+        return Ok(());
+    }
+    let flags = read_dependent_load_flags(node_file_path);
+    ensure!(
+        flags.is_some_and(|value| value & LOAD_LIBRARY_SEARCH_SYSTEM32 != 0),
+        "{} does not set LOAD_LIBRARY_SEARCH_SYSTEM32 in its load config DependentLoadFlags (read {}).\nEvery import of a shipped addon must resolve from System32 so a planted DLL cannot be loaded in its place.\nSee fluxer_desktop/native/.cargo/config.toml for the /DEPENDENTLOADFLAG:0x800 link argument that sets it.",
+        node_file_path.display(),
+        flags.map_or_else(
+            || "no load config".to_string(),
+            |value| format!("{value:#06x}")
+        )
+    );
+    Ok(())
+}
+
+fn assert_no_disabled_win_game_capture_capabilities(
+    node_file_path: &Path,
+    addon: &DesktopNativeAddon,
+    platform: &str,
+) -> Result<()> {
+    if platform != "win32" || addon.special != DesktopNativeSpecialBuild::WinGameCapture {
+        return Ok(());
+    }
+    let binary = fs::read(node_file_path)
+        .with_context(|| format!("Failed to read {}", node_file_path.display()))?;
+    let present = DISABLED_WIN_GAME_CAPTURE_BINARY_MARKERS
+        .iter()
+        .copied()
+        .filter(|marker| binary.windows(marker.len()).any(|window| window == *marker))
+        .map(|marker| String::from_utf8_lossy(marker).into_owned())
+        .collect::<Vec<_>>();
+    ensure!(
+        present.is_empty(),
+        "{} contains disabled game-capture injection capabilities:\n{}",
+        node_file_path.display(),
+        present.join("\n")
+    );
+    Ok(())
 }
 
 fn find_redistributable_runtime_imports(file_path: &Path) -> Vec<String> {
@@ -979,6 +841,8 @@ struct PeFile {
 struct PeHeader {
     sections: Vec<PeSection>,
     import_directory_rva: u32,
+    load_config_directory_rva: u32,
+    is_pe32_plus: bool,
 }
 
 #[derive(Debug)]
@@ -1054,6 +918,11 @@ impl PeFile {
             return None;
         }
         let import_directory_rva = self.u32(import_directory_entry_offset);
+        let load_config_directory_entry_offset = data_directories_offset + 10 * 8;
+        if load_config_directory_entry_offset + 8 > self.buffer.len() {
+            return None;
+        }
+        let load_config_directory_rva = self.u32(load_config_directory_entry_offset);
         let section_table_offset = optional_header_offset + size_of_optional_header;
         let mut sections = Vec::new();
         for index in 0..number_of_sections {
@@ -1071,6 +940,8 @@ impl PeFile {
         Some(PeHeader {
             sections,
             import_directory_rva,
+            load_config_directory_rva,
+            is_pe32_plus,
         })
     }
 
@@ -1172,31 +1043,77 @@ mod tests {
         assert!(!is_redistributable_runtime_import("vcruntime.dll"));
     }
 
+    fn synthetic_pe(pe32_plus: bool, dependent_load_flags: u16) -> Vec<u8> {
+        let opt_size: usize = if pe32_plus { 240 } else { 224 };
+        let load_config_size: usize = if pe32_plus { 0x140 } else { 0xc0 };
+        let flags_offset: usize = if pe32_plus { 0x4e } else { 0x36 };
+        let pe_offset: usize = 0x80;
+        let opt_offset = pe_offset + 4 + 20;
+        let section_offset = opt_offset + opt_size;
+        let raw_pointer = section_offset + 40;
+        let virtual_address: u32 = 0x1000;
+
+        let mut buffer = vec![0u8; raw_pointer + load_config_size];
+        buffer[0..2].copy_from_slice(b"MZ");
+        buffer[0x3c..0x40].copy_from_slice(&(pe_offset as u32).to_le_bytes());
+        buffer[pe_offset..pe_offset + 4].copy_from_slice(&0x4550u32.to_le_bytes());
+        buffer[pe_offset + 6..pe_offset + 8].copy_from_slice(&1u16.to_le_bytes());
+        buffer[pe_offset + 20..pe_offset + 22].copy_from_slice(&(opt_size as u16).to_le_bytes());
+        let magic: u16 = if pe32_plus { 0x20b } else { 0x10b };
+        buffer[opt_offset..opt_offset + 2].copy_from_slice(&magic.to_le_bytes());
+
+        let data_dirs = opt_offset + if pe32_plus { 112 } else { 96 };
+        let load_config_entry = data_dirs + 10 * 8;
+        buffer[load_config_entry..load_config_entry + 4]
+            .copy_from_slice(&virtual_address.to_le_bytes());
+        buffer[load_config_entry + 4..load_config_entry + 8]
+            .copy_from_slice(&(load_config_size as u32).to_le_bytes());
+
+        buffer[section_offset + 8..section_offset + 12]
+            .copy_from_slice(&(load_config_size as u32).to_le_bytes());
+        buffer[section_offset + 12..section_offset + 16]
+            .copy_from_slice(&virtual_address.to_le_bytes());
+        buffer[section_offset + 16..section_offset + 20]
+            .copy_from_slice(&(load_config_size as u32).to_le_bytes());
+        buffer[section_offset + 20..section_offset + 24]
+            .copy_from_slice(&(raw_pointer as u32).to_le_bytes());
+
+        buffer[raw_pointer..raw_pointer + 4]
+            .copy_from_slice(&(load_config_size as u32).to_le_bytes());
+        let flags_at = raw_pointer + flags_offset;
+        buffer[flags_at..flags_at + 2].copy_from_slice(&dependent_load_flags.to_le_bytes());
+        buffer
+    }
+
+    #[test]
+    fn dependent_load_flags_are_read_from_both_pe_widths() {
+        for pe32_plus in [false, true] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let set = dir.path().join("set.bin");
+            let unset = dir.path().join("unset.bin");
+            fs::write(&set, synthetic_pe(pe32_plus, LOAD_LIBRARY_SEARCH_SYSTEM32)).expect("write");
+            fs::write(&unset, synthetic_pe(pe32_plus, 0)).expect("write");
+
+            assert_eq!(
+                read_dependent_load_flags(&set),
+                Some(LOAD_LIBRARY_SEARCH_SYSTEM32),
+                "pe32_plus={pe32_plus}"
+            );
+            assert_eq!(
+                read_dependent_load_flags(&unset),
+                Some(0),
+                "pe32_plus={pe32_plus}"
+            );
+            assert!(assert_system32_dependent_load_flag(&set, "win32").is_ok());
+            assert!(assert_system32_dependent_load_flag(&unset, "win32").is_err());
+            assert!(assert_system32_dependent_load_flag(&unset, "linux").is_ok());
+        }
+    }
+
     #[test]
     fn linux_library_bundling_denylist_matches_legacy_prefixes() {
         assert!(!should_bundle_linux_library("libc.so.6"));
         assert!(!should_bundle_linux_library("ld-linux-x86-64.so.2"));
         assert!(should_bundle_linux_library("libfido2.so.1"));
-    }
-
-    #[test]
-    fn vulkan_layer_manifest_matches_legacy_json_shape() {
-        assert_eq!(
-            vulkan_layer_manifest("fluxer-vulkan-layer.win32-x64-msvc.dll"),
-            "{\n\
-\t\"file_format_version\": \"1.2.0\",\n\
-\t\"layer\": {\n\
-\t\t\"name\": \"VK_LAYER_FLUXER_game_capture\",\n\
-\t\t\"type\": \"GLOBAL\",\n\
-\t\t\"library_path\": \".\\\\\\\\fluxer-vulkan-layer.win32-x64-msvc.dll\",\n\
-\t\t\"api_version\": \"1.0.0\",\n\
-\t\t\"implementation_version\": \"1\",\n\
-\t\t\"description\": \"Fluxer Vulkan game capture layer\",\n\
-\t\t\"disable_environment\": {\n\
-\t\t\t\"DISABLE_FLUXER_VULKAN_CAPTURE\": \"\"\n\
-\t\t}\n\
-\t}\n\
-}\n"
-        );
     }
 }

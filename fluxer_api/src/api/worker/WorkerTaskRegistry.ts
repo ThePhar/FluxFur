@@ -35,7 +35,6 @@ import prunePostgresKvTtl from './tasks/PrunePostgresKvTtl';
 import reconcileUserPayments from './tasks/ReconcileUserPayments';
 import refreshSearchIndex from './tasks/RefreshSearchIndex';
 import revalidateUserConnections from './tasks/RevalidateUserConnections';
-import {sendScheduledMessage} from './tasks/SendScheduledMessage';
 import {sendSystemDm} from './tasks/SendSystemDm';
 import syncDiscoveryIndex from './tasks/SyncDiscoveryIndex';
 import syncDisposableEmailDomains from './tasks/SyncDisposableEmailDomains';
@@ -79,7 +78,6 @@ export const workerTasks: Record<WorkerTaskName, WorkerTaskHandler> = {
 	prunePostgresKvTtl,
 	refreshSearchIndex,
 	revalidateUserConnections,
-	sendScheduledMessage,
 	sendSystemDm,
 	syncFileShaBlocklists,
 	syncUrlBlocklists,

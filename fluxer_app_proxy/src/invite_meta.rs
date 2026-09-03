@@ -14,15 +14,17 @@ use scylla::client::session::Session;
 use scylla::statement::prepared::PreparedStatement;
 use serde::Deserialize;
 use std::collections::HashSet;
-#[cfg(feature = "scylla")]
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tokio::task::JoinHandle;
 
 const INVITE_TYPE_GUILD: i32 = 0;
 const INVITE_TYPE_GROUP_DM: i32 = 1;
 const CHANNEL_TYPE_GROUP_DM: i32 = 3;
 const MEDIA_SIZE_DEFAULT: i32 = 160;
 const DEFAULT_AVATAR_COUNT: i64 = 6;
+const CONNECT_RETRY_BASE: Duration = Duration::from_secs(5);
+const CONNECT_RETRY_MAX: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvitePageMeta {
@@ -45,7 +47,7 @@ pub struct InviteMetaResolver {
 enum InviteMetaStorage {
     Postgres(PostgresInviteMetaStorage),
     #[cfg(feature = "scylla")]
-    Scylla(ScyllaInviteMetaStorage),
+    Scylla(Box<ScyllaInviteMetaStorage>),
 }
 
 struct PostgresInviteMetaStorage {
@@ -103,7 +105,7 @@ impl InviteMetaResolver {
     pub async fn connect(config: &AppProxyConfig) -> anyhow::Result<Self> {
         match config.database_backend {
             DatabaseBackend::Postgres => {
-                let pool = fluxer_svc::postgres::connect(&fluxer_svc::postgres::PostgresConfig {
+                let postgres_config = fluxer_svc::postgres::PostgresConfig {
                     url: config.postgres_url.clone(),
                     host: config.postgres_host.clone(),
                     port: config.postgres_port,
@@ -114,9 +116,10 @@ impl InviteMetaResolver {
                     ssl_ca: config.postgres_ssl_ca.clone(),
                     max_connections: config.postgres_max_connections,
                     kv_table: config.postgres_kv_table.clone(),
-                })
-                .await?;
-                let kv = postgres::KvClient::new(pool, &config.postgres_kv_table)?;
+                    prepared_statements: config.postgres_prepared_statements,
+                };
+                let pool = fluxer_svc::postgres::connect(&postgres_config).await?;
+                let kv = postgres::KvClient::new(pool, &postgres_config)?;
                 Self::new_postgres(kv, config)
             }
             DatabaseBackend::Cassandra => {
@@ -183,13 +186,13 @@ impl InviteMetaResolver {
         let cache = invite_meta_cache(config);
 
         Ok(Self {
-            storage: InviteMetaStorage::Scylla(ScyllaInviteMetaStorage {
+            storage: InviteMetaStorage::Scylla(Box::new(ScyllaInviteMetaStorage {
                 db,
                 stmt_invite,
                 stmt_guild,
                 stmt_channel,
                 stmt_user,
-            }),
+            })),
             cache,
         })
     }
@@ -299,6 +302,42 @@ impl InviteMetaResolver {
     async fn fetch_user(&self, user_id: i64) -> anyhow::Result<Option<UserDbRow>> {
         self.storage.fetch_user(user_id).await
     }
+}
+
+pub fn start_background_connect(
+    slot: &Arc<OnceLock<InviteMetaResolver>>,
+    config: Arc<AppProxyConfig>,
+) -> JoinHandle<()> {
+    let slot = Arc::clone(slot);
+    tokio::spawn(async move {
+        let mut failures: u32 = 0;
+        loop {
+            match InviteMetaResolver::connect(&config).await {
+                Ok(resolver) => {
+                    let _ = slot.set(resolver);
+                    tracing::info!("invite metadata resolver connected");
+                    return;
+                }
+                Err(err) => {
+                    failures = failures.saturating_add(1);
+                    let backoff = connect_backoff(failures);
+                    tracing::warn!(
+                        %err,
+                        failures,
+                        backoff_ms = backoff.as_millis() as u64,
+                        "invite metadata resolver connect failed; retrying"
+                    );
+                    tokio::time::sleep(backoff).await;
+                }
+            }
+        }
+    })
+}
+
+fn connect_backoff(failures: u32) -> Duration {
+    CONNECT_RETRY_BASE
+        .saturating_mul(1u32 << failures.min(5))
+        .min(CONNECT_RETRY_MAX)
 }
 
 fn invite_meta_cache(config: &AppProxyConfig) -> Cache<String, Option<InvitePageMeta>> {
@@ -757,6 +796,36 @@ fn escape_html_attr(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_connect_backoff_grows_and_stops_at_the_ceiling() {
+        assert_eq!(connect_backoff(1), Duration::from_secs(10));
+        assert_eq!(connect_backoff(2), Duration::from_secs(20));
+        assert_eq!(connect_backoff(3), Duration::from_secs(40));
+        assert_eq!(connect_backoff(4), CONNECT_RETRY_MAX);
+        assert_eq!(connect_backoff(64), CONNECT_RETRY_MAX);
+    }
+
+    #[tokio::test]
+    async fn a_refused_database_never_fills_the_slot_and_never_gives_up() {
+        let mut config = AppProxyConfig::from_env();
+        config.database_backend = DatabaseBackend::Postgres;
+        config.postgres_url = None;
+        config.postgres_host = "127.0.0.1".to_owned();
+        config.postgres_port = 1;
+        config.postgres_ssl = false;
+        let slot = Arc::new(OnceLock::new());
+
+        let handle = start_background_connect(&slot, Arc::new(config));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(slot.get().is_none());
+        assert!(
+            !handle.is_finished(),
+            "a failed connect ended the retry loop and disabled invite metadata for the process"
+        );
+        handle.abort();
+    }
 
     fn endpoints() -> InviteMetaEndpoints {
         InviteMetaEndpoints {

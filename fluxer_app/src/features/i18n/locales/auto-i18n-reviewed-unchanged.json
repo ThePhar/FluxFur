@@ -3,6 +3,9 @@
   "locales": {
     "ar": [
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -16,6 +19,9 @@
       },
       {
         "msgid": "Enter"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "NCMEC {ncmecReportId}"
@@ -43,6 +49,9 @@
       }
     ],
     "bg": [
+      {
+        "msgid": "AV1"
+      },
       {
         "msgid": "Alt"
       },
@@ -72,6 +81,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Markdown"
@@ -127,6 +139,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -170,6 +185,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -332,6 +350,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Acceleration"
       },
       {
@@ -435,6 +456,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -591,6 +615,9 @@
       },
       {
         "msgid": "Stop"
+      },
+      {
+        "msgid": "Stop streaming"
       },
       {
         "msgid": "Stream"
@@ -793,6 +820,9 @@
         "msgid": "ACLs"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Admin"
       },
       {
@@ -869,6 +899,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Jitter"
@@ -1131,6 +1164,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -1168,6 +1204,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "NCMEC {ncmecReportId}"
@@ -1255,6 +1294,12 @@
         "msgid": "<0>{targetUserTag}</0> is currently timed out. You can update their timeout duration or remove the timeout."
       },
       {
+        "msgid": "AV1"
+      },
+      {
+        "msgid": "AV1 (requires opt-in)"
+      },
+      {
         "msgid": "About me is too long"
       },
       {
@@ -1264,10 +1309,22 @@
         "msgid": "Advertise a capped decode codec to force publisher migration"
       },
       {
+        "msgid": "Allow AV1 for screen sharing"
+      },
+      {
+        "msgid": "Allow H.265 (HEVC) for screen sharing"
+      },
+      {
         "msgid": "Anyone can create an account."
       },
       {
         "msgid": "Anyone can request an account, but an administrator must approve it."
+      },
+      {
+        "msgid": "App audio isn't available right now on Linux."
+      },
+      {
+        "msgid": "App audio isn't available right now on Windows."
       },
       {
         "msgid": "Approval required"
@@ -1277,6 +1334,12 @@
       },
       {
         "msgid": "Attachment {pendingFilename}"
+      },
+      {
+        "msgid": "Audio muted"
+      },
+      {
+        "msgid": "Automatic ({codec})"
       },
       {
         "msgid": "Banned {targetUserTag} from the community"
@@ -1291,6 +1354,12 @@
         "msgid": "Branding asset preview"
       },
       {
+        "msgid": "Camera access is needed for device previews"
+      },
+      {
+        "msgid": "Change stream"
+      },
+      {
         "msgid": "Choices"
       },
       {
@@ -1301,6 +1370,9 @@
       },
       {
         "msgid": "Clear command"
+      },
+      {
+        "msgid": "Clearer text"
       },
       {
         "msgid": "Closed"
@@ -1319,6 +1391,15 @@
       },
       {
         "msgid": "Community overrides"
+      },
+      {
+        "msgid": "Connect a camera and try again."
+      },
+      {
+        "msgid": "Connect a display, then try again."
+      },
+      {
+        "msgid": "Connect a microphone and try again."
       },
       {
         "msgid": "Connection volume controls"
@@ -1348,7 +1429,19 @@
         "msgid": "Decide how premium limits apply to people on this instance."
       },
       {
+        "msgid": "Delete user"
+      },
+      {
         "msgid": "Denied"
+      },
+      {
+        "msgid": "Desktop audio isn't available right now on Linux."
+      },
+      {
+        "msgid": "Desktop audio isn't available right now on Windows."
+      },
+      {
+        "msgid": "Desktop audio isn't available right now on macOS."
       },
       {
         "msgid": "Device volume"
@@ -1357,7 +1450,16 @@
         "msgid": "Disable direct messages and friend requests"
       },
       {
+        "msgid": "Duplicate role"
+      },
+      {
         "msgid": "Emulate decode codec (testing)"
+      },
+      {
+        "msgid": "Enable camera access to preview cameras and capture devices before choosing one to stream."
+      },
+      {
+        "msgid": "Enable previews"
       },
       {
         "msgid": "Enable the integrations whose credentials you have configured. Only available services are shown."
@@ -1373,6 +1475,9 @@
       },
       {
         "msgid": "Enter the PIN for your security key to continue."
+      },
+      {
+        "msgid": "Entire screen"
       },
       {
         "msgid": "Entrance sounds unavailable"
@@ -1411,10 +1516,19 @@
         "msgid": "Give everyone on this instance the highest premium limits."
       },
       {
+        "msgid": "Global shortcut"
+      },
+      {
         "msgid": "Grant"
       },
       {
         "msgid": "Granted"
+      },
+      {
+        "msgid": "H.265 (requires opt-in)"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Help translate {PRODUCT_NAME} into your language on <0>{I18N_WEBLATE_DOMAIN}</0>."
@@ -1433,6 +1547,9 @@
       },
       {
         "msgid": "Inline code"
+      },
+      {
+        "msgid": "Input level"
       },
       {
         "msgid": "Italic"
@@ -1462,6 +1579,9 @@
         "msgid": "Make the instance yours"
       },
       {
+        "msgid": "May cause compatibility issues for viewers. We’re working on improving this."
+      },
+      {
         "msgid": "Mirror tiers"
       },
       {
@@ -1469,6 +1589,12 @@
       },
       {
         "msgid": "Neko cat that chases your cursor"
+      },
+      {
+        "msgid": "No application windows found"
+      },
+      {
+        "msgid": "No displays found"
       },
       {
         "msgid": "No optional services are available on this instance. You can skip this step."
@@ -1481,6 +1607,9 @@
       },
       {
         "msgid": "Open Settings"
+      },
+      {
+        "msgid": "Open an application window, then try again."
       },
       {
         "msgid": "Open popup"
@@ -1498,13 +1627,28 @@
         "msgid": "Ordered upload"
       },
       {
+        "msgid": "Pause preview when Fluxer isn’t focused"
+      },
+      {
         "msgid": "Per-device volume"
+      },
+      {
+        "msgid": "Per-window audio isn't available right now on macOS."
       },
       {
         "msgid": "Pin Neko to the top-right of the chat input instead of following your cursor"
       },
       {
+        "msgid": "Pop out user"
+      },
+      {
+        "msgid": "Pop out video"
+      },
+      {
         "msgid": "Popped out"
+      },
+      {
+        "msgid": "Preferred screen share codec"
       },
       {
         "msgid": "Premium model"
@@ -1639,6 +1783,18 @@
         "msgid": "Run the instance as one community instead of many. This can only be enabled now, during setup."
       },
       {
+        "msgid": "Screen share audio couldn't start"
+      },
+      {
+        "msgid": "Screen share privacy"
+      },
+      {
+        "msgid": "Screen sharing failed, but Fluxer could not confirm that every capture path stopped. Use Stop Sharing or disconnect from the call before continuing."
+      },
+      {
+        "msgid": "Screenshare"
+      },
+      {
         "msgid": "Search filter: {filter}"
       },
       {
@@ -1669,7 +1825,16 @@
         "msgid": "Shape the social model"
       },
       {
+        "msgid": "Share screen"
+      },
+      {
         "msgid": "Share screens and windows."
+      },
+      {
+        "msgid": "Share stream audio"
+      },
+      {
+        "msgid": "Sharper text at 720p, 30 FPS"
       },
       {
         "msgid": "Shorten your about me and try again."
@@ -1714,6 +1879,12 @@
         "msgid": "Slowmode is set to {durationLabel}. Wait before sending another message."
       },
       {
+        "msgid": "Smoother video"
+      },
+      {
+        "msgid": "Something is limiting this stream, so viewers are getting fewer frames than you asked for."
+      },
+      {
         "msgid": "Static Neko"
       },
       {
@@ -1721,6 +1892,15 @@
       },
       {
         "msgid": "Stop Neko from chasing your cursor while keeping it draggable and interactive."
+      },
+      {
+        "msgid": "Stop streaming"
+      },
+      {
+        "msgid": "Stream is not keeping up"
+      },
+      {
+        "msgid": "Stream quality"
       },
       {
         "msgid": "Symbol"
@@ -1736,6 +1916,9 @@
       },
       {
         "msgid": "That image could not be used. Try a different file."
+      },
+      {
+        "msgid": "The camera preview is still stopping. Try streaming again in a moment."
       },
       {
         "msgid": "The member to target."
@@ -1762,6 +1945,9 @@
         "msgid": "Timed out {targetUserTag}"
       },
       {
+        "msgid": "Turn off audio sharing for this source or try again in a moment."
+      },
+      {
         "msgid": "Unavailable"
       },
       {
@@ -1772,6 +1958,9 @@
       },
       {
         "msgid": "Use video and camera previews."
+      },
+      {
+        "msgid": "Use your operating system's spellchecker when available. Otherwise, use {productName}'s in-app dictionaries."
       },
       {
         "msgid": "Volume sliders"
@@ -1831,7 +2020,16 @@
         "msgid": "{count, plural, one {# minute} other {# minutes}}"
       },
       {
+        "msgid": "{name} copy"
+      },
+      {
         "msgid": "{productName} application logo"
+      },
+      {
+        "msgid": "{productName} cannot start a safe desktop audio route while excluding {productName}'s call audio."
+      },
+      {
+        "msgid": "{productName} cannot start a safe isolated route for this app's audio."
       },
       {
         "msgid": "{productName} needs screen recording access. Allow screen recording in your operating system privacy settings and restart the app."
@@ -1841,6 +2039,14 @@
       },
       {
         "msgid": "{remaining, plural, one {+# more} other {+# more}}"
+      },
+      {
+        "msgctxt": "screen-share",
+        "msgid": "Your screen share could not be published with a compatible video codec, so it was stopped. Try sharing again."
+      },
+      {
+        "msgctxt": "screen-share",
+        "msgid": "Your video encoder stopped encoding frames, so your screen share was stopped. Try sharing again."
       },
       {
         "msgctxt": "security-settings-section",
@@ -1868,6 +2074,9 @@
       },
       {
         "msgid": "60 FPS"
+      },
+      {
+        "msgid": "AV1"
       },
       {
         "msgid": "Alt"
@@ -1943,6 +2152,9 @@
       },
       {
         "msgid": "General"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -2138,6 +2350,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -2205,6 +2420,9 @@
       },
       {
         "msgid": "General"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -2317,6 +2535,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -2354,6 +2575,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Latvia"
@@ -2466,6 +2690,9 @@
       },
       {
         "msgid": "5 minutes"
+      },
+      {
+        "msgid": "AV1"
       },
       {
         "msgid": "Action"
@@ -2591,6 +2818,9 @@
         "msgid": "France"
       },
       {
+        "msgid": "HEVC"
+      },
+      {
         "msgid": "Hindi"
       },
       {
@@ -2670,9 +2900,6 @@
       },
       {
         "msgid": "Options"
-      },
-      {
-        "msgid": "Packs"
       },
       {
         "msgid": "Page {pageNumber}"
@@ -2930,6 +3157,9 @@
     ],
     "he": [
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -2946,6 +3176,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "NCMEC {ncmecReportId}"
@@ -3004,6 +3237,9 @@
         "msgid": "15 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -3017,6 +3253,9 @@
       },
       {
         "msgid": "Esc"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "NCMEC {ncmecReportId}"
@@ -3072,6 +3311,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Administrator"
       },
       {
@@ -3112,6 +3354,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Logo"
@@ -3227,6 +3472,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -3276,6 +3524,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "JWKS URL"
@@ -3391,6 +3642,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Admin"
       },
       {
@@ -3467,6 +3721,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hindi"
@@ -3706,6 +3963,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Account"
       },
       {
@@ -3716,6 +3976,9 @@
       },
       {
         "msgid": "Austria"
+      },
+      {
+        "msgid": "Automatic ({codec})"
       },
       {
         "msgid": "Avatar"
@@ -3800,6 +4063,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -4035,6 +4301,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -4063,6 +4332,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "JWKS URL"
@@ -4148,6 +4420,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -4167,6 +4442,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "JWKS URL"
@@ -4207,6 +4485,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -4217,6 +4498,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hindi"
@@ -4264,6 +4548,9 @@
       },
       {
         "msgid": "15 FPS"
+      },
+      {
+        "msgid": "AV1"
       },
       {
         "msgid": "Account"
@@ -4396,6 +4683,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -4776,6 +5066,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Admin"
       },
       {
@@ -4846,6 +5139,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hindi"
@@ -5046,6 +5342,9 @@
     ],
     "pl": [
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Administrator"
       },
       {
@@ -5092,6 +5391,9 @@
       },
       {
         "msgid": "Folder"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hindi"
@@ -5235,6 +5537,9 @@
         "msgid": "ACLs"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Admin"
       },
       {
@@ -5296,6 +5601,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -5514,6 +5822,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Admin"
       },
       {
@@ -5620,6 +5931,9 @@
       },
       {
         "msgid": "General"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hardware"
@@ -5842,6 +6156,9 @@
     ],
     "ru": [
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -5864,6 +6181,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "NCMEC {ncmecReportId}"
@@ -5923,6 +6243,9 @@
       },
       {
         "msgid": "60 FPS"
+      },
+      {
+        "msgid": "AV1"
       },
       {
         "msgid": "Acceleration"
@@ -5989,6 +6312,9 @@
       },
       {
         "msgid": "Gateway"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hindi"
@@ -6207,6 +6533,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -6229,6 +6558,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "NCMEC {ncmecReportId}"
@@ -6296,6 +6628,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -6327,6 +6662,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Logo"
@@ -6438,6 +6776,9 @@
     ],
     "uk": [
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -6463,6 +6804,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Markdown"
@@ -6527,6 +6871,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Alt"
       },
       {
@@ -6570,6 +6917,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Hungary"
@@ -6689,6 +7039,9 @@
     ],
     "zh-CN": [
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Bluesky"
       },
       {
@@ -6705,6 +7058,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "JWKS URL"
@@ -6775,6 +7131,9 @@
         "msgid": "60 FPS"
       },
       {
+        "msgid": "AV1"
+      },
+      {
         "msgid": "Bluesky"
       },
       {
@@ -6794,6 +7153,9 @@
       },
       {
         "msgid": "Fluxer"
+      },
+      {
+        "msgid": "HEVC"
       },
       {
         "msgid": "Logo"

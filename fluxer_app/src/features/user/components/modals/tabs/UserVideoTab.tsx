@@ -8,8 +8,6 @@ import {
 	PRODUCT_NAME,
 } from '@app/features/app/config/I18nDisplayConstants';
 import RuntimeConfig from '@app/features/app/state/RuntimeConfig';
-import {LimitResolver} from '@app/features/app/utils/LimitResolverAdapter';
-import {isLimitToggleEnabled} from '@app/features/app/utils/LimitUtils';
 import {GET_PREMIUM_DESCRIPTOR} from '@app/features/i18n/utils/CommonMessageDescriptors';
 import {ComponentBus} from '@app/features/platform/utils/ComponentBus';
 import * as PremiumModalCommands from '@app/features/premium/commands/PremiumModalCommands';
@@ -32,6 +30,7 @@ import {
 	type SupportedScreenShareFrameRate,
 } from '@app/features/voice/utils/ScreenShareOptions';
 import {buildSettingsDeviceOptions} from '@app/features/voice/utils/SettingsDeviceOptions';
+import {hasHigherVideoQuality} from '@app/features/voice/utils/VideoQualityEntitlement';
 import {resolveEffectiveDeviceId} from '@app/features/voice/utils/VoiceDeviceManager';
 import {msg} from '@lingui/core/macro';
 import {Trans, useLingui} from '@lingui/react/macro';
@@ -59,7 +58,6 @@ const SELF_HOSTED_VIDEO_QUALITY_LIMIT_DESCRIPTOR = msg({
 	message: 'This instance currently allows screen share up to 720p at 30 FPS.',
 	comment: 'Neutral video settings note shown when higher screen share quality is disabled by instance limits.',
 });
-const VERY_LOW_240P_LABEL = '240p';
 const STANDARD_720P_LABEL = '720p';
 const HIGH_DEFINITION_1080P_LABEL = '1080p';
 const QUAD_HD_1440P_LABEL = '1440p';
@@ -99,18 +97,10 @@ interface VideoTabProps {
 }
 
 export const VideoTab: React.FC<VideoTabProps> = observer(
-	({voiceSettings, hasPremium: _hasPremium, autoRequestPermission = true}) => {
+	({voiceSettings, hasPremium: _hasPremium, autoRequestPermission = false}) => {
 		const {i18n} = useLingui();
 		const {videoDeviceId, cameraResolution, mirrorCamera, screenshareResolution, videoFrameRate} = voiceSettings;
-		const hasHigherQuality = isLimitToggleEnabled(
-			{
-				feature_higher_video_quality: LimitResolver.resolve({
-					key: 'feature_higher_video_quality',
-					fallback: 0,
-				}),
-			},
-			'feature_higher_video_quality',
-		);
+		const hasHigherQuality = hasHigherVideoQuality();
 		const isSelfHosted = RuntimeConfig.isSelfHosted();
 		const {
 			devices,
@@ -139,7 +129,6 @@ export const VideoTab: React.FC<VideoTabProps> = observer(
 				: []),
 		];
 		const screenshareResolutionOptions: ReadonlyArray<ComboboxOption<ScreenshareResolution>> = [
-			{value: 'low_240p', label: VERY_LOW_240P_LABEL},
 			{value: 'low_480p', label: LOW_480P_LABEL},
 			{
 				value: 'medium',
@@ -205,7 +194,7 @@ export const VideoTab: React.FC<VideoTabProps> = observer(
 		}, []);
 		return (
 			<div className={styles.content} data-flx="user.video-tab.content">
-				{devices.length === 0 && permissionStatus !== 'loading' && permissionStatus !== 'granted' ? (
+				{devices.length === 0 && permissionStatus !== 'loading' ? (
 					<div className={styles.deviceNotice} data-flx="user.video-tab.device-notice">
 						<div className={styles.deviceNoticeText} data-flx="user.video-tab.device-notice-text">
 							<div className={styles.deviceNoticeTitle} data-flx="user.video-tab.device-notice-title">
@@ -217,21 +206,25 @@ export const VideoTab: React.FC<VideoTabProps> = observer(
 										Allow {PRODUCT_NAME} to access your camera in {MACOS_SYSTEM_SETTINGS_NAME} →{' '}
 										{MACOS_PRIVACY_AND_SECURITY_SETTINGS_NAME} → {MACOS_CAMERA_PERMISSION_NAME}.
 									</Trans>
+								) : permissionStatus === 'granted' ? (
+									<Trans>Connect a camera and try again.</Trans>
 								) : (
 									i18n._(PRODUCT_NEEDS_CAMERA_ACCESS_DESCRIPTOR, {productName: PRODUCT_NAME})
 								)}
 							</p>
 						</div>
-						<Button
-							variant="secondary"
-							small={true}
-							onClick={() => {
-								void requestPermission();
-							}}
-							data-flx="user.video-tab.button"
-						>
-							<Trans>Allow camera</Trans>
-						</Button>
+						{permissionStatus !== 'granted' ? (
+							<Button
+								variant="secondary"
+								small={true}
+								onClick={() => {
+									void requestPermission();
+								}}
+								data-flx="user.video-tab.button"
+							>
+								<Trans>Allow camera</Trans>
+							</Button>
+						) : null}
 					</div>
 				) : null}
 				<div className={styles.controlGroup} data-flx="user.video-tab.camera-settings-group">

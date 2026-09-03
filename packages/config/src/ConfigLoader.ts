@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {buildNamedFluxerEnvOverrides} from '@fluxer/config/src/config_loader/EnvironmentOverrides';
-import {deriveEndpointsFromDomain} from '@fluxer/config/src/EndpointDerivation';
+import {
+	type DerivedEndpoints,
+	deriveEndpointsFromDomain,
+	normalizePublicEndpoint,
+} from '@fluxer/config/src/EndpointDerivation';
 import type {MasterConfig} from '@fluxer/config/src/MasterConfig';
 
 type ConfigObject = Record<string, unknown>;
@@ -71,6 +75,7 @@ function defaultConfig(): MasterConfig {
 				ssl_ca: '',
 				max_connections: 20,
 				kv_table: 'fluxer_kv',
+				prepared_statements: true,
 			},
 		},
 		s3: {
@@ -91,7 +96,11 @@ function defaultConfig(): MasterConfig {
 		services: {
 			api: {
 				port: 8080,
+				headers_timeout_ms: 30_000,
+				request_timeout_ms: 120_000,
+				max_inflight_requests: 512,
 				ip_ban_exempt_ips: [],
+				desktop_github_redirect_countries: [],
 				presigned_attachment_uploads_enabled: false,
 				presigned_downloads_enabled: false,
 				presigned_harvest_downloads_enabled: true,
@@ -182,6 +191,7 @@ function defaultConfig(): MasterConfig {
 				provider: 'none',
 				from_email: '',
 				from_name: 'Fluxer',
+				app_base_url: '',
 			},
 			sms: {
 				enabled: false,
@@ -353,6 +363,7 @@ function validatePostgresConfig(config: MasterConfig): void {
 	assertIntegerInRange(postgres.max_connections, 'FLUXER_POSTGRES_MAX_CONNECTIONS', 1, 1000);
 	assertBoolean(postgres.ssl, 'FLUXER_POSTGRES_SSL');
 	assertIdentifier(postgres.kv_table, 'FLUXER_POSTGRES_KV_TABLE');
+	assertBoolean(postgres.prepared_statements, 'FLUXER_POSTGRES_PREPARED_STATEMENTS');
 	if (config.env !== 'production' || config.database.backend !== 'postgres') {
 		return;
 	}
@@ -406,6 +417,9 @@ function normalizeConfig(config: MasterConfig): MasterConfig {
 	);
 	validatePostgresConfig(config);
 	validateApiWorkerConfig(config);
+	assertIntegerInRange(config.services.api.max_inflight_requests, 'FLUXER_API_MAX_INFLIGHT_REQUESTS', 1, 100_000);
+	assertIntegerInRange(config.services.api.headers_timeout_ms, 'FLUXER_API_HEADERS_TIMEOUT_MS', 1_000, 3_600_000);
+	assertIntegerInRange(config.services.api.request_timeout_ms, 'FLUXER_API_REQUEST_TIMEOUT_MS', 1_000, 3_600_000);
 	requireString(config.domain.base_domain, 'FLUXER_BASE_DOMAIN');
 	requireString(config.auth.sudo_mode_secret, 'FLUXER_SUDO_MODE_SECRET');
 	requireString(config.auth.connection_initiation_secret, 'FLUXER_CONNECTION_INITIATION_SECRET');
@@ -423,6 +437,36 @@ function normalizeConfig(config: MasterConfig): MasterConfig {
 	return config;
 }
 
+function applyPublicPort(config: MasterConfig, endpoints: DerivedEndpoints): MasterConfig {
+	const {base_domain, public_port} = config.domain;
+	const normalize = (url: string) => normalizePublicEndpoint(url, base_domain, public_port);
+	const normalizedEndpoints = {...endpoints};
+	for (const key of Object.keys(normalizedEndpoints) as Array<keyof DerivedEndpoints>) {
+		normalizedEndpoints[key] = normalize(normalizedEndpoints[key]);
+	}
+	return {
+		...config,
+		endpoints: normalizedEndpoints,
+		services: {
+			...config.services,
+			media_proxy: {
+				...config.services.media_proxy,
+				upload_relay: {
+					...config.services.media_proxy.upload_relay,
+					endpoint: normalize(config.services.media_proxy.upload_relay.endpoint),
+				},
+			},
+		},
+		auth: {
+			...config.auth,
+			passkeys: {
+				...config.auth.passkeys,
+				additional_allowed_origins: config.auth.passkeys.additional_allowed_origins.map(normalize),
+			},
+		},
+	};
+}
+
 export async function loadConfig(): Promise<MasterConfig> {
 	if (cachedConfig) {
 		return cachedConfig;
@@ -431,7 +475,7 @@ export async function loadConfig(): Promise<MasterConfig> {
 	const normalized = normalizeConfig(merged);
 	const derived = deriveEndpointsFromDomain(normalized.domain);
 	const endpoints = {...derived, ...(normalized.endpoint_overrides ?? {})};
-	cachedConfig = {...normalized, endpoints};
+	cachedConfig = applyPublicPort(normalized, endpoints);
 	return cachedConfig;
 }
 

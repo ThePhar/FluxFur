@@ -3,14 +3,12 @@
 import {SoundType} from '@app/features/notification/utils/SoundUtils';
 import {Logger} from '@app/features/platform/utils/AppLogger';
 import * as SoundCommands from '@app/features/ui/commands/SoundCommands';
-import ScreenShareCodecNegotiation, {
-	type CodecNegotiationSelection,
-} from '@app/features/voice/engine/ScreenShareCodecNegotiation';
+import ScreenShareCodecNegotiation from '@app/features/voice/engine/ScreenShareCodecNegotiation';
 import ScreenSharePublicationMigration from '@app/features/voice/engine/ScreenSharePublicationMigration';
 import {getEffectiveAudioState} from '@app/features/voice/engine/VoiceEffectiveAudioState';
 import {noteLocalVoiceActivity} from '@app/features/voice/engine/VoiceIdleActivityBridge';
 import {voiceMediaGraphStore} from '@app/features/voice/engine/VoiceMediaGraphStore';
-import {playSelfJoinChimeOnce} from '@app/features/voice/engine/VoiceSelfJoinChime';
+import {playSelfJoinChimeOnce, startVoiceJoinChimeSequence} from '@app/features/voice/engine/VoiceSelfJoinChime';
 import {
 	cancelDeferredStopWatchingStreamKey,
 	deferStopWatchingStreamKey,
@@ -92,8 +90,7 @@ export interface RoomEventDependencies {
 			didChangeLocalState: boolean,
 			publication?: LocalTrackPublication,
 		) => void;
-		isScreenShareCodecRepublishInFlight: () => boolean;
-		renegotiateActiveScreenShareCodec: (room: Room, selection: CodecNegotiationSelection) => Promise<unknown>;
+		isScreenSharePublicationReplaceInFlight: () => boolean;
 	};
 	subscriptions: {
 		isScreenShareSubscribed: (participantIdentity: string) => boolean;
@@ -243,17 +240,7 @@ export function bindRoomEvents(
 	};
 	const bindCodecNegotiation = (): void => {
 		codecNegotiationDisposer?.();
-		codecNegotiationDisposer = ScreenShareCodecNegotiation.bind(room, {
-			onSelectedCodecChanged: (selection) => {
-				void dependencies.screenShare.renegotiateActiveScreenShareCodec(room, selection).catch((error) => {
-					logger.warn('Failed to apply negotiated screen share codec', {
-						error,
-						codec: selection.codec,
-						reason: selection.reason,
-					});
-				});
-			},
-		});
+		codecNegotiationDisposer = ScreenShareCodecNegotiation.bind(room);
 	};
 	const unbindCodecNegotiation = (): void => {
 		ScreenShareCodecNegotiation.dispose();
@@ -325,9 +312,15 @@ export function bindRoomEvents(
 			dependencies.permissions.applyDeafen(room, getEffectiveAudioState().effectiveDeaf);
 			dependencies.connection.markConnected();
 			await callbacks.onConnected();
-			if (!suppressSelfJoinSound) {
-				const {connectionId} = parseVoiceParticipantIdentity(room.localParticipant.identity);
-				playSelfJoinChimeOnce(connectionId || null, 'livekit-room');
+			const {userId, connectionId} = parseVoiceParticipantIdentity(room.localParticipant.identity);
+			if (userId) {
+				void startVoiceJoinChimeSequence({userId, channelId}, connectionId || null, (signal) =>
+					suppressSelfJoinSound
+						? Promise.resolve(false)
+						: playSelfJoinChimeOnce(connectionId || null, 'livekit-room', signal),
+				);
+			} else if (!suppressSelfJoinSound) {
+				void playSelfJoinChimeOnce(connectionId || null, 'livekit-room');
 			}
 			await dependencies.media.playEntranceSound();
 			if (guildId && channelId) {
@@ -373,7 +366,6 @@ export function bindRoomEvents(
 			bindParticipantSpeakingEvents(room.localParticipant);
 			room.remoteParticipants.forEach((participant) => bindParticipantSpeakingEvents(participant));
 			dependencies.remoteSpeaking.hydrateFromRoom(room);
-			void ScreenShareCodecNegotiation.publishLocalCapabilities(room, 'reconnected');
 			dependencies.permissions.applyDeafen(room, getEffectiveAudioState().effectiveDeaf);
 			dependencies.connection.markReconnected();
 			callbacks.onReconnected();
@@ -545,7 +537,10 @@ export function bindRoomEvents(
 		RoomEvent.LocalTrackUnpublished,
 		guard(attemptId, (pub, p: Participant) => {
 			if (p.isLocal) {
-				if (pub.source === Track.Source.ScreenShare && dependencies.screenShare.isScreenShareCodecRepublishInFlight()) {
+				if (
+					pub.source === Track.Source.ScreenShare &&
+					dependencies.screenShare.isScreenSharePublicationReplaceInFlight()
+				) {
 					dependencies.participants.upsertParticipant(p);
 					return;
 				}

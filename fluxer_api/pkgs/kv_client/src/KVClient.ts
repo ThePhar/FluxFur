@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {createHash} from 'node:crypto';
 import type {IKVPipeline, IKVProvider, IKVSubscription, KVRateLimitResult} from '@pkgs/kv_client/src/IKVProvider';
 import {
 	type IKVLogger,
@@ -15,6 +16,7 @@ import {
 	parseRangeByScoreArguments,
 	parseSetArguments,
 } from '@pkgs/kv_client/src/KVCommandArguments';
+import {runSlotBatches, splitIntoSlotBatches} from '@pkgs/kv_client/src/KVHashSlots';
 import {KVPipeline} from '@pkgs/kv_client/src/KVPipeline';
 import {KVSubscription} from '@pkgs/kv_client/src/KVSubscription';
 import Redis, {Cluster} from 'ioredis';
@@ -222,7 +224,23 @@ tokens = tokens - #urls
 redis.call('SET', bucketKey, cjson.encode({tokens = tokens, lastRefill = lastRefill}), 'EX', 3600)
 return cjson.encode({urls = urls, tokens = #urls})
 `;
+const CLAIM_BULK_DELETION_SCRIPT = `
+local score = redis.call('ZSCORE', KEYS[1], ARGV[1])
+if not score then
+	return 0
+end
+if tonumber(score) > tonumber(ARGV[2]) then
+	return 0
+end
+redis.call('ZADD', KEYS[1], ARGV[3], ARGV[1])
+return 1
+`;
 const REMOVE_BULK_DELETION_SCRIPT = `
+local member = ARGV[1]
+if member ~= '' and redis.call('ZREM', KEYS[1], member) == 1 then
+	redis.call('DEL', KEYS[2])
+	return 1
+end
 local value = redis.call('GET', KEYS[2])
 if not value then
 	return 0
@@ -231,6 +249,8 @@ redis.call('ZREM', KEYS[1], value)
 redis.call('DEL', KEYS[2])
 return 1
 `;
+
+const SCRIPT_SHA_CACHE = new Map<string, string>();
 
 interface ScriptPurgeBatchResult {
 	urls: Array<string>;
@@ -336,7 +356,23 @@ export class KVClient implements IKVProvider {
 	}
 
 	async mget(...keys: Array<string>): Promise<Array<string | null>> {
-		return await this.execute('mget', async () => this.client.mget(...keys));
+		if (keys.length === 0) {
+			return [];
+		}
+		return await this.execute('mget', async () => {
+			const values = new Array<string | null>(keys.length).fill(null);
+			const batches = this.splitBySlot(
+				keys.map((key, index) => ({key, index})),
+				(entry) => entry.key,
+			);
+			await runSlotBatches(batches, async (batch) => {
+				const batchValues = await this.client.mget(...batch.map((entry) => entry.key));
+				for (const [position, entry] of batch.entries()) {
+					values[entry.index] = batchValues[position] ?? null;
+				}
+			});
+			return values;
+		});
 	}
 
 	async mset(...args: Array<string>): Promise<void> {
@@ -344,9 +380,11 @@ export class KVClient implements IKVProvider {
 		if (entries.length === 0) {
 			return;
 		}
-		const pairs = entries.flatMap((entry) => [entry.key, entry.value]);
 		await this.execute('mset', async () => {
-			await this.client.mset(...pairs);
+			const batches = this.splitBySlot(entries, (entry) => entry.key);
+			await runSlotBatches(batches, async (batch) => {
+				await this.client.mset(...batch.flatMap((entry) => [entry.key, entry.value]));
+			});
 		});
 	}
 
@@ -354,7 +392,14 @@ export class KVClient implements IKVProvider {
 		if (keys.length === 0) {
 			return 0;
 		}
-		return await this.execute('del', async () => this.client.del(...keys));
+		return await this.execute('del', async () => {
+			const deleted: Array<number> = [];
+			const batches = this.splitBySlot(keys, (key) => key);
+			await runSlotBatches(batches, async (batch) => {
+				deleted.push(await this.client.del(...batch));
+			});
+			return deleted.reduce((total, count) => total + count, 0);
+		});
 	}
 
 	async exists(key: string): Promise<number> {
@@ -605,13 +650,27 @@ export class KVClient implements IKVProvider {
 		);
 	}
 
-	async removeBulkDeletion(queueKey: string, secondaryKey: string): Promise<boolean> {
+	async claimBulkDeletion(queueKey: string, member: string, maxScore: number, leaseScore: number): Promise<boolean> {
+		const result = await this.executeScript(
+			'claimBulkDeletion',
+			CLAIM_BULK_DELETION_SCRIPT,
+			1,
+			queueKey,
+			member,
+			maxScore,
+			leaseScore,
+		);
+		return Number(result) === 1;
+	}
+
+	async removeBulkDeletion(queueKey: string, secondaryKey: string, member = ''): Promise<boolean> {
 		const result = await this.executeScript(
 			'removeBulkDeletion',
 			REMOVE_BULK_DELETION_SCRIPT,
 			2,
 			queueKey,
 			secondaryKey,
+			member,
 		);
 		return Number(result) === 1;
 	}
@@ -669,6 +728,14 @@ export class KVClient implements IKVProvider {
 		});
 	}
 
+	isClustered(): boolean {
+		return this.config.mode === 'cluster';
+	}
+
+	private splitBySlot<T>(items: ReadonlyArray<T>, keyOf: (item: T) => string): Array<Array<T>> {
+		return splitIntoSlotBatches(items, keyOf, this.isClustered());
+	}
+
 	pipeline(): IKVPipeline {
 		return new KVPipeline({
 			createCommander: () => this.client.pipeline(),
@@ -699,7 +766,18 @@ export class KVClient implements IKVProvider {
 		keyCount: number,
 		...args: Array<string | number>
 	): Promise<unknown> {
-		return await this.execute(command, async () => this.client.eval(script, keyCount, ...args));
+		return await this.execute(command, async () => this.evalCachedScript(script, keyCount, args));
+	}
+
+	private async evalCachedScript(script: string, keyCount: number, args: Array<string | number>): Promise<unknown> {
+		try {
+			return await this.client.evalsha(getScriptSha(script), keyCount, ...args);
+		} catch (error) {
+			if (!isNoScriptError(error)) {
+				throw error;
+			}
+			return await this.client.eval(script, keyCount, ...args);
+		}
 	}
 
 	private async executeJsonScript<T>(
@@ -793,6 +871,23 @@ function normalizeRateLimitResult(result: KVRateLimitResult): KVRateLimitResult 
 		resetAtMs: Number(result.resetAtMs),
 		retryAfterMs: Number(result.retryAfterMs),
 	};
+}
+
+function getScriptSha(script: string): string {
+	const cached = SCRIPT_SHA_CACHE.get(script);
+	if (cached !== undefined) {
+		return cached;
+	}
+	const sha = createHash('sha1').update(script).digest('hex');
+	SCRIPT_SHA_CACHE.set(script, sha);
+	return sha;
+}
+
+function isNoScriptError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	return error.message.includes('NOSCRIPT');
 }
 
 function isTimeoutError(error: unknown): boolean {

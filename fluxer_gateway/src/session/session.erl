@@ -65,6 +65,7 @@
     pending_presences => pending_presence_buffer(),
     guild_connect_inflight => #{guild_id() => non_neg_integer()},
     guild_connect_workers => #{reference() => {guild_id(), non_neg_integer(), pid()}},
+    guild_connect_timers => #{guild_id() => {reference(), reference()}},
     voice_queue => queue:queue(map()),
     voice_queue_timer => reference() | undefined,
     debounce_reactions => boolean(),
@@ -80,7 +81,7 @@ start_link(SessionData) ->
 -spec init(map()) -> {ok, session_state()}.
 init(SessionData) ->
     process_flag(trap_exit, true),
-    erlang:process_flag(fullsweep_after, 0),
+    erlang:process_flag(fullsweep_after, 10),
     State0 = session_init:build_state(SessionData),
     ScheduleStartedAt = gateway_timings:start(),
     session_init:schedule_timers(State0),
@@ -96,6 +97,8 @@ init(SessionData) ->
     {reply, term(), session_state()} | {stop, normal, term(), session_state()}.
 handle_call({token_verify, Token}, _From, State) when is_binary(Token) ->
     session_lifecycle:handle_token_verify(Token, State);
+handle_call({is_staff}, _From, State) ->
+    session_lifecycle:handle_is_staff(State);
 handle_call({heartbeat_ack, Seq}, _From, State) when is_integer(Seq), Seq >= 0 ->
     session_lifecycle:handle_heartbeat_ack(Seq, State);
 handle_call({resume, Seq, SocketPid}, _From, State) when
@@ -223,10 +226,10 @@ handle_info({guild_connect, GuildId, Attempt}, State) when
     session_connection:handle_guild_connect(GuildId, Attempt, State);
 handle_info({guild_connect_result, _, _, _} = Msg, State) ->
     handle_info_guild_connect_result(Msg, State);
-handle_info({guild_connect_timeout, GuildId, Attempt}, State) when
-    is_integer(GuildId), is_integer(Attempt), Attempt >= 0
+handle_info({guild_connect_timeout, GuildId, Attempt, Token}, State) when
+    is_integer(GuildId), is_integer(Attempt), Attempt >= 0, is_reference(Token)
 ->
-    session_connection:handle_guild_connect_timeout(GuildId, Attempt, State);
+    session_connection:handle_guild_connect_timeout(GuildId, Attempt, Token, State);
 handle_info({call_reconnect, ChannelId, Attempt}, State) when
     is_integer(ChannelId), is_integer(Attempt), Attempt >= 0
 ->
@@ -318,7 +321,7 @@ terminate(Reason, State) ->
 
 -spec code_change(term(), session_state(), term()) -> {ok, session_state()}.
 code_change(_OldVsn, State, _Extra) ->
-    erlang:process_flag(fullsweep_after, 0),
+    erlang:process_flag(fullsweep_after, 10),
     erlang:garbage_collect(),
     {ok, State}.
 

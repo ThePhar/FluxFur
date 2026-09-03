@@ -77,7 +77,6 @@ import {
 	getEmailService,
 	getEmbedService,
 	getEntityAssetService,
-	getExpressionAssetPurger,
 	getFavoriteMemeRepository,
 	getGuildAuditLogService,
 	getGuildRepository,
@@ -89,7 +88,6 @@ import {
 	getLimitConfigService,
 	getNcmecSubmissionService,
 	getOAuth2TokenRepository,
-	getPackRepository,
 	getPremiumStateReconciliationQueueService,
 	getPurgeQueue,
 	getRateLimitService,
@@ -215,7 +213,6 @@ export async function initializeWorkerDependencies(snowflakeService: ISnowflakeS
 	await ensureVirusScanInitialized();
 	const virusScanService = getVirusScanServiceInstance();
 	const rateLimitService = getRateLimitService();
-	const packRepository = getPackRepository();
 	const emailService = getEmailService();
 	const workerService = getWorkerService();
 	const guildAuditLogService = getGuildAuditLogService();
@@ -261,7 +258,6 @@ export async function initializeWorkerDependencies(snowflakeService: ISnowflakeS
 	const apiContext = createApiContext();
 	const {channelService, guildService, inviteService} = createGuildStackServices({
 		apiContext,
-		packRepository,
 		channelRepository,
 		userRepository,
 		guildRepository,
@@ -271,7 +267,6 @@ export async function initializeWorkerDependencies(snowflakeService: ISnowflakeS
 		avatarService,
 		entityAssetService,
 		assetDeletionQueue,
-		expressionAssetPurger: getExpressionAssetPurger(),
 		userCacheService,
 		limitConfigService,
 		embedService,
@@ -357,7 +352,7 @@ export async function initializeWorkerDependencies(snowflakeService: ISnowflakeS
 export async function shutdownWorkerDependencies(deps: WorkerDependencies): Promise<void> {
 	Logger.info('Shutting down worker dependencies...');
 	if (deps.voiceReconciliationWorker !== null) {
-		deps.voiceReconciliationWorker.stop();
+		await deps.voiceReconciliationWorker.stop();
 	}
 	Logger.info('Worker dependencies shut down successfully');
 }

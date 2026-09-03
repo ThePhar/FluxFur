@@ -12,7 +12,7 @@
 		"build": "node scripts/build.mjs",
 		"set-channel": "../tools/ci/run.sh build-desktop --step set_build_channel",
 		"test": "cargo test --manifest-path native/rust/Cargo.toml",
-		"typecheck": "tsgo --noEmit"
+		"typecheck": "pnpm set-channel && tsgo --noEmit"
 	},
 	"dependencies": {
 		"@fluxer/voice_engine_v2": "workspace:*",
@@ -26,7 +26,8 @@
 		"@types/node": "24.10.9",
 		"@typescript/native-preview": "7.0.0-dev.20260130.1",
 		"electron": "42.10.0",
-		"electron-builder": "26.9.0",
+		"electron-builder": "27.0.0-alpha.7",
+		"electron-builder-squirrel-windows": "27.0.0-alpha.7",
 		"esbuild": "0.27.2",
 		"typescript": "5.9.3"
 	},

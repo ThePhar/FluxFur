@@ -81,7 +81,7 @@ init(Req, _Opts) ->
 
 -spec websocket_init(state()) -> ws_result().
 websocket_init(#{version := 1} = State) ->
-    case gateway_handler_rate_limit:acquire_connection(maps:get(peer_ip, State, undefined)) of
+    case gateway_ip_connections:acquire(maps:get(peer_ip, State, undefined)) of
         ok ->
             do_websocket_init(State#{connection_acquired => true});
         {error, too_many_connections} ->
@@ -168,7 +168,7 @@ terminate_with_state(_) ->
 
 -spec maybe_release_connection(state()) -> ok.
 maybe_release_connection(#{connection_acquired := true} = State) ->
-    gateway_handler_rate_limit:note_disconnect(State);
+    gateway_ip_connections:note_disconnect(State);
 maybe_release_connection(_) ->
     ok.
 
@@ -292,6 +292,13 @@ dispatch_after_rate_limit({rate_limited, RLState}, _OpAtom, _Payload) ->
 
 -spec extract_client_ip(cowboy_req:req()) -> binary().
 extract_client_ip(Req) ->
+    case fluxer_gateway_env:get(trust_client_ip_header) of
+        true -> extract_trusted_client_ip(Req);
+        _ -> peer_ip_to_binary(cowboy_req:peer(Req))
+    end.
+
+-spec extract_trusted_client_ip(cowboy_req:req()) -> binary().
+extract_trusted_client_ip(Req) ->
     ClientIpHeader = client_ip_header(),
     case cowboy_req:header(ClientIpHeader, Req) of
         undefined -> peer_ip_to_binary(cowboy_req:peer(Req));

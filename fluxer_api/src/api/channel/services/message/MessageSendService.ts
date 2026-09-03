@@ -94,6 +94,11 @@ interface MessageSendServiceDeps {
 	directMessageSpamMitigationService: DirectMessageSpamMitigationService;
 }
 
+interface SendMessageResult {
+	message: Message;
+	authChannel: AuthenticatedChannel;
+}
+
 interface SendMentionData {
 	flags: number;
 	mentionUserIds: Array<UserID>;
@@ -233,7 +238,6 @@ export class MessageSendService {
 		user,
 		checkPermission,
 		hasPermission,
-		channelId,
 	}: {
 		guild: GuildResponse | null;
 		member: GuildMemberResponse | null;
@@ -242,7 +246,6 @@ export class MessageSendService {
 		user: User;
 		checkPermission: (permission: bigint) => Promise<void>;
 		hasPermission: (permission: bigint) => Promise<boolean>;
-		channelId: ChannelID;
 	}): Promise<{
 		canEmbedLinks: boolean;
 		canMentionEveryone: boolean;
@@ -281,7 +284,7 @@ export class MessageSendService {
 			}
 			await this.deps.channelAuthService.checkGuildVerification({user, guild, member});
 		} else if (channel.type === ChannelTypes.DM || channel.type === ChannelTypes.GROUP_DM) {
-			await this.deps.channelAuthService.validateDMSendPermissions({channelId, userId: user.id});
+			await this.deps.channelAuthService.validateDMSendPermissions({channel, userId: user.id});
 		}
 		return {canEmbedLinks, canMentionEveryone, canAttachFiles};
 	}
@@ -315,7 +318,6 @@ export class MessageSendService {
 			user,
 			checkPermission,
 			hasPermission,
-			channelId,
 		});
 		this.deps.validationService.ensureTextChannel(channel);
 		const isForwardMessage = this.ensureMessageRequestIsValid({user, data, guildFeatures: guild?.features ?? null});
@@ -783,7 +785,7 @@ export class MessageSendService {
 		channelId: ChannelID;
 		data: MessageRequest;
 		requestCache: RequestCache;
-	}): Promise<Message> {
+	}): Promise<SendMessageResult> {
 		const authChannel = await this.deps.channelAuthService.getChannelAuthenticated({
 			userId: user.id,
 			channelId,
@@ -792,7 +794,8 @@ export class MessageSendService {
 			throw InputValidationError.fromCode('content', ValidationErrorCodes.MUST_START_SESSION_BEFORE_SENDING);
 		}
 		if (isPersonalNotesChannel({userId: user.id, channelId})) {
-			return this.sendPersonalNoteMessage({user, channelId, data, requestCache});
+			const message = await this.sendPersonalNoteMessage({authChannel, user, channelId, data, requestCache});
+			return {message, authChannel};
 		}
 		const {channel, guild, checkPermission, hasPermission, member} = authChannel;
 		const {canEmbedLinks, canMentionEveryone, canAttachFiles} = await this.checkMessageSendPermissions({
@@ -803,7 +806,6 @@ export class MessageSendService {
 			user,
 			checkPermission,
 			hasPermission,
-			channelId,
 		});
 		const needsSlowmodeCheck = guild && channel.rateLimitPerUser && channel.rateLimitPerUser > 0 && !user.isBot;
 		const slowmodeBypass = needsSlowmodeCheck ? await hasPermission(Permissions.BYPASS_SLOWMODE) : false;
@@ -820,7 +822,7 @@ export class MessageSendService {
 			expectedChannelId: channelId,
 		});
 		if (existingMessage) {
-			return existingMessage;
+			return {message: existingMessage, authChannel};
 		}
 		const referenceContext = await this.resolveReferenceContext({
 			data,
@@ -1031,7 +1033,7 @@ export class MessageSendService {
 		if (searchIndexOptions && !suppressDmRecipientDelivery) {
 			void this.deps.searchService.indexMessage(message, user.isBot, searchIndexOptions);
 		}
-		return message;
+		return {message, authChannel};
 	}
 
 	async sendWebhookMessage({
@@ -1174,6 +1176,7 @@ export class MessageSendService {
 			embeds: data.embeds,
 			attachments: this.attachmentsToProcess(data.attachments),
 			attachmentUploadUserId: this.resolveWebhookAttachmentUploadUserId(webhook, data.attachments),
+			stickerIds: data.sticker_ids ? data.sticker_ids.flatMap((stickerId) => createStickerID(stickerId)) : undefined,
 			messageReference,
 			messageSnapshots,
 			guildId: channel.guildId,
@@ -1191,7 +1194,7 @@ export class MessageSendService {
 		await this.deps.mentionService.handleMentionTasks({
 			guildId: channel.guildId,
 			message,
-			authorId: createUserID(0n),
+			authorId: createUserID(BigInt(webhook.id)),
 			mentionHere: mentionData?.mentionHere ?? false,
 		});
 		await this.deps.dispatchService.dispatchMessageCreate({
@@ -1270,17 +1273,19 @@ export class MessageSendService {
 	}
 
 	private async sendPersonalNoteMessage({
+		authChannel,
 		user,
 		channelId,
 		data,
 		requestCache,
 	}: {
+		authChannel: AuthenticatedChannel;
 		user: User;
 		channelId: ChannelID;
 		data: MessageRequest;
 		requestCache: RequestCache;
 	}): Promise<Message> {
-		const {channel} = await this.deps.channelAuthService.getChannelAuthenticated({userId: user.id, channelId});
+		const {channel} = authChannel;
 		const isForwardMessage = this.ensureMessageRequestIsValid({user, data, guildFeatures: null});
 		this.deps.embedAttachmentResolver.validateAttachmentReferences({
 			embeds: data.embeds,

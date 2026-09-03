@@ -290,13 +290,10 @@ import {
 	type SuspiciousIpRow,
 } from './database/types/RiskTypes';
 import {
-	EXPRESSION_PACK_COLUMNS,
-	type ExpressionPackRow,
 	FAVORITE_MEME_COLUMNS,
 	type FavoriteMemeRow,
 	NOTE_COLUMNS,
 	type NoteRow,
-	type PackInstallationRow,
 	PUSH_SUBSCRIPTION_COLUMNS,
 	type PushSubscriptionRow,
 	RECENT_MENTION_COLUMNS,
@@ -305,8 +302,6 @@ import {
 	type RelationshipRow,
 	SAVED_MESSAGE_COLUMNS,
 	type SavedMessageRow,
-	SCHEDULED_MESSAGE_COLUMNS,
-	type ScheduledMessageRow,
 	USER_BY_EMAIL_COLUMNS,
 	USER_BY_LAST_ACTIVE_IP_COLUMNS,
 	USER_BY_LAST_ACTIVE_IP_TRUST_KEY_COLUMNS,
@@ -684,11 +679,6 @@ export const SavedMessages = defineTable<SavedMessageRow, 'user_id' | 'message_i
 	columns: SAVED_MESSAGE_COLUMNS,
 	primaryKey: ['user_id', 'message_id'],
 });
-export const ScheduledMessages = defineTable<ScheduledMessageRow, 'user_id' | 'scheduled_message_id'>({
-	name: 'scheduled_messages',
-	columns: SCHEDULED_MESSAGE_COLUMNS,
-	primaryKey: ['user_id', 'scheduled_message_id'],
-});
 export const PushSubscriptions = defineTable<PushSubscriptionRow, 'user_id' | 'subscription_id'>({
 	name: 'push_subscriptions',
 	columns: PUSH_SUBSCRIPTION_COLUMNS,
@@ -1010,25 +1000,6 @@ export const FavoriteMemesByMemeId = defineTable<FavoriteMemesByMemeIdRow, 'meme
 	name: 'favorite_memes_by_meme_id',
 	columns: FAVORITE_MEMES_BY_MEME_ID_COLUMNS,
 	primaryKey: ['meme_id', 'user_id'],
-});
-export const ExpressionPacks = defineTable<ExpressionPackRow, 'pack_id'>({
-	name: 'expression_packs',
-	columns: EXPRESSION_PACK_COLUMNS,
-	primaryKey: ['pack_id'],
-});
-export const ExpressionPacksByCreator = defineTable<ExpressionPackRow, 'creator_id' | 'pack_id'>({
-	name: 'expression_packs_by_creator',
-	columns: EXPRESSION_PACK_COLUMNS,
-	primaryKey: ['creator_id', 'pack_id'],
-	partitionKey: ['creator_id'],
-});
-const PACK_INSTALLATION_COLUMNS = ['user_id', 'pack_id', 'pack_type', 'installed_at'] as const satisfies ReadonlyArray<
-	keyof PackInstallationRow
->;
-export const PackInstallations = defineTable<PackInstallationRow, 'user_id' | 'pack_id'>({
-	name: 'pack_installations',
-	columns: PACK_INSTALLATION_COLUMNS,
-	primaryKey: ['user_id', 'pack_id'],
 });
 
 interface InvitesByChannelRow {

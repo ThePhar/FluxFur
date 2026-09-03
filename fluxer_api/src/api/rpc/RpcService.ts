@@ -4,7 +4,12 @@ import {createHash} from 'node:crypto';
 import {AUTOMATIC_VOICE_REGION_ID, ChannelTypes, MessageTypes} from '@fluxer/constants/src/ChannelConstants';
 import type {LimitKey} from '@fluxer/constants/src/LimitConfigMetadata';
 import {MAX_PRIVATE_CHANNELS_PER_USER} from '@fluxer/constants/src/LimitConstants';
-import {GroupDmAddPermissionFlags, IncomingCallFlags, UserPremiumTypes} from '@fluxer/constants/src/UserConstants';
+import {
+	GroupDmAddPermissionFlags,
+	IncomingCallFlags,
+	UserFlags,
+	UserPremiumTypes,
+} from '@fluxer/constants/src/UserConstants';
 import {RateLimitError} from '@fluxer/errors/src/domains/core/RateLimitError';
 import {UnauthorizedError} from '@fluxer/errors/src/domains/core/UnauthorizedError';
 import {UnknownGuildError} from '@fluxer/errors/src/domains/guild/UnknownGuildError';
@@ -80,7 +85,7 @@ import {UserSettings} from '../models/UserSettings';
 import type {WebAuthnCredential} from '../models/WebAuthnCredential';
 import type {BotAuthService} from '../oauth/BotAuthService';
 import {sendApnsPush} from '../push/ApnsPushService';
-import {encodeReadStatesResponseProto, mapReadStateResponse} from '../read_state/ReadStateResponseMapper';
+import {mapReadStateResponse} from '../read_state/ReadStateResponseMapper';
 import type {ReadStateService} from '../read_state/ReadStateService';
 import type {IUserRepository} from '../user/IUserRepository';
 import {PaymentRepository} from '../user/repositories/PaymentRepository';
@@ -1164,9 +1169,6 @@ export class RpcService {
 			read_states: timeRpcStepSync(responseBuildSteps, 'map_read_states', () =>
 				userData.readStates.map(mapReadStateResponse),
 			),
-			read_state_proto: timeRpcStepSync(responseBuildSteps, 'encode_read_state_proto', () =>
-				encodeReadStatesResponseProto(userData.readStates),
-			),
 			guilds,
 			private_channels: privateChannels,
 			relationships,
@@ -1189,6 +1191,9 @@ export class RpcService {
 			version,
 		};
 		timings.record('build_session_response_payload', responseBuildStartedAtNs, responseBuildSteps);
+		if ((user.flags & UserFlags.STAFF) === 0n) {
+			return responsePayload;
+		}
 		return {
 			_timings: timings.finalize(),
 			...responsePayload,
@@ -1352,7 +1357,9 @@ export class RpcService {
 		afterUserId?: UserID;
 		limit?: number;
 	}): Promise<RpcResponseGuildCollectionData> {
-		await this.getGuildOrThrow(guildId);
+		if (!afterUserId) {
+			await this.getGuildOrThrow(guildId);
+		}
 		const chunkSize = this.resolveGuildCollectionLimit(limit);
 		const members = await this.guildRepository.listMembersPaginated(guildId, chunkSize + 1, afterUserId);
 		const hasMore = members.length > chunkSize;
@@ -1627,9 +1634,16 @@ export class RpcService {
 	}> {
 		const {userIds, guildId} = params;
 		const actualGuildId = guildId === createGuildID(0n) ? null : guildId;
-		const userGuildSettings = await Promise.all(
-			userIds.map((userId) => this.userRepository.findGuildSettings(userId, actualGuildId)),
+		const settled = await allSettledWithConcurrency(userIds, RPC_RESPONSE_MAP_CONCURRENCY, (userId) =>
+			this.userRepository.findGuildSettings(userId, actualGuildId),
 		);
+		const userGuildSettings: Array<UserGuildSettings | null> = [];
+		for (const result of settled) {
+			if (result.status === 'rejected') {
+				throw result.reason;
+			}
+			userGuildSettings.push(result.value);
+		}
 		return {user_guild_settings: userGuildSettings};
 	}
 
@@ -1861,15 +1875,15 @@ export class RpcService {
 
 	private async getUserBlockedIds(params: {userIds: Array<UserID>}): Promise<Record<string, Array<string>>> {
 		const {userIds} = params;
+		const settled = await allSettledWithConcurrency(userIds, RPC_RESPONSE_MAP_CONCURRENCY, (userId) =>
+			this.userRepository.listBlockedUserIds(userId),
+		);
 		const result: Record<string, Array<string>> = {};
-		const relationshipsPromises = userIds.map(async (userId) => {
-			const relationships = await this.userRepository.listRelationships(userId);
-			const blockedIds = relationships.filter((rel) => rel.type === 2).map((rel) => rel.targetUserId.toString());
-			return {userId, blockedIds};
-		});
-		const results = await Promise.all(relationshipsPromises);
-		for (const {userId, blockedIds} of results) {
-			result[userId.toString()] = blockedIds;
+		for (const [index, settledBlockedIds] of settled.entries()) {
+			if (settledBlockedIds.status === 'rejected') {
+				throw settledBlockedIds.reason;
+			}
+			result[userIds[index]!.toString()] = settledBlockedIds.value.map((blockedUserId) => blockedUserId.toString());
 		}
 		return result;
 	}

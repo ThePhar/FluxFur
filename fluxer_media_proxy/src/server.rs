@@ -12,7 +12,7 @@ use crate::{
     request_log::{self, ErrorReason, Stage},
     signing,
     spool::{SpoolError, spool_to_temp},
-    storage::{HeadResult, RelayBody, RelayPutOptions, StorageError, Store, StreamObject},
+    storage::{RelayBody, RelayPutOptions, StorageError, Store, StreamObject},
     timed_semaphore::TimedSemaphore,
     upload_relay,
 };
@@ -20,7 +20,7 @@ use anyhow::Context as _;
 use axum::{
     Router,
     body::{Body, to_bytes},
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, HeaderValue, Method, Request, StatusCode, header},
     middleware,
     response::Response,
@@ -28,6 +28,7 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
+use http_body::Frame;
 use http_body_util::BodyExt;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -35,7 +36,9 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     net::SocketAddr,
+    pin::Pin,
     sync::{Arc, OnceLock},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 use tokio::net::TcpListener;
@@ -48,6 +51,7 @@ struct AppState {
     client: http_client::HttpClient,
     nsfw_client: reqwest::Client,
     transform_cache: Arc<Cache>,
+    external_hints: ExternalHintCache,
     coalescer: Arc<ByteCoalescer>,
     native_transform_admissions: TimedSemaphore,
     native_transforms: TimedSemaphore,
@@ -75,6 +79,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             cfg.transform_cache_max_entry_bytes,
             cfg.transform_cache_ttl_ms,
         )),
+        external_hints: new_external_hint_cache(&cfg),
         coalescer: Arc::new(ByteCoalescer::new()),
         native_transform_admissions: TimedSemaphore::new(transform_admission_capacity(&cfg)),
         native_transforms: TimedSemaphore::new(cfg.max_native_transforms),
@@ -201,7 +206,20 @@ async fn add_security_header_middleware(
     response
 }
 
-async fn metrics_handler() -> Response {
+fn is_loopback_peer(peer: &SocketAddr) -> bool {
+    peer.ip().to_canonical().is_loopback()
+}
+
+async fn metrics_handler(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> Response {
+    if !is_loopback_peer(&peer) {
+        let mut denied = Response::new(Body::from("FORBIDDEN"));
+        *denied.status_mut() = StatusCode::FORBIDDEN;
+        http_headers::add_security_headers(denied.headers_mut());
+        denied
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"));
+        return denied;
+    }
     let mut response = Response::new(Body::from(metrics::render()));
     http_headers::add_security_headers(response.headers_mut());
     response.headers_mut().insert(
@@ -996,6 +1014,164 @@ fn asset_filename_hint(asset: &ParsedAssetPath) -> String {
     format!("{hash}.{}", asset.original_ext.name())
 }
 
+const EXTERNAL_SNIFF_PREFIX_BYTES: usize = 8192;
+const EXTERNAL_HINT_CACHE_ENTRIES: u64 = 4096;
+
+type ExternalHintCache = moka::sync::Cache<String, ExternalHint>;
+
+#[derive(Clone)]
+struct ExternalHint {
+    url: String,
+    content_type: String,
+    source_format: Option<AssetExtension>,
+}
+
+fn new_external_hint_cache(cfg: &Config) -> ExternalHintCache {
+    moka::sync::Cache::builder()
+        .max_capacity(EXTERNAL_HINT_CACHE_ENTRIES)
+        .time_to_live(Duration::from_millis(cfg.transform_cache_ttl_ms.max(1)))
+        .build()
+}
+
+fn external_sniffed_content_type(data: &[u8], filename: &str, content_type: String) -> String {
+    let prefix = &data[..data.len().min(EXTERNAL_SNIFF_PREFIX_BYTES)];
+    if mime::sniff(prefix).mime == "image/svg+xml" {
+        return "image/svg+xml".to_owned();
+    }
+    if content_type_is_trustworthy(&content_type) {
+        return content_type;
+    }
+    mime::detect(prefix, filename, Some(&content_type))
+}
+
+fn external_hint(url: &str, filename: &str, content_type: &str, data: &[u8]) -> ExternalHint {
+    let content_type = external_sniffed_content_type(data, filename, content_type.to_owned());
+    let source_format = if extension_from_mime(mime::sniff(data).mime) == Some(AssetExtension::Apng)
+    {
+        Some(AssetExtension::Apng)
+    } else {
+        extension_from_mime(&content_type).or_else(|| image_extension_from_filename(filename))
+    };
+    ExternalHint {
+        url: url.to_owned(),
+        content_type,
+        source_format,
+    }
+}
+
+fn external_cached_transform(
+    app: &Arc<AppState>,
+    url: &str,
+    method: &Method,
+    params: &HashMap<String, String>,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let hint = app.external_hints.get(url)?;
+    let explicit_requested_format = explicit_output_format(params).ok()?;
+    let width = parse_optional_dimension_param(params, "width").ok()?;
+    let height = parse_optional_dimension_param(params, "height").ok()?;
+    let animated = animated_param(params, false);
+    let filename = url_filename(&hint.url);
+    let (format, quality, response_content_type) = match mime::category(&hint.content_type) {
+        Some(mime::Category::Video) => {
+            let format = output_format::coerce_unsupported_format(explicit_requested_format?);
+            let quality = params
+                .get("quality")
+                .cloned()
+                .unwrap_or_else(|| "high".to_owned());
+            (format, quality, format.mime().to_owned())
+        }
+        Some(mime::Category::Image) => {
+            let requested_format = explicit_requested_format.unwrap_or_else(|| {
+                external_default_output_extension(&filename, &hint.content_type)
+            });
+            let requested_supported_format =
+                output_format::coerce_unsupported_format(requested_format);
+            let format = effective_animated_image_output_format(
+                hint.source_format,
+                requested_supported_format,
+                animated,
+            );
+            let quality = params.get("quality").cloned().unwrap_or_else(|| {
+                default_transform_quality(
+                    format,
+                    animated,
+                    transform_static_quality_default(hint.source_format),
+                )
+                .to_owned()
+            });
+            let response_content_type = transform_response_content_type(
+                explicit_requested_format,
+                requested_format,
+                format,
+                &hint.content_type,
+            )
+            .to_owned();
+            (format, quality, response_content_type)
+        }
+        _ => return None,
+    };
+    let cached = app
+        .transform_cache
+        .get(&transform_cache_key(TransformCacheKeyInput {
+            route: TransformRoute::External,
+            cache_identity: &hint.url,
+            width,
+            height,
+            format,
+            quality: &quality,
+            animated,
+            effort: None,
+        }))?;
+    metrics::GLOBAL
+        .transform_cache_hits
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let disposition = content_disposition_header(
+        &response_content_type,
+        bool_param(params, "download", false),
+        Some(&filename),
+    );
+    Some(media_response(
+        method.clone(),
+        cached,
+        &response_content_type,
+        headers.get(header::RANGE).and_then(|v| v.to_str().ok()),
+        Some(disposition),
+    ))
+}
+
+async fn external_head_passthrough(
+    app: &AppState,
+    url: &str,
+    params: &HashMap<String, String>,
+) -> Option<Response> {
+    let fetched = fetch_external_head(app, url).await.ok()?;
+    if fetched.status != StatusCode::OK || is_svg_content_type(&fetched.content_type) {
+        return None;
+    }
+    let total_len = usize::try_from(fetched.content_length?).ok()?;
+    if total_len > constants::MAX_MEDIA_PROXY_BYTES {
+        return None;
+    }
+    let filename = url_filename(&fetched.url);
+    let content_type = if content_type_is_trustworthy(&fetched.content_type) {
+        fetched.content_type
+    } else {
+        mime::detect(&[], &filename, Some(&fetched.content_type))
+    };
+    let disposition = content_disposition_header(
+        &content_type,
+        bool_param(params, "download", false),
+        Some(&filename),
+    );
+    Some(passthrough_head_response(
+        &content_type,
+        total_len,
+        None,
+        Some(disposition),
+    ))
+}
+
 async fn serve_external(
     app: &Arc<AppState>,
     method: Method,
@@ -1028,6 +1204,18 @@ async fn serve_external(
         .filter(|rv| !rv.is_empty() && rv.bytes().all(|b| b.is_ascii_graphic()));
     let forward_range = if wants_transform { None } else { client_range };
     let allow_stream = !wants_transform;
+    if wants_transform
+        && let Some(cached) = external_cached_transform(app, &url, &method, params, headers)
+    {
+        return cached;
+    }
+    if method == Method::HEAD
+        && !wants_transform
+        && client_range.is_none()
+        && let Some(response) = external_head_passthrough(app, &url, params).await
+    {
+        return response;
+    }
     let mut fetched = match fetch_external_with_range(app, &url, forward_range, allow_stream).await
     {
         Ok(fetched) if fetched.status.is_success() => fetched,
@@ -1117,43 +1305,30 @@ async fn serve_external(
         url: fetched_url,
         body,
         content_type,
+        content_length,
         ..
     } = fetched;
     let data = match body {
-        ExternalBody::Streaming {
-            response,
-            content_length,
-        } if client_range.is_none() => {
+        ExternalBody::Streaming { response, prefix } => {
+            let content_type = external_sniffed_content_type(&prefix, &filename, content_type);
             let disposition =
                 content_disposition_header(&content_type, requested_download, Some(&filename));
             return external_streaming_response(
                 method,
                 response,
+                prefix,
                 content_length,
                 &content_type,
                 Some(disposition),
+                &fetched_url,
             );
         }
-        body => match body.into_buffered(&fetched_url).await {
-            Ok(data) => data,
-            Err(ExternalFetchError::PayloadTooLarge) => {
-                return text_with_source(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "Payload Too Large",
-                    "external_payload_too_large",
-                    &fetched_url,
-                );
-            }
-            Err(err) => {
-                return text_with_source(
-                    StatusCode::BAD_GATEWAY,
-                    "Bad Gateway",
-                    "external_fetch_failed",
-                    format!("url={fetched_url} err={err:?}"),
-                );
-            }
-        },
+        ExternalBody::Buffered(data) => data,
     };
+    app.external_hints.insert(
+        url,
+        external_hint(&fetched_url, &filename, &content_type, &data),
+    );
     serve_bytes_or_transform(
         app,
         ServeBytesRequest {
@@ -1175,6 +1350,7 @@ struct FetchedExternal {
     status: StatusCode,
     body: ExternalBody,
     content_type: String,
+    content_length: Option<u64>,
     content_range: Option<String>,
 }
 
@@ -1182,7 +1358,7 @@ enum ExternalBody {
     Buffered(Bytes),
     Streaming {
         response: reqwest::Response,
-        content_length: u64,
+        prefix: Bytes,
     },
 }
 
@@ -1190,30 +1366,97 @@ impl ExternalBody {
     async fn into_buffered(self, url: &str) -> Result<Bytes, ExternalFetchError> {
         match self {
             Self::Buffered(data) => Ok(data),
-            Self::Streaming { response, .. } => buffer_external_response(response, url).await,
+            Self::Streaming { response, prefix } => {
+                buffer_external_response(response, prefix, url).await
+            }
         }
     }
 }
 
-fn external_stream_length(
-    allow_stream: bool,
-    content_length: Option<u64>,
-    content_type: &str,
-) -> Option<u64> {
-    if !allow_stream {
-        return None;
+fn external_should_stream(allow_stream: bool, content_type: &str) -> bool {
+    allow_stream && !is_svg_content_type(content_type)
+}
+
+fn external_source_is_svg(prefix: &[u8], filename: &str, content_type: &str) -> bool {
+    image_extension_from_filename(filename) == Some(AssetExtension::Svg)
+        || is_svg_content_type(&external_sniffed_content_type(
+            prefix,
+            filename,
+            content_type.to_owned(),
+        ))
+}
+
+#[derive(Debug)]
+struct ExternalStreamOverrun;
+
+impl std::fmt::Display for ExternalStreamOverrun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("external stream exceeded the media proxy size cap")
     }
-    let len = content_length?;
-    if len > constants::MAX_MEDIA_PROXY_BYTES as u64 {
-        return None;
+}
+
+impl std::error::Error for ExternalStreamOverrun {}
+
+struct ExternalStreamBody {
+    url: String,
+    prefix: Option<Bytes>,
+    upstream: reqwest::Body,
+    remaining: usize,
+}
+
+impl http_body::Body for ExternalStreamBody {
+    type Data = Bytes;
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if let Some(prefix) = this.prefix.take()
+            && !prefix.is_empty()
+        {
+            return Poll::Ready(Some(Ok(Frame::data(prefix))));
+        }
+        let frame = match Pin::new(&mut this.upstream).poll_frame(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(None) => return Poll::Ready(None),
+            Poll::Ready(Some(Err(err))) => return Poll::Ready(Some(Err(err.into()))),
+            Poll::Ready(Some(Ok(frame))) => frame,
+        };
+        let Some(len) = frame.data_ref().map(Bytes::len) else {
+            return Poll::Ready(Some(Ok(frame)));
+        };
+        let Some(remaining) = this.remaining.checked_sub(len) else {
+            this.remaining = 0;
+            warn!(url = %this.url, "external stream exceeded the size cap");
+            metrics::GLOBAL
+                .external_stream_overruns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return Poll::Ready(Some(Err(Box::new(ExternalStreamOverrun))));
+        };
+        this.remaining = remaining;
+        Poll::Ready(Some(Ok(frame)))
     }
-    if !content_type_is_trustworthy(content_type) {
-        return None;
+}
+
+fn external_stream_body(
+    method: &Method,
+    response: reqwest::Response,
+    prefix: Bytes,
+    url: &str,
+) -> Body {
+    if *method == Method::HEAD {
+        return Body::empty();
     }
-    if is_svg_content_type(content_type) {
-        return None;
-    }
-    Some(len)
+    let remaining = constants::MAX_MEDIA_PROXY_BYTES.saturating_sub(prefix.len());
+    let (_, upstream) = http::Response::from(response).into_parts();
+    Body::new(ExternalStreamBody {
+        url: url.to_owned(),
+        prefix: Some(prefix),
+        upstream,
+        remaining,
+    })
 }
 
 fn external_partial_response(
@@ -1222,14 +1465,16 @@ fn external_partial_response(
     disposition: Option<String>,
 ) -> Response {
     let FetchedExternal {
+        url,
         body,
         content_type,
+        content_length,
         content_range,
         ..
     } = fetched;
     let (body, body_len) = match body {
         ExternalBody::Buffered(data) => {
-            let body_len = data.len() as u64;
+            let body_len = Some(data.len() as u64);
             let body = if method == Method::HEAD {
                 Body::empty()
             } else {
@@ -1237,29 +1482,26 @@ fn external_partial_response(
             };
             (body, body_len)
         }
-        ExternalBody::Streaming {
-            response,
+        ExternalBody::Streaming { response, prefix } => (
+            external_stream_body(&method, response, prefix, &url),
             content_length,
-        } => {
-            let body = if method == Method::HEAD {
-                Body::empty()
-            } else {
-                Body::from_stream(response.bytes_stream())
-            };
-            (body, content_length)
-        }
+        ),
     };
     let mut response = Response::new(body);
     *response.status_mut() = StatusCode::PARTIAL_CONTENT;
     http_headers::add_media_headers(
         response.headers_mut(),
-        usize::try_from(body_len).unwrap_or(constants::MAX_MEDIA_PROXY_BYTES),
+        body_len
+            .and_then(|len| usize::try_from(len).ok())
+            .unwrap_or(constants::MAX_MEDIA_PROXY_BYTES),
         &content_type,
         None,
     );
-    response
-        .headers_mut()
-        .insert(header::CONTENT_LENGTH, HeaderValue::from(body_len));
+    if let Some(body_len) = body_len {
+        response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(body_len));
+    }
     if let Some(cr) = content_range.as_deref()
         && let Ok(value) = HeaderValue::from_str(cr)
     {
@@ -1278,26 +1520,28 @@ fn external_partial_response(
 fn external_streaming_response(
     method: Method,
     response: reqwest::Response,
-    content_length: u64,
+    prefix: Bytes,
+    content_length: Option<u64>,
     content_type: &str,
     disposition: Option<String>,
+    url: &str,
 ) -> Response {
-    let body = if method == Method::HEAD {
-        Body::empty()
-    } else {
-        Body::from_stream(response.bytes_stream())
-    };
+    let body = external_stream_body(&method, response, prefix, url);
     let mut http_response = Response::new(body);
     *http_response.status_mut() = StatusCode::OK;
     http_headers::add_media_headers(
         http_response.headers_mut(),
-        usize::try_from(content_length).unwrap_or(constants::MAX_MEDIA_PROXY_BYTES),
+        content_length
+            .and_then(|len| usize::try_from(len).ok())
+            .unwrap_or(constants::MAX_MEDIA_PROXY_BYTES),
         content_type,
         None,
     );
-    http_response
-        .headers_mut()
-        .insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
+    if let Some(content_length) = content_length {
+        http_response
+            .headers_mut()
+            .insert(header::CONTENT_LENGTH, HeaderValue::from(content_length));
+    }
     if let Some(disposition) = disposition
         && let Ok(value) = HeaderValue::from_str(&disposition)
     {
@@ -1320,14 +1564,31 @@ async fn fetch_external(app: &AppState, url: &str) -> Result<FetchedExternal, Ex
     fetch_external_with_range(app, url, None, false).await
 }
 
+async fn fetch_external_head(
+    app: &AppState,
+    url: &str,
+) -> Result<FetchedExternal, ExternalFetchError> {
+    fetch_external_timed(app, url, Method::HEAD, None, false).await
+}
+
 async fn fetch_external_with_range(
     app: &AppState,
     url: &str,
     range: Option<&str>,
     allow_stream: bool,
 ) -> Result<FetchedExternal, ExternalFetchError> {
+    fetch_external_timed(app, url, Method::GET, range, allow_stream).await
+}
+
+async fn fetch_external_timed(
+    app: &AppState,
+    url: &str,
+    method: Method,
+    range: Option<&str>,
+    allow_stream: bool,
+) -> Result<FetchedExternal, ExternalFetchError> {
     let start_ms = metrics::now_ms();
-    let result = fetch_external_inner(app, url, range, allow_stream).await;
+    let result = fetch_external_inner(app, url, method, range, allow_stream).await;
     request_log::record_stage(Stage::Fetch, (metrics::now_ms() - start_ms).max(0) as u64);
     result
 }
@@ -1335,6 +1596,7 @@ async fn fetch_external_with_range(
 async fn fetch_external_inner(
     app: &AppState,
     url: &str,
+    method: Method,
     range: Option<&str>,
     allow_stream: bool,
 ) -> Result<FetchedExternal, ExternalFetchError> {
@@ -1353,7 +1615,7 @@ async fn fetch_external_inner(
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return Err(ExternalFetchError::BlockedUrl);
         }
-        let mut request = app.client.get(&current_url);
+        let mut request = app.client.request(method.clone(), &current_url);
         if let Some(rv) = range {
             request = request.header(header::RANGE, format!("bytes={rv}"));
         }
@@ -1378,59 +1640,96 @@ async fn fetch_external_inner(
                 })?;
             continue;
         }
-        let content_type = response
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or("application/octet-stream")
-            .to_owned();
-        let content_range = response
-            .headers()
-            .get(header::CONTENT_RANGE)
-            .and_then(|value| value.to_str().ok())
-            .map(ToOwned::to_owned);
-        if let Some(len) = response.content_length()
-            && len > constants::MAX_MEDIA_PROXY_BYTES as u64
-        {
-            warn!(url = %current_url, len, "external payload too large");
-            return Err(ExternalFetchError::PayloadTooLarge);
-        }
-        if status.is_success()
-            && let Some(content_length) =
-                external_stream_length(allow_stream, response.content_length(), &content_type)
-        {
-            return Ok(FetchedExternal {
-                url: current_url,
-                status,
-                body: ExternalBody::Streaming {
-                    response,
-                    content_length,
-                },
-                content_type,
-                content_range,
-            });
-        }
-        let data = buffer_external_response(response, &current_url).await?;
-        return Ok(FetchedExternal {
-            url: current_url,
-            status,
-            body: ExternalBody::Buffered(data),
-            content_type,
-            content_range,
-        });
+        return external_fetched_from_response(response, current_url, allow_stream).await;
     }
     Err(ExternalFetchError::TooManyRedirects)
 }
 
+async fn external_fetched_from_response(
+    mut response: reqwest::Response,
+    url: String,
+    allow_stream: bool,
+) -> Result<FetchedExternal, ExternalFetchError> {
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_owned();
+    let content_range = response
+        .headers()
+        .get(header::CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .map(ToOwned::to_owned);
+    let content_length = response
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .or_else(|| response.content_length());
+    if let Some(len) = content_length
+        && len > constants::MAX_MEDIA_PROXY_BYTES as u64
+    {
+        warn!(url = %url, len, "external payload too large");
+        return Err(ExternalFetchError::PayloadTooLarge);
+    }
+    let mut prefix = Bytes::new();
+    if status.is_success() && external_should_stream(allow_stream, &content_type) {
+        prefix = external_body_prefix(&mut response, &url).await?;
+        if !external_source_is_svg(&prefix, &url_filename(&url), &content_type) {
+            return Ok(FetchedExternal {
+                url,
+                status,
+                body: ExternalBody::Streaming { response, prefix },
+                content_type,
+                content_length,
+                content_range,
+            });
+        }
+    }
+    let data = buffer_external_response(response, prefix, &url).await?;
+    Ok(FetchedExternal {
+        url,
+        status,
+        body: ExternalBody::Buffered(data),
+        content_type,
+        content_length,
+        content_range,
+    })
+}
+
+async fn external_body_prefix(
+    response: &mut reqwest::Response,
+    url: &str,
+) -> Result<Bytes, ExternalFetchError> {
+    let mut prefix: Vec<u8> = Vec::new();
+    while prefix.len() < EXTERNAL_SNIFF_PREFIX_BYTES {
+        let chunk = response.chunk().await.map_err(|err| {
+            warn!(url = %url, %err, "external body read failed");
+            ExternalFetchError::FetchFailed
+        })?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        prefix.extend_from_slice(&chunk);
+    }
+    Ok(Bytes::from(prefix))
+}
+
 async fn buffer_external_response(
     mut response: reqwest::Response,
+    prefix: Bytes,
     url: &str,
 ) -> Result<Bytes, ExternalFetchError> {
     let initial_capacity = response
         .content_length()
         .map(|len| len.min(constants::MAX_MEDIA_PROXY_BYTES as u64) as usize)
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .saturating_add(prefix.len())
+        .min(constants::MAX_MEDIA_PROXY_BYTES);
     let mut buf: Vec<u8> = Vec::with_capacity(initial_capacity);
+    buf.extend_from_slice(&prefix);
     while let Some(chunk) = response.chunk().await.map_err(|err| {
         warn!(url = %url, %err, "external body read failed");
         ExternalFetchError::FetchFailed
@@ -1514,7 +1813,8 @@ async fn serve_asset_image(
             Ok(object) => object,
             Err(err) => return storage_error_response(&asset.storage_key, err),
         };
-    let sniffed_source_ext = extension_from_mime(mime::sniff(&object.data).mime);
+    let sniffed_source = mime::sniff(&object.data);
+    let sniffed_source_ext = extension_from_mime(sniffed_source.mime);
     let source_format = if sniffed_source_ext == Some(AssetExtension::Apng) {
         AssetExtension::Apng
     } else {
@@ -1541,7 +1841,7 @@ async fn serve_asset_image(
     let width = selected.size;
     let height = selected.size;
     if same_format_loaded_image_request_can_use_original(
-        &object.data,
+        sniffed_source,
         OriginalImageRequest {
             source_ext: Some(source_format),
             explicit_out_ext: asset_manual_format_override(params, asset.original_ext),
@@ -1770,6 +2070,56 @@ async fn serve_stored_passthrough_stream(
     headers: &HeaderMap,
     disposition: PassthroughDisposition<'_>,
 ) -> Response {
+    if method == Method::HEAD {
+        return serve_stored_passthrough_head(app, bucket, key, headers, &disposition).await;
+    }
+    if app.cfg.mode == DeploymentMode::Mp
+        && image_extension_from_filename(key) == Some(AssetExtension::Svg)
+    {
+        return serve_stored_passthrough_svg(app, method, bucket, key, headers, &disposition).await;
+    }
+    let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
+    let forwarded_range = match range::classify_request_range(range_header) {
+        range::RequestRange::Absent => None,
+        range::RequestRange::Forwardable(value) => Some(value),
+        range::RequestRange::Unsatisfiable => {
+            return passthrough_unsatisfiable_response(app, bucket, key, None).await;
+        }
+    };
+    let object = match app.store.stream_object(bucket, key, forwarded_range).await {
+        Ok(object) => object,
+        Err(err) => return storage_error_response(key, err),
+    };
+    if object.status == StatusCode::RANGE_NOT_SATISFIABLE {
+        return passthrough_unsatisfiable_response(app, bucket, key, object.total_length).await;
+    }
+    let content_type = passthrough_content_type(&object.content_type, key);
+    if app.cfg.mode == DeploymentMode::Mp && is_svg_content_type(&content_type) {
+        return serve_stored_passthrough_svg(app, method, bucket, key, headers, &disposition).await;
+    }
+    let total_len = match passthrough_total_len(app, bucket, key, object.total_length).await {
+        Ok(value) => value,
+        Err(err) => return storage_error_response(key, err),
+    };
+    if total_len > constants::MAX_MEDIA_PROXY_BYTES {
+        return storage_error_response(key, StorageError::StreamTooLong);
+    }
+    streaming_media_response(
+        method,
+        object,
+        total_len,
+        &content_type,
+        passthrough_disposition_header(&disposition, &content_type),
+    )
+}
+
+async fn serve_stored_passthrough_head(
+    app: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    headers: &HeaderMap,
+    disposition: &PassthroughDisposition<'_>,
+) -> Response {
     let head = match app.store.head_object(bucket, key).await {
         Ok(head) => head,
         Err(err) => return storage_error_response(key, err),
@@ -1777,25 +2127,13 @@ async fn serve_stored_passthrough_stream(
     if head.content_length > constants::MAX_MEDIA_PROXY_BYTES as u64 {
         return storage_error_response(key, StorageError::StreamTooLong);
     }
-    let content_type = passthrough_content_type(&head, key);
+    let content_type = passthrough_content_type(&head.content_type, key);
     if app.cfg.mode == DeploymentMode::Mp
         && (is_svg_content_type(&content_type)
             || image_extension_from_filename(key) == Some(AssetExtension::Svg))
     {
-        let object = match app.store.read_object(bucket, key).await {
-            Ok(object) => object,
-            Err(err) => return storage_error_response(key, err),
-        };
-        let cache_identity = format!("{bucket}/{key}");
-        return serve_stored_svg_rasterized(
-            app,
-            method,
-            object.data,
-            &cache_identity,
-            headers,
-            &disposition,
-        )
-        .await;
+        return serve_stored_passthrough_svg(app, Method::HEAD, bucket, key, headers, disposition)
+            .await;
     }
     let total_len = match usize::try_from(head.content_length) {
         Ok(value) => value,
@@ -1804,53 +2142,85 @@ async fn serve_stored_passthrough_stream(
     let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     let parsed_range = range::parse_range(range_header, total_len);
     if parsed_range.unsatisfiable {
-        let mut response = Response::new(Body::empty());
-        *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
-        http_headers::add_unsatisfiable_headers(response.headers_mut(), total_len);
-        return response;
+        return unsatisfiable_response(total_len);
     }
-    let normalized_range = parsed_range
-        .range
-        .map(|r| format!("bytes={}-{}", r.start, r.end));
-    if method == Method::HEAD {
-        return passthrough_head_response(
-            &content_type,
-            total_len,
-            parsed_range.range,
-            passthrough_disposition_header(&disposition, &content_type),
-        );
-    }
-    let object = match app
-        .store
-        .stream_object(bucket, key, normalized_range.as_deref())
-        .await
-    {
-        Ok(object) => object,
-        Err(err) => return storage_error_response(key, err),
-    };
-    streaming_media_response(
-        method,
-        object,
+    passthrough_head_response(
+        &content_type,
         total_len,
         parsed_range.range,
-        &content_type,
-        passthrough_disposition_header(&disposition, &content_type),
+        passthrough_disposition_header(disposition, &content_type),
     )
 }
 
-fn passthrough_content_type(head: &HeadResult, key: &str) -> String {
+async fn serve_stored_passthrough_svg(
+    app: &Arc<AppState>,
+    method: Method,
+    bucket: &str,
+    key: &str,
+    headers: &HeaderMap,
+    disposition: &PassthroughDisposition<'_>,
+) -> Response {
+    let object = match app.store.read_object(bucket, key).await {
+        Ok(object) => object,
+        Err(err) => return storage_error_response(key, err),
+    };
+    let cache_identity = format!("{bucket}/{key}");
+    serve_stored_svg_rasterized(
+        app,
+        method,
+        object.data,
+        &cache_identity,
+        headers,
+        disposition,
+    )
+    .await
+}
+
+async fn passthrough_total_len(
+    app: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    known: Option<u64>,
+) -> Result<usize, StorageError> {
+    let total = match known {
+        Some(value) => value,
+        None => app.store.head_object(bucket, key).await?.content_length,
+    };
+    usize::try_from(total).map_err(|_| StorageError::StreamTooLong)
+}
+
+async fn passthrough_unsatisfiable_response(
+    app: &Arc<AppState>,
+    bucket: &str,
+    key: &str,
+    known_total: Option<u64>,
+) -> Response {
+    match passthrough_total_len(app, bucket, key, known_total).await {
+        Ok(total_len) => unsatisfiable_response(total_len),
+        Err(err) => storage_error_response(key, err),
+    }
+}
+
+fn unsatisfiable_response(total_len: usize) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+    http_headers::add_unsatisfiable_headers(response.headers_mut(), total_len);
+    response
+}
+
+fn passthrough_content_type(source_content_type: &str, key: &str) -> String {
     let extension_mime = mime::extension_mime(key);
     if extension_mime == Some("audio/mp4")
-        && mime::normalize(Some(&head.content_type)) == Some("video/mp4")
+        && mime::normalize(Some(source_content_type)) == Some("video/mp4")
     {
         return "audio/mp4".to_owned();
     }
-    if content_type_is_trustworthy(&head.content_type) {
-        head.content_type.clone()
+    if content_type_is_trustworthy(source_content_type) {
+        source_content_type.to_owned()
     } else {
         extension_mime
             .or_else(|| {
-                mime::normalize(Some(&head.content_type)).filter(|value| {
+                mime::normalize(Some(source_content_type)).filter(|value| {
                     !value.is_empty() && !value.eq_ignore_ascii_case("application/octet-stream")
                 })
             })
@@ -1992,7 +2362,6 @@ fn streaming_media_response(
     method: Method,
     object: StreamObject,
     total_len: usize,
-    byte_range: Option<range::ByteRange>,
     content_type: &str,
     disposition: Option<String>,
 ) -> Response {
@@ -2002,7 +2371,7 @@ fn streaming_media_response(
         StatusCode::OK
     };
     let effective_byte_range = if status == StatusCode::PARTIAL_CONTENT {
-        byte_range
+        object.byte_range
     } else {
         None
     };
@@ -2250,7 +2619,8 @@ async fn serve_bytes_or_transform(app: &Arc<AppState>, request: ServeBytesReques
         return media_response(method, data, &content_type, range_header, Some(disposition));
     }
 
-    let sniffed_source_format = extension_from_mime(mime::sniff(&data).mime);
+    let sniffed_source = mime::sniff(&data);
+    let sniffed_source_format = extension_from_mime(sniffed_source.mime);
     let source_format = if sniffed_source_format == Some(AssetExtension::Apng) {
         Some(AssetExtension::Apng)
     } else {
@@ -2287,7 +2657,7 @@ async fn serve_bytes_or_transform(app: &Arc<AppState>, request: ServeBytesReques
         .then(|| parse_effort(params))
         .flatten();
     if same_format_loaded_image_request_can_use_original(
-        &data,
+        sniffed_source,
         OriginalImageRequest {
             source_ext: source_format,
             explicit_out_ext: explicit_requested_format,
@@ -2887,7 +3257,7 @@ struct OriginalImageRequest {
 }
 
 fn same_format_loaded_image_request_can_use_original(
-    data: &[u8],
+    sniffed: mime::SniffInfo,
     request: OriginalImageRequest,
 ) -> bool {
     let Some(source_ext) = request.source_ext else {
@@ -2920,7 +3290,6 @@ fn same_format_loaded_image_request_can_use_original(
     {
         return false;
     }
-    let sniffed = mime::sniff(data);
     if sniffed.width == 0 || sniffed.height == 0 {
         return false;
     }
@@ -3130,6 +3499,27 @@ fn nsfw_config(app: &AppState) -> crate::nsfw::Config {
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
+
+    fn test_peer(value: &str) -> SocketAddr {
+        value.parse().expect("valid socket address")
+    }
+
+    #[test]
+    fn metrics_guard_accepts_loopback_peers() {
+        assert!(is_loopback_peer(&test_peer("127.0.0.1:5000")));
+        assert!(is_loopback_peer(&test_peer("127.0.0.2:5000")));
+        assert!(is_loopback_peer(&test_peer("[::1]:5000")));
+        assert!(is_loopback_peer(&test_peer("[::ffff:127.0.0.1]:5000")));
+    }
+
+    #[test]
+    fn metrics_guard_rejects_remote_peers() {
+        assert!(!is_loopback_peer(&test_peer("8.8.8.8:5000")));
+        assert!(!is_loopback_peer(&test_peer("10.0.0.5:5000")));
+        assert!(!is_loopback_peer(&test_peer("172.18.0.4:5000")));
+        assert!(!is_loopback_peer(&test_peer("[fe80::1]:5000")));
+        assert!(!is_loopback_peer(&test_peer("[::ffff:8.8.8.8]:5000")));
+    }
 
     fn avatar_cache_key_for_requested_size(raw: &str) -> String {
         let size = constants::parse_image_size(Some(raw));
@@ -3432,6 +3822,7 @@ mod tests {
                 cfg.transform_cache_max_entry_bytes,
                 cfg.transform_cache_ttl_ms,
             )),
+            external_hints: new_external_hint_cache(&cfg),
             coalescer: Arc::new(ByteCoalescer::new()),
             native_transform_admissions: TimedSemaphore::new(transform_admission_capacity(&cfg)),
             native_transforms: TimedSemaphore::new(cfg.max_native_transforms),
@@ -3653,34 +4044,281 @@ mod tests {
         assert_eq!("image/webp", mime::sniff(&raster.data).mime);
     }
 
+    type PassthroughOriginRequests = Arc<tokio::sync::Mutex<Vec<(Method, Option<String>)>>>;
+
+    fn parse_origin_range(raw: &str) -> Option<(usize, usize)> {
+        let spec = raw.strip_prefix("bytes=")?;
+        let (start, end) = spec.split_once('-')?;
+        Some((start.parse().ok()?, end.parse().ok()?))
+    }
+
+    async fn passthrough_origin(
+        body: &'static [u8],
+        answer_416_with_total: bool,
+    ) -> (String, PassthroughOriginRequests) {
+        use axum::body::Body;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen: PassthroughOriginRequests = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let handler = Arc::clone(&seen);
+        let router = Router::new().fallback(any(move |request: axum::extract::Request| {
+            let seen = Arc::clone(&handler);
+            async move {
+                let (parts, _body) = request.into_parts();
+                let range = parts
+                    .headers
+                    .get(header::RANGE)
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned);
+                seen.lock().await.push((parts.method, range.clone()));
+                let total = body.len();
+                let mut response = Response::new(Body::empty());
+                response
+                    .headers_mut()
+                    .insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+                match range.as_deref().and_then(parse_origin_range) {
+                    None => {
+                        response
+                            .headers_mut()
+                            .insert(header::CONTENT_LENGTH, HeaderValue::from(total));
+                        *response.body_mut() = Body::from(body);
+                    }
+                    Some((start, end)) if start < total => {
+                        let end = end.min(total - 1);
+                        *response.status_mut() = StatusCode::PARTIAL_CONTENT;
+                        response.headers_mut().insert(
+                            header::CONTENT_RANGE,
+                            HeaderValue::from_str(&format!("bytes {start}-{end}/{total}")).unwrap(),
+                        );
+                        response
+                            .headers_mut()
+                            .insert(header::CONTENT_LENGTH, HeaderValue::from(end - start + 1));
+                        *response.body_mut() = Body::from(&body[start..=end]);
+                    }
+                    Some(_) => {
+                        *response.status_mut() = StatusCode::RANGE_NOT_SATISFIABLE;
+                        if answer_416_with_total {
+                            response.headers_mut().insert(
+                                header::CONTENT_RANGE,
+                                HeaderValue::from_str(&format!("bytes */{total}")).unwrap(),
+                            );
+                        }
+                    }
+                }
+                response
+            }
+        }));
+        tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    fn s3_mode_test_config(endpoint: &str) -> Config {
+        Config::load_from_iter([
+            (
+                "FLUXER_MEDIA_PROXY_SECRET_KEY".to_owned(),
+                "secret".to_owned(),
+            ),
+            ("FLUXER_MEDIA_PROXY_MODE".to_owned(), "mp".to_owned()),
+            (
+                "FLUXER_MEDIA_PROXY_STORAGE_BACKEND".to_owned(),
+                "s3".to_owned(),
+            ),
+            ("FLUXER_S3_ENDPOINT".to_owned(), endpoint.to_owned()),
+            (
+                "FLUXER_S3_ACCESS_KEY_ID".to_owned(),
+                "AKIAIOSFODNN7EXAMPLE".to_owned(),
+            ),
+            (
+                "FLUXER_S3_SECRET_ACCESS_KEY".to_owned(),
+                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_owned(),
+            ),
+        ])
+        .unwrap()
+    }
+
+    async fn passthrough_request(cfg: Config, range: Option<&str>) -> Response {
+        use axum::{body::Body, http::Request};
+        let state = test_app_state(cfg);
+        let router = Router::new()
+            .fallback(any(catch_all))
+            .with_state(Arc::clone(&state));
+        let mut request = Request::builder().uri("/attachments/1/2/pic.png");
+        if let Some(range) = range {
+            request = request.header(header::RANGE, range);
+        }
+        tower::ServiceExt::oneshot(router, request.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn passthrough_get_serves_the_whole_object_in_one_round_trip() {
+        let (endpoint, seen) = passthrough_origin(b"0123456789", true).await;
+        let response = passthrough_request(s3_mode_test_config(&endpoint), None).await;
+
+        assert_eq!(StatusCode::OK, response.status());
+        assert_eq!(
+            "10",
+            response.headers().get(header::CONTENT_LENGTH).unwrap()
+        );
+        assert_eq!(
+            "image/png",
+            response.headers().get(header::CONTENT_TYPE).unwrap()
+        );
+        assert!(response.headers().get(header::CONTENT_RANGE).is_none());
+        let body = axum::body::to_bytes(response.into_body(), 64)
+            .await
+            .unwrap();
+        assert_eq!(b"0123456789", &body[..]);
+        assert_eq!(vec![(Method::GET, None)], seen.lock().await.clone());
+    }
+
+    #[tokio::test]
+    async fn passthrough_ranged_get_reuses_the_upstream_content_range() {
+        let (endpoint, seen) = passthrough_origin(b"0123456789", true).await;
+        let response = passthrough_request(s3_mode_test_config(&endpoint), Some("bytes=2-5")).await;
+
+        assert_eq!(StatusCode::PARTIAL_CONTENT, response.status());
+        assert_eq!(
+            "bytes 2-5/10",
+            response.headers().get(header::CONTENT_RANGE).unwrap()
+        );
+        assert_eq!("4", response.headers().get(header::CONTENT_LENGTH).unwrap());
+        let body = axum::body::to_bytes(response.into_body(), 64)
+            .await
+            .unwrap();
+        assert_eq!(b"2345", &body[..]);
+        assert_eq!(
+            vec![(Method::GET, Some("bytes=2-5".to_owned()))],
+            seen.lock().await.clone()
+        );
+    }
+
+    #[tokio::test]
+    async fn passthrough_unsatisfiable_range_reuses_the_upstream_total() {
+        let (endpoint, seen) = passthrough_origin(b"0123456789", true).await;
+        let response =
+            passthrough_request(s3_mode_test_config(&endpoint), Some("bytes=20-30")).await;
+
+        assert_eq!(StatusCode::RANGE_NOT_SATISFIABLE, response.status());
+        assert_eq!(
+            "bytes */10",
+            response.headers().get(header::CONTENT_RANGE).unwrap()
+        );
+        assert_eq!(
+            vec![(Method::GET, Some("bytes=20-30".to_owned()))],
+            seen.lock().await.clone()
+        );
+    }
+
+    #[tokio::test]
+    async fn passthrough_falls_back_to_a_head_when_the_upstream_416_omits_the_total() {
+        let (endpoint, seen) = passthrough_origin(b"0123456789", false).await;
+        let response =
+            passthrough_request(s3_mode_test_config(&endpoint), Some("bytes=20-30")).await;
+
+        assert_eq!(StatusCode::RANGE_NOT_SATISFIABLE, response.status());
+        assert_eq!(
+            "bytes */10",
+            response.headers().get(header::CONTENT_RANGE).unwrap()
+        );
+        assert_eq!(
+            vec![
+                (Method::GET, Some("bytes=20-30".to_owned())),
+                (Method::HEAD, None)
+            ],
+            seen.lock().await.clone()
+        );
+    }
+
+    #[tokio::test]
+    async fn passthrough_ignores_a_malformed_range_instead_of_forwarding_it() {
+        let (endpoint, seen) = passthrough_origin(b"0123456789", true).await;
+        let response =
+            passthrough_request(s3_mode_test_config(&endpoint), Some("bytes=abc-def")).await;
+
+        assert_eq!(StatusCode::OK, response.status());
+        assert_eq!(vec![(Method::GET, None)], seen.lock().await.clone());
+    }
+
+    #[tokio::test]
+    async fn passthrough_answers_a_reversed_range_without_asking_for_the_body() {
+        let (endpoint, seen) = passthrough_origin(b"0123456789", true).await;
+        let response =
+            passthrough_request(s3_mode_test_config(&endpoint), Some("bytes=10-5")).await;
+
+        assert_eq!(StatusCode::RANGE_NOT_SATISFIABLE, response.status());
+        assert_eq!(
+            "bytes */10",
+            response.headers().get(header::CONTENT_RANGE).unwrap()
+        );
+        assert_eq!(vec![(Method::HEAD, None)], seen.lock().await.clone());
+    }
+
+    #[tokio::test]
+    async fn passthrough_get_never_touches_the_write_endpoint() {
+        let (origin, origin_seen) = passthrough_origin(b"0123456789", true).await;
+        let (read, read_seen) = passthrough_origin(b"0123456789", true).await;
+        let mut cfg = s3_mode_test_config(&origin);
+        cfg.s3_read_endpoint = Some(read);
+        let response = passthrough_request(cfg, None).await;
+
+        assert_eq!(StatusCode::OK, response.status());
+        assert!(origin_seen.lock().await.is_empty());
+        assert_eq!(vec![(Method::GET, None)], read_seen.lock().await.clone());
+    }
+
+    #[tokio::test]
+    async fn passthrough_head_stays_a_single_round_trip() {
+        use axum::{body::Body, http::Request};
+        let (endpoint, seen) = passthrough_origin(b"0123456789", true).await;
+        let state = test_app_state(s3_mode_test_config(&endpoint));
+        let router = Router::new()
+            .fallback(any(catch_all))
+            .with_state(Arc::clone(&state));
+        let response = tower::ServiceExt::oneshot(
+            router,
+            Request::builder()
+                .method(Method::HEAD)
+                .uri("/attachments/1/2/pic.png")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(StatusCode::OK, response.status());
+        assert_eq!(
+            "10",
+            response.headers().get(header::CONTENT_LENGTH).unwrap()
+        );
+        assert_eq!(vec![(Method::HEAD, None)], seen.lock().await.clone());
+    }
+
     #[test]
     fn passthrough_content_type_preserves_non_media_metadata() {
-        let head = HeadResult {
-            content_length: 10,
-            content_type: "application/zip".to_owned(),
-        };
         assert_eq!(
             "application/zip",
-            passthrough_content_type(&head, "downloads/app.zip")
+            passthrough_content_type("application/zip", "downloads/app.zip")
         );
     }
 
     #[test]
     fn passthrough_content_type_prefers_known_extension_over_bad_metadata() {
-        let head = HeadResult {
-            content_length: 10,
-            content_type: "text/plain".to_owned(),
-        };
-        assert_eq!("image/png", passthrough_content_type(&head, "image.png"));
+        assert_eq!(
+            "image/png",
+            passthrough_content_type("text/plain", "image.png")
+        );
     }
 
     #[test]
     fn passthrough_content_type_prefers_m4a_extension_over_mp4_metadata() {
-        let head = HeadResult {
-            content_length: 10,
-            content_type: "video/mp4".to_owned(),
-        };
-        assert_eq!("audio/mp4", passthrough_content_type(&head, "track.m4a"));
+        assert_eq!(
+            "audio/mp4",
+            passthrough_content_type("video/mp4", "track.m4a")
+        );
     }
 
     #[test]
@@ -3791,37 +4429,52 @@ mod tests {
     }
 
     #[test]
-    fn external_stream_length_requires_safe_passthrough() {
-        assert_eq!(
-            Some(1024),
-            external_stream_length(true, Some(1024), "video/mp4")
+    fn external_should_stream_covers_unknown_length_and_unlabelled_bodies() {
+        assert!(external_should_stream(true, "video/mp4"));
+        assert!(external_should_stream(true, "application/octet-stream"));
+        assert!(external_should_stream(true, ""));
+        assert!(!external_should_stream(false, "video/mp4"));
+        assert!(!external_should_stream(true, "image/svg+xml"));
+        assert!(!external_should_stream(
+            true,
+            "image/svg+xml; charset=utf-8"
+        ));
+    }
+
+    #[test]
+    fn external_source_is_svg_matches_the_transform_paths_svg_test() {
+        let padded_svg = {
+            let mut data = b"<!--".to_vec();
+            data.resize(6000, b' ');
+            data.extend_from_slice(b"--><svg xmlns=\"http://www.w3.org/2000/svg\"></svg>");
+            data
+        };
+        assert!(
+            !mime::sniff(&padded_svg[..8192.min(padded_svg.len())])
+                .mime
+                .eq("image/svg+xml")
         );
-        assert_eq!(None, external_stream_length(false, Some(1024), "video/mp4"));
-        assert_eq!(None, external_stream_length(true, None, "video/mp4"));
-        assert_eq!(
-            None,
-            external_stream_length(true, Some(1024), "application/octet-stream")
-        );
-        assert_eq!(
-            None,
-            external_stream_length(true, Some(1024), "image/svg+xml")
-        );
-        assert_eq!(
-            None,
-            external_stream_length(
-                true,
-                Some(constants::MAX_MEDIA_PROXY_BYTES as u64 + 1),
-                "video/mp4"
-            )
-        );
-        assert_eq!(
-            Some(constants::MAX_MEDIA_PROXY_BYTES as u64),
-            external_stream_length(
-                true,
-                Some(constants::MAX_MEDIA_PROXY_BYTES as u64),
-                "video/mp4"
-            )
-        );
+        assert!(external_source_is_svg(
+            &padded_svg,
+            "logo.svg",
+            "application/octet-stream"
+        ));
+        assert!(external_source_is_svg(
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+            "logo",
+            "application/octet-stream"
+        ));
+        assert!(external_source_is_svg(
+            b"\x89PNG\r\n\x1a\n",
+            "logo.svg",
+            "image/png"
+        ));
+        assert!(!external_source_is_svg(
+            b"\x89PNG\r\n\x1a\n",
+            "logo.png",
+            "image/png"
+        ));
+        assert!(!external_source_is_svg(b"", "clip.mp4", ""));
     }
 
     #[tokio::test]
@@ -3835,9 +4488,11 @@ mod tests {
         let response = external_streaming_response(
             Method::GET,
             upstream,
-            14,
+            Bytes::new(),
+            Some(14),
             "video/mp4",
             Some("inline; filename=\"clip.mp4\"".to_owned()),
+            "https://cdn.example/clip.mp4",
         );
 
         assert_eq!(StatusCode::OK, response.status());
@@ -3864,6 +4519,306 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn external_streaming_response_emits_the_sniff_prefix_then_the_rest() {
+        let upstream = reqwest::Response::from(
+            http::Response::builder()
+                .status(StatusCode::OK)
+                .body("rest of the body")
+                .unwrap(),
+        );
+        let response = external_streaming_response(
+            Method::GET,
+            upstream,
+            Bytes::from_static(b"prefix "),
+            None,
+            "application/octet-stream",
+            None,
+            "https://cdn.example/blob.bin",
+        );
+
+        assert_eq!(StatusCode::OK, response.status());
+        assert!(
+            response.headers().get(header::CONTENT_LENGTH).is_none(),
+            "an upstream without a Content-Length must stream without inventing one"
+        );
+        let body = to_bytes(response.into_body(), 64).await.unwrap();
+        assert_eq!(b"prefix rest of the body", body.as_ref());
+    }
+
+    const STREAM_TEST_CHUNK_BYTES: usize = 1024 * 1024;
+    const STREAM_TEST_URL: &str = "https://cdn.example/clip.mp4";
+
+    struct TestUpstreamBody {
+        chunks: std::collections::VecDeque<Bytes>,
+        polls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl http_body::Body for TestUpstreamBody {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            let this = self.get_mut();
+            this.polls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Poll::Ready(this.chunks.pop_front().map(|chunk| Ok(Frame::data(chunk))))
+        }
+    }
+
+    fn test_chunks(total: usize) -> std::collections::VecDeque<Bytes> {
+        let filler = Bytes::from(vec![b'v'; STREAM_TEST_CHUNK_BYTES]);
+        let mut chunks = std::collections::VecDeque::new();
+        let mut remaining = total;
+        while remaining > 0 {
+            let take = remaining.min(STREAM_TEST_CHUNK_BYTES);
+            chunks.push_back(filler.slice(..take));
+            remaining -= take;
+        }
+        chunks
+    }
+
+    fn test_upstream(
+        total: usize,
+        declared: Option<u64>,
+        polls: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> reqwest::Response {
+        let mut builder = http::Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "video/mp4");
+        if let Some(declared) = declared {
+            builder = builder.header(header::CONTENT_LENGTH, declared.to_string());
+        }
+        reqwest::Response::from(
+            builder
+                .body(reqwest::Body::wrap(TestUpstreamBody {
+                    chunks: test_chunks(total),
+                    polls,
+                }))
+                .unwrap(),
+        )
+    }
+
+    async fn drain_counting(body: Body) -> Result<usize, axum::Error> {
+        let mut body = body;
+        let mut delivered = 0usize;
+        while let Some(frame) = body.frame().await {
+            let frame = frame?;
+            if let Some(data) = frame.data_ref() {
+                delivered += data.len();
+            }
+        }
+        Ok(delivered)
+    }
+
+    async fn external_stream_delivered(total: usize) -> Result<usize, axum::Error> {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fetched = external_fetched_from_response(
+            test_upstream(total, None, polls),
+            STREAM_TEST_URL.to_owned(),
+            true,
+        )
+        .await
+        .expect("an upstream without a declared length must be admitted");
+        assert_eq!(
+            None, fetched.content_length,
+            "the fixture must exercise the undeclared length path"
+        );
+        let ExternalBody::Streaming { response, prefix } = fetched.body else {
+            panic!("an undeclared length passthrough must stream");
+        };
+        let response = external_streaming_response(
+            Method::GET,
+            response,
+            prefix,
+            None,
+            "video/mp4",
+            None,
+            &fetched.url,
+        );
+        assert_eq!(StatusCode::OK, response.status());
+        drain_counting(response.into_body()).await
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_length_stream_under_the_cap_is_delivered_whole() {
+        let total = constants::MAX_MEDIA_PROXY_BYTES - STREAM_TEST_CHUNK_BYTES;
+        assert_eq!(total, external_stream_delivered(total).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_length_stream_exactly_at_the_cap_is_delivered_whole() {
+        let total = constants::MAX_MEDIA_PROXY_BYTES;
+        assert_eq!(total, external_stream_delivered(total).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_undeclared_length_stream_past_the_cap_fails_the_transfer() {
+        let total = constants::MAX_MEDIA_PROXY_BYTES + 1;
+        let err = external_stream_delivered(total)
+            .await
+            .expect_err("a body past the cap must not be delivered as a complete response");
+        assert!(
+            err.to_string()
+                .contains("exceeded the media proxy size cap"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_length_past_the_cap_is_rejected_before_the_body_is_read() {
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let declared = constants::MAX_MEDIA_PROXY_BYTES as u64 + 1;
+        let outcome = external_fetched_from_response(
+            test_upstream(STREAM_TEST_CHUNK_BYTES, Some(declared), Arc::clone(&polls)),
+            STREAM_TEST_URL.to_owned(),
+            true,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Err(ExternalFetchError::PayloadTooLarge)),
+            "a declared length past the cap must be refused up front"
+        );
+        assert_eq!(
+            0,
+            polls.load(std::sync::atomic::Ordering::Relaxed),
+            "an oversized declared length must be refused without reading the body"
+        );
+    }
+
+    async fn raw_stream_transfer(budget: usize, total: usize) -> Vec<u8> {
+        let chunks = test_chunks(total);
+        let app = Router::new().route(
+            "/probe",
+            get(move || {
+                let chunks = chunks.clone();
+                async move {
+                    let mut response = Response::new(Body::new(ExternalStreamBody {
+                        url: STREAM_TEST_URL.to_owned(),
+                        prefix: None,
+                        upstream: reqwest::Body::wrap(TestUpstreamBody {
+                            chunks,
+                            polls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                        }),
+                        remaining: budget,
+                    }));
+                    *response.status_mut() = StatusCode::OK;
+                    response
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"GET /probe HTTP/1.1\r\nHost: proxy\r\nConnection: close\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut raw = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut raw)
+            .await
+            .unwrap();
+        server.abort();
+        raw
+    }
+
+    #[tokio::test]
+    async fn a_stream_within_its_budget_completes_the_chunked_transfer() {
+        let raw = raw_stream_transfer(STREAM_TEST_CHUNK_BYTES, STREAM_TEST_CHUNK_BYTES).await;
+        assert!(raw.starts_with(b"HTTP/1.1 200 OK"));
+        assert!(
+            raw.ends_with(b"0\r\n\r\n"),
+            "a stream inside the cap must terminate the chunked body"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stream_past_its_budget_never_completes_the_chunked_transfer() {
+        let raw = raw_stream_transfer(STREAM_TEST_CHUNK_BYTES, STREAM_TEST_CHUNK_BYTES + 1).await;
+        assert!(
+            !raw.ends_with(b"0\r\n\r\n"),
+            "an overrun must not look like a complete body to the client"
+        );
+    }
+
+    #[test]
+    fn external_sniffed_content_type_recovers_mislabelled_bodies() {
+        assert_eq!(
+            "image/svg+xml",
+            external_sniffed_content_type(
+                b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>",
+                "logo",
+                "application/octet-stream".to_owned()
+            )
+        );
+        assert_eq!(
+            "video/mp4",
+            external_sniffed_content_type(b"", "clip.mp4", "application/octet-stream".to_owned())
+        );
+        assert_eq!(
+            "video/webm",
+            external_sniffed_content_type(b"", "clip.mp4", "video/webm".to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn external_transform_probe_hits_the_entry_the_transform_path_wrote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg =
+            upload_relay_test_config(tmp.path(), tmp.path(), b"01234567890123456789012345678901");
+        let app = test_app_state(cfg);
+        let url = "https://cdn.example.test/photo.jpg";
+        let params = HashMap::from([("width".to_owned(), "32".to_owned())]);
+        let headers = HeaderMap::new();
+        let data = Bytes::from(STANDARD.decode(TRANSFORM_FIXTURE_JPEG_B64).unwrap());
+        let filename = url_filename(url);
+
+        assert!(
+            external_cached_transform(&app, url, &Method::GET, &params, &headers).is_none(),
+            "an unseen url must not resolve to a cached transform"
+        );
+
+        let response = serve_bytes_or_transform(
+            &app,
+            ServeBytesRequest {
+                method: Method::GET,
+                data: data.clone(),
+                content_type: "image/jpeg".to_owned(),
+                cache_identity: url,
+                filename: &filename,
+                route: TransformRoute::External,
+                params: &params,
+                headers: &headers,
+            },
+        )
+        .await;
+        assert_eq!(StatusCode::OK, response.status());
+        let transformed = to_bytes(response.into_body(), 1 << 20).await.unwrap();
+
+        app.external_hints.insert(
+            url.to_owned(),
+            external_hint(url, &filename, "image/jpeg", &data),
+        );
+        let probed = external_cached_transform(&app, url, &Method::GET, &params, &headers)
+            .expect("the probe must reach the entry the transform path wrote");
+
+        assert_eq!(StatusCode::OK, probed.status());
+        assert_eq!(
+            "image/jpeg",
+            probed.headers().get(header::CONTENT_TYPE).unwrap()
+        );
+        assert_eq!(
+            transformed,
+            to_bytes(probed.into_body(), 1 << 20).await.unwrap()
+        );
+    }
+
+    #[tokio::test]
     async fn external_partial_response_streams_partial_body() {
         let upstream = reqwest::Response::from(
             http::Response::builder()
@@ -3876,9 +4831,10 @@ mod tests {
             status: StatusCode::PARTIAL_CONTENT,
             body: ExternalBody::Streaming {
                 response: upstream,
-                content_length: 4,
+                prefix: Bytes::new(),
             },
             content_type: "video/webm".to_owned(),
+            content_length: Some(4),
             content_range: Some("bytes 0-3/10".to_owned()),
         };
         let response = external_partial_response(Method::GET, fetched, None);
@@ -3927,8 +4883,15 @@ mod tests {
                     .body("streamed bytes")
                     .unwrap(),
             );
-            let response =
-                external_streaming_response(Method::GET, upstream, 14, content_type, None);
+            let response = external_streaming_response(
+                Method::GET,
+                upstream,
+                Bytes::new(),
+                Some(14),
+                content_type,
+                None,
+                "https://cdn.example/clip.mp4",
+            );
 
             assert_eq!(
                 expected,
@@ -3945,6 +4908,7 @@ mod tests {
             status: StatusCode::PARTIAL_CONTENT,
             body: ExternalBody::Buffered(Bytes::from_static(b"abcd")),
             content_type: "video/webm".to_owned(),
+            content_length: Some(4),
             content_range: Some("bytes 0-3/10".to_owned()),
         };
         let response = external_partial_response(Method::GET, fetched, None);
@@ -3989,6 +4953,7 @@ mod tests {
             status: StatusCode::PARTIAL_CONTENT,
             body: ExternalBody::Buffered(Bytes::from_static(b"abcd")),
             content_type: "video/webm".to_owned(),
+            content_length: Some(4),
             content_range: Some("bytes 0-3/10".to_owned()),
         };
         let response = external_partial_response(
@@ -4493,7 +5458,7 @@ mod tests {
 
     #[test]
     fn same_format_gif_noop_requests_use_original_bytes() {
-        let gif_header = b"GIF89a\x2c\x01\xe1\x00";
+        let gif_header = mime::sniff(b"GIF89a\x2c\x01\xe1\x00");
         assert!(same_format_loaded_image_request_can_use_original(
             gif_header,
             OriginalImageRequest {

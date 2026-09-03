@@ -96,6 +96,18 @@ unsubscribe_last_session_drops_channel_store_test() ->
     ?assertNot(maps:is_key(<<"500">>, Engines)),
     ?assertEqual(undefined, ets:info(Ref, name)).
 
+empty_ranges_subscribe_drops_channel_engine_test() ->
+    Ref = guild_member_list_engine:new(),
+    State = (base_state(make_subs_tab([{<<"500">>, <<"s1">>, [{0, 99}]}])))#{
+        channel_member_list_engines => #{<<"500">> => Ref}
+    },
+    {NewState, _ShouldSync, _Ranges} = guild_member_list:subscribe_ranges(
+        <<"s1">>, <<"500">>, [], State
+    ),
+    Engines = maps:get(channel_member_list_engines, NewState, #{}),
+    ?assertNot(maps:is_key(<<"500">>, Engines)),
+    ?assertEqual(undefined, ets:info(Ref, name)).
+
 broadcast_channel_list_dispatches_sync_immediately_test() ->
     with_sync_dispatch_mock(fun run_broadcast_channel_list_dispatches_sync_immediately/0).
 
@@ -106,6 +118,7 @@ run_broadcast_channel_list_dispatches_sync_immediately() ->
             <<"user">> => #{<<"id">> => <<"1">>, <<"username">> => <<"one">>},
             <<"roles">> => []
         },
+        ok = guild_member_list_engine:bulk_load(Ref, [{1, <<"one">>, [], true}], []),
         OldState = channel_list_state(Ref, make_subs_tab([{<<"500">>, <<"s1">>, [{0, 99}]}]), [
             Member
         ]),
@@ -132,6 +145,9 @@ run_broadcast_channel_list_fans_out_repeated_syncs() ->
             #{<<"user">> => #{<<"id">> => <<"1">>, <<"username">> => <<"one">>}},
             #{<<"user">> => #{<<"id">> => <<"2">>, <<"username">> => <<"two">>}}
         ],
+        ok = guild_member_list_engine:bulk_load(
+            Ref, [{1, <<"one">>, [], true}, {2, <<"two">>, [], true}], []
+        ),
         OldState = channel_list_state(
             Ref, make_subs_tab([{<<"500">>, <<"s1">>, [{0, 99}]}]), Members
         ),
@@ -310,6 +326,148 @@ run_send_member_list_update_encodes_wire_payload() ->
     after 1000 ->
         ?assert(false)
     end.
+
+broadcast_presence_delta_outside_list_payload_skips_sync_test() ->
+    with_sync_dispatch_mock(fun run_broadcast_presence_delta_outside_list_payload_skips_sync/0).
+
+run_broadcast_presence_delta_outside_list_payload_skips_sync() ->
+    Ref = guild_member_list_engine:new(),
+    try
+        State = presence_delta_state(Ref),
+        {ok, NewState} = guild_member_list:broadcast_member_list_updates(
+            1,
+            State,
+            State,
+            presence_map(<<"online">>, false, null),
+            presence_map(<<"online">>, true, null)
+        ),
+        ?assertEqual(State, NewState),
+        assert_no_sync_dispatch()
+    after
+        guild_member_list_engine:destroy(Ref)
+    end.
+
+broadcast_status_change_dispatches_sync_test() ->
+    with_sync_dispatch_mock(fun run_broadcast_status_change_dispatches_sync/0).
+
+run_broadcast_status_change_dispatches_sync() ->
+    Ref = guild_member_list_engine:new(),
+    try
+        State = presence_delta_state(Ref),
+        {ok, NewState} = guild_member_list:broadcast_member_list_updates(
+            1,
+            State,
+            State,
+            presence_map(<<"online">>, false, null),
+            presence_map(<<"idle">>, false, null)
+        ),
+        assert_single_channel_sync_dispatch(State, NewState),
+        assert_no_sync_dispatch()
+    after
+        guild_member_list_engine:destroy(Ref)
+    end.
+
+broadcast_custom_status_change_dispatches_sync_test() ->
+    with_sync_dispatch_mock(fun run_broadcast_custom_status_change_dispatches_sync/0).
+
+run_broadcast_custom_status_change_dispatches_sync() ->
+    Ref = guild_member_list_engine:new(),
+    try
+        State = presence_delta_state(Ref),
+        {ok, NewState} = guild_member_list:broadcast_member_list_updates(
+            1,
+            State,
+            State,
+            presence_map(<<"online">>, false, null),
+            presence_map(<<"online">>, false, #{<<"text">> => <<"hi">>})
+        ),
+        assert_single_channel_sync_dispatch(State, NewState),
+        assert_no_sync_dispatch()
+    after
+        guild_member_list_engine:destroy(Ref)
+    end.
+
+broadcast_offline_transition_dispatches_sync_test() ->
+    with_sync_dispatch_mock(fun run_broadcast_offline_transition_dispatches_sync/0).
+
+run_broadcast_offline_transition_dispatches_sync() ->
+    Ref = guild_member_list_engine:new(),
+    try
+        State = presence_delta_state(Ref),
+        {ok, NewState} = guild_member_list:broadcast_member_list_updates(
+            1,
+            State,
+            State,
+            presence_map(<<"online">>, false, null),
+            presence_map(<<"offline">>, false, null)
+        ),
+        assert_single_channel_sync_dispatch(State, NewState),
+        assert_no_sync_dispatch()
+    after
+        guild_member_list_engine:destroy(Ref)
+    end.
+
+presence_delta_state(Ref) ->
+    Member = #{
+        <<"user">> => #{<<"id">> => <<"1">>, <<"username">> => <<"one">>},
+        <<"roles">> => []
+    },
+    ok = guild_member_list_engine:bulk_load(Ref, [{1, <<"one">>, [], true}], []),
+    channel_list_state(Ref, make_subs_tab([{<<"500">>, <<"s1">>, [{0, 99}]}]), [Member]).
+
+presence_map(Status, Mobile, CustomStatus) ->
+    #{
+        <<"status">> => Status,
+        <<"mobile">> => Mobile,
+        <<"afk">> => false,
+        <<"custom_status">> => CustomStatus
+    }.
+
+has_subs_reports_subscribers_per_list_test() ->
+    SubsTab = make_subs_tab([
+        {<<"10">>, <<"s0">>, [{0, 99}]},
+        {<<"100">>, <<"s1">>, [{0, 99}]},
+        {<<"100">>, <<"s2">>, [{0, 49}]},
+        {<<"300">>, <<"s3">>, [{0, 99}]}
+    ]),
+    ?assert(guild_member_list_subs:has_subs(<<"10">>, SubsTab)),
+    ?assert(guild_member_list_subs:has_subs(<<"100">>, SubsTab)),
+    ?assert(guild_member_list_subs:has_subs(<<"300">>, SubsTab)),
+    ?assertNot(guild_member_list_subs:has_subs(<<"1">>, SubsTab)),
+    ?assertNot(guild_member_list_subs:has_subs(<<"050">>, SubsTab)),
+    ?assertNot(guild_member_list_subs:has_subs(<<"200">>, SubsTab)),
+    ?assertNot(guild_member_list_subs:has_subs(<<"400">>, SubsTab)),
+    guild_member_list_subs:unsubscribe_session(<<"s3">>, SubsTab),
+    ?assertNot(guild_member_list_subs:has_subs(<<"300">>, SubsTab)),
+    guild_member_list_subs:unsubscribe_session(<<"s0">>, SubsTab),
+    ?assertNot(guild_member_list_subs:has_subs(<<"10">>, SubsTab)),
+    ?assert(guild_member_list_subs:has_subs(<<"100">>, SubsTab)),
+    guild_member_list_subs:destroy(SubsTab).
+
+has_subs_on_empty_table_test() ->
+    SubsTab = make_subs_tab(),
+    ?assertNot(guild_member_list_subs:has_subs(<<"500">>, SubsTab)),
+    ?assertEqual([], collect_list_ids(SubsTab)),
+    guild_member_list_subs:destroy(SubsTab).
+
+fold_list_ids_visits_each_list_once_test() ->
+    SubsTab = make_subs_tab([
+        {<<"10">>, <<"s0">>, [{0, 99}]},
+        {<<"100">>, <<"s1">>, [{0, 99}]},
+        {<<"100">>, <<"s2">>, [{0, 49}]},
+        {<<"300">>, <<"s3">>, [{0, 99}]}
+    ]),
+    ListIds = collect_list_ids(SubsTab),
+    ?assertEqual([<<"10">>, <<"100">>, <<"300">>], ListIds),
+    ?assertEqual(guild_member_list_subs:list_ids(SubsTab), ListIds),
+    guild_member_list_subs:destroy(SubsTab).
+
+collect_list_ids(SubsTab) ->
+    lists:reverse(
+        guild_member_list_subs:fold_list_ids(
+            fun(ListId, Acc) -> [ListId | Acc] end, [], SubsTab
+        )
+    ).
 
 channel_list_state(Ref, SubsTab, Members) ->
     (base_state(SubsTab))#{

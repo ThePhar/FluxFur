@@ -17,6 +17,22 @@ export const STREAM_VOLUME_DESCRIPTOR = msg({
 	message: 'Stream volume',
 	comment: 'Voice menu slider label that controls volume of an incoming screen share with audio.',
 });
+export const STOP_STREAMING_DESCRIPTOR = msg({
+	message: 'Stop streaming',
+	comment: 'Voice screen share menu action that stops the current user stream.',
+});
+export const CHANGE_STREAM_DESCRIPTOR = msg({
+	message: 'Change stream',
+	comment: 'Voice screen share menu action that changes the shared source.',
+});
+export const PAUSE_OWN_STREAM_PREVIEW_DESCRIPTOR = msg({
+	message: 'Pause preview when Fluxer isn’t focused',
+	comment: 'Voice screen share menu preference that pauses the local stream preview while the app is unfocused.',
+});
+export const SCREEN_SHARE_PRIVACY_DESCRIPTOR = msg({
+	message: 'Screen share privacy',
+	comment: 'Voice screen share menu action that opens the screen share preview privacy controls.',
+});
 export const MUTE_DESCRIPTOR = msg({
 	message: 'Mute',
 	comment:
@@ -27,8 +43,16 @@ export const UNFOCUS_DESCRIPTOR = msg({
 	comment: 'Voice call layout action that removes focus from the currently pinned participant.',
 });
 export const POP_OUT_CAMERA_DESCRIPTOR = msg({
-	message: 'Pop out camera',
-	comment: 'Voice menu action on desktop that opens the participant camera feed in a separate window.',
+	message: 'Pop out video',
+	comment: 'Voice menu action on desktop that opens the active participant camera feed in a separate window.',
+});
+export const POP_OUT_USER_DESCRIPTOR = msg({
+	message: 'Pop out user',
+	comment: 'Voice menu action on desktop that opens the participant placeholder tile in a separate window.',
+});
+export const PREVIEW_CAMERA_DESCRIPTOR = msg({
+	message: 'Preview camera',
+	comment: 'Voice menu action that opens a preview of the current user camera.',
 });
 export const POP_OUT_STREAM_DESCRIPTOR = msg({
 	message: 'Pop out stream',

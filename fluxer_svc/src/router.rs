@@ -7,19 +7,22 @@ use crate::transport::{Transport, TransportMessage, TransportSubscriber, reply_m
 use moka::future::Cache;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, TryAcquireError};
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
-const SHARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const SHARD_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const INFLIGHT_TTL: Duration = Duration::from_millis(200);
 const INFLIGHT_MAX_ENTRIES: u64 = 10_000;
 const MAX_ROUTER_REQUEST_BYTES: usize = 2 * 1024 * 1024;
+const LEGACY_SHARD_DECODE_ERROR: &[u8] = br#"{"error":"shard_request_decode_error"}"#;
 type InflightKey = (String, String);
 
 pub trait RouterService: Send + Sync + 'static {
     type Request: serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static;
     type Response: serde::Serialize + serde::de::DeserializeOwned + Clone + Send + Sync + 'static;
+
+    const CACHES_RESPONSES: bool = true;
 
     fn service_name(&self) -> &str;
     fn route_key(request: &Self::Request) -> String;
@@ -34,6 +37,11 @@ pub trait RouterService: Send + Sync + 'static {
     fn l1_invalidate(&self, _key: &str) {}
 }
 
+fn shard_subject<S: RouterService>(service: &S, ring: &HashRing, route_key: &str) -> String {
+    let shard_id = ring.owner(route_key);
+    format!("svc.{}.shard.{shard_id}", service.service_name())
+}
+
 async fn forward_to_shard<S: RouterService>(
     transport: &impl Transport,
     service: &S,
@@ -41,8 +49,7 @@ async fn forward_to_shard<S: RouterService>(
     request: &S::Request,
     route_key: &str,
 ) -> anyhow::Result<Vec<u8>> {
-    let shard_id = ring.owner(route_key);
-    let shard_subject = format!("svc.{}.shard.{shard_id}", service.service_name());
+    let shard_subject = shard_subject(service, ring, route_key);
 
     let msgpack_payload = rmp_serde::to_vec_named(request)
         .map_err(|e| anyhow::anyhow!("failed to encode request as msgpack: {e}"))?;
@@ -50,6 +57,58 @@ async fn forward_to_shard<S: RouterService>(
     transport
         .request(&shard_subject, &msgpack_payload, SHARD_REQUEST_TIMEOUT)
         .await
+}
+
+async fn forward_to_shard_verbatim<S: RouterService>(
+    transport: &impl Transport,
+    service: &S,
+    ring: &HashRing,
+    request: &S::Request,
+    route_key: &str,
+    payload: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let shard_subject = shard_subject(service, ring, route_key);
+    let response_bytes = transport
+        .request(&shard_subject, payload, SHARD_REQUEST_TIMEOUT)
+        .await?;
+    if response_bytes != LEGACY_SHARD_DECODE_ERROR {
+        return Ok(response_bytes);
+    }
+
+    warn!(
+        subject = shard_subject,
+        "shard rejected a pass-through request, retrying with the legacy msgpack encoding"
+    );
+    let legacy_bytes = forward_to_shard::<S>(transport, service, ring, request, route_key).await?;
+    match rmp_serde::from_slice::<S::Response>(&legacy_bytes) {
+        Ok(response) => serde_json::to_vec(&response).map_err(|err| {
+            anyhow::anyhow!("failed to encode legacy shard response as json: {err}")
+        }),
+        Err(err) => {
+            if serde_json::from_slice::<serde_json::Value>(&legacy_bytes).is_ok() {
+                Ok(legacy_bytes)
+            } else {
+                Err(anyhow::anyhow!(
+                    "failed to decode legacy shard response: {err}"
+                ))
+            }
+        }
+    }
+}
+
+async fn dispatch_to_shard<S: RouterService>(
+    transport: &impl Transport,
+    service: &S,
+    ring: &HashRing,
+    request: &S::Request,
+    route_key: &str,
+    payload: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    if S::CACHES_RESPONSES {
+        forward_to_shard::<S>(transport, service, ring, request, route_key).await
+    } else {
+        forward_to_shard_verbatim::<S>(transport, service, ring, request, route_key, payload).await
+    }
 }
 
 async fn handle_router_request<S, T>(
@@ -80,9 +139,7 @@ async fn handle_router_request<S, T>(
         }
         return;
     }
-    let payload = msg.payload().to_vec();
-
-    let request: S::Request = match serde_json::from_slice(&payload) {
+    let request: S::Request = match serde_json::from_slice(msg.payload()) {
         Ok(r) => r,
         Err(err) => {
             warn!(error = %err, "failed to decode incoming request");
@@ -96,6 +153,7 @@ async fn handle_router_request<S, T>(
             return;
         }
     };
+    let request = Arc::new(request);
 
     if let Some(cached) = service.l1_lookup(&request) {
         metrics.record_cache_hit();
@@ -117,27 +175,35 @@ async fn handle_router_request<S, T>(
         let forward_service = service.clone();
         let forward_ring = ring.clone();
         let forward_route_key = route_key.clone();
+        let forward_request = request.clone();
+        let forward_payload = if S::CACHES_RESPONSES {
+            Vec::new()
+        } else {
+            msg.payload().to_vec()
+        };
         let inflight_key = (route_key, coalesce_key);
         inflight
             .try_get_with(inflight_key, async move {
-                forward_to_shard::<S>(
+                dispatch_to_shard::<S>(
                     &forward_transport,
                     forward_service.as_ref(),
                     forward_ring.as_ref(),
-                    &request,
+                    &forward_request,
                     &forward_route_key,
+                    &forward_payload,
                 )
                 .await
             })
             .await
             .map_err(|err| anyhow::anyhow!("{err}"))
     } else {
-        forward_to_shard::<S>(
+        dispatch_to_shard::<S>(
             &transport,
             service.as_ref(),
             ring.as_ref(),
             &request,
             &route_key,
+            msg.payload(),
         )
         .await
     };
@@ -146,30 +212,36 @@ async fn handle_router_request<S, T>(
     metrics.record_request_duration(elapsed);
 
     match coalesce_result {
-        Ok(response_bytes) => match rmp_serde::from_slice::<S::Response>(&response_bytes) {
-            Ok(response) => {
-                if let Ok(req) = serde_json::from_slice::<S::Request>(&payload) {
-                    service.l1_insert(&req, &response);
-                }
+        Ok(response_bytes) => {
+            if !S::CACHES_RESPONSES {
                 if msg.has_reply() {
-                    let json = serde_json::to_vec(&response).unwrap_or_default();
-                    let _ = reply_message(&msg, &transport, &json).await;
+                    let _ = reply_message(&msg, &transport, &response_bytes).await;
                 }
+                return;
             }
-            Err(err) => {
-                debug!(error = %err, "failed to decode shard response");
-                if msg.has_reply() {
-                    if serde_json::from_slice::<serde_json::Value>(&response_bytes).is_ok() {
-                        let _ = reply_message(&msg, &transport, &response_bytes).await;
-                        return;
+            match rmp_serde::from_slice::<S::Response>(&response_bytes) {
+                Ok(response) => {
+                    service.l1_insert(&request, &response);
+                    if msg.has_reply() {
+                        let json = serde_json::to_vec(&response).unwrap_or_default();
+                        let _ = reply_message(&msg, &transport, &json).await;
                     }
-                    let error_response =
-                        serde_json::to_vec(&serde_json::json!({"error": "shard_decode_error"}))
-                            .unwrap_or_default();
-                    let _ = reply_message(&msg, &transport, &error_response).await;
+                }
+                Err(err) => {
+                    debug!(error = %err, "failed to decode shard response");
+                    if msg.has_reply() {
+                        if serde_json::from_slice::<serde_json::Value>(&response_bytes).is_ok() {
+                            let _ = reply_message(&msg, &transport, &response_bytes).await;
+                            return;
+                        }
+                        let error_response =
+                            serde_json::to_vec(&serde_json::json!({"error": "shard_decode_error"}))
+                                .unwrap_or_default();
+                        let _ = reply_message(&msg, &transport, &error_response).await;
+                    }
                 }
             }
-        },
+        }
         Err(err) => {
             debug!(error = %err, "shard request failed (coalesced)");
             metrics.record_request_error();
@@ -248,9 +320,21 @@ where
                     }
                 };
 
-                let permit = match req_permits.clone().acquire_owned().await {
+                let permit = match req_permits.clone().try_acquire_owned() {
                     Ok(permit) => permit,
-                    Err(_) => return anyhow::Ok(()),
+                    Err(TryAcquireError::NoPermits) => {
+                        debug!("shedding router request, no permits available");
+                        req_metrics.record_request();
+                        req_metrics.record_request_error();
+                        if msg.has_reply() {
+                            let error_response =
+                                serde_json::to_vec(&serde_json::json!({"error": "overloaded"}))
+                                    .unwrap_or_default();
+                            let _ = reply_message(&msg, &req_transport, &error_response).await;
+                        }
+                        continue;
+                    }
+                    Err(TryAcquireError::Closed) => return anyhow::Ok(()),
                 };
                 let transport = req_transport.clone();
                 let service = req_service.clone();
@@ -323,6 +407,8 @@ mod tests {
     use crate::config::{DatabaseBackend, Mode, ServiceConfig};
     use crate::transport::{InMemoryTransport, Transport, TransportSubscriber, reply_message};
     use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use tokio::sync::Notify;
 
@@ -464,6 +550,315 @@ mod tests {
         router_task.abort();
     }
 
+    static COUNTED_REQUEST_DECODES: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Serialize)]
+    struct CountedRequest {
+        key: String,
+    }
+
+    impl<'de> Deserialize<'de> for CountedRequest {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            #[derive(Deserialize)]
+            struct Raw {
+                key: String,
+            }
+
+            let raw = Raw::deserialize(deserializer)?;
+            COUNTED_REQUEST_DECODES.fetch_add(1, Ordering::SeqCst);
+            Ok(CountedRequest { key: raw.key })
+        }
+    }
+
+    struct CachingRouter {
+        l1: Mutex<HashMap<String, MockResponse>>,
+        inserted_keys: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl RouterService for CachingRouter {
+        type Request = CountedRequest;
+        type Response = MockResponse;
+
+        fn service_name(&self) -> &str {
+            "cached-mock"
+        }
+
+        fn route_key(request: &CountedRequest) -> String {
+            request.key.clone()
+        }
+
+        fn coalesce_key(request: &CountedRequest) -> Option<String> {
+            Some(request.key.clone())
+        }
+
+        fn l1_lookup(&self, request: &CountedRequest) -> Option<MockResponse> {
+            self.l1.lock().unwrap().get(&request.key).cloned()
+        }
+
+        fn l1_insert(&self, request: &CountedRequest, response: &MockResponse) {
+            self.inserted_keys.lock().unwrap().push(request.key.clone());
+            self.l1
+                .lock()
+                .unwrap()
+                .insert(request.key.clone(), response.clone());
+        }
+    }
+
+    #[tokio::test]
+    async fn router_decodes_each_request_once_and_inserts_it_into_l1() {
+        let transport = InMemoryTransport::new();
+        let mut shard_sub = transport
+            .subscribe("svc.cached-mock.shard.0")
+            .await
+            .unwrap();
+
+        let shard_transport = transport.clone();
+        let shard_task = tokio::spawn(async move {
+            while let Some(msg) = shard_sub.next().await {
+                let response = MockResponse {
+                    key: "ok".to_owned(),
+                };
+                let response_bytes = rmp_serde::to_vec_named(&response).unwrap();
+                reply_message(&msg, &shard_transport, &response_bytes)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let inserted_keys = Arc::new(Mutex::new(Vec::new()));
+        let router = CachingRouter {
+            l1: Mutex::new(HashMap::new()),
+            inserted_keys: inserted_keys.clone(),
+        };
+        let router_config = test_config(4);
+        let router_transport = transport.clone();
+        let router_task =
+            tokio::spawn(async move { run_router(&router_config, router, router_transport).await });
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let request = serde_json::to_vec(&CountedRequest {
+            key: "a".to_owned(),
+        })
+        .unwrap();
+
+        let first = transport
+            .request("svc.cached-mock", &request, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<MockResponse>(&first).unwrap(),
+            MockResponse {
+                key: "ok".to_owned()
+            }
+        );
+        assert_eq!(inserted_keys.lock().unwrap().as_slice(), ["a".to_owned()]);
+        assert_eq!(COUNTED_REQUEST_DECODES.load(Ordering::SeqCst), 1);
+
+        let second = transport
+            .request("svc.cached-mock", &request, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<MockResponse>(&second).unwrap(),
+            MockResponse {
+                key: "ok".to_owned()
+            }
+        );
+        assert_eq!(inserted_keys.lock().unwrap().as_slice(), ["a".to_owned()]);
+        assert_eq!(COUNTED_REQUEST_DECODES.load(Ordering::SeqCst), 2);
+
+        shard_task.abort();
+        router_task.abort();
+    }
+
+    struct PassThroughRouter;
+
+    impl RouterService for PassThroughRouter {
+        type Request = MockRequest;
+        type Response = MockResponse;
+
+        const CACHES_RESPONSES: bool = false;
+
+        fn service_name(&self) -> &str {
+            "passthrough-mock"
+        }
+
+        fn route_key(request: &MockRequest) -> String {
+            request.key.clone()
+        }
+
+        fn coalesce_key(request: &MockRequest) -> Option<String> {
+            Some(request.key.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn router_forwards_pass_through_requests_and_replies_verbatim() {
+        let transport = InMemoryTransport::new();
+        let mut shard_sub = transport
+            .subscribe("svc.passthrough-mock.shard.0")
+            .await
+            .unwrap();
+
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let shard_transport = transport.clone();
+        let shard_observed = observed.clone();
+        let shard_task = tokio::spawn(async move {
+            while let Some(msg) = shard_sub.next().await {
+                shard_observed.lock().unwrap().push(msg.payload().to_vec());
+                reply_message(&msg, &shard_transport, br#"{ "key" : "verbatim" }"#)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let router_config = test_config(4);
+        let router_transport = transport.clone();
+        let router_task = tokio::spawn(async move {
+            run_router(&router_config, PassThroughRouter, router_transport).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let request = serde_json::to_vec(&MockRequest {
+            key: "a".to_owned(),
+        })
+        .unwrap();
+
+        let response = transport
+            .request("svc.passthrough-mock", &request, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert_eq!(response, br#"{ "key" : "verbatim" }"#);
+        assert_eq!(observed.lock().unwrap().as_slice(), [request]);
+
+        shard_task.abort();
+        router_task.abort();
+    }
+
+    #[tokio::test]
+    async fn router_retries_pass_through_requests_that_legacy_shards_reject() {
+        let transport = InMemoryTransport::new();
+        let mut shard_sub = transport
+            .subscribe("svc.passthrough-mock.shard.0")
+            .await
+            .unwrap();
+
+        let shard_transport = transport.clone();
+        let shard_task = tokio::spawn(async move {
+            while let Some(msg) = shard_sub.next().await {
+                let response_bytes = match rmp_serde::from_slice::<MockRequest>(msg.payload()) {
+                    Ok(_) => rmp_serde::to_vec_named(&MockResponse {
+                        key: "legacy".to_owned(),
+                    })
+                    .unwrap(),
+                    Err(_) => serde_json::to_vec(
+                        &serde_json::json!({"error": "shard_request_decode_error"}),
+                    )
+                    .unwrap(),
+                };
+                reply_message(&msg, &shard_transport, &response_bytes)
+                    .await
+                    .unwrap();
+            }
+        });
+
+        let router_config = test_config(4);
+        let router_transport = transport.clone();
+        let router_task = tokio::spawn(async move {
+            run_router(&router_config, PassThroughRouter, router_transport).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let request = serde_json::to_vec(&MockRequest {
+            key: "a".to_owned(),
+        })
+        .unwrap();
+
+        let response = transport
+            .request("svc.passthrough-mock", &request, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<MockResponse>(&response).unwrap(),
+            MockResponse {
+                key: "legacy".to_owned()
+            }
+        );
+
+        shard_task.abort();
+        router_task.abort();
+    }
+
+    #[tokio::test]
+    async fn router_sheds_requests_when_permits_are_exhausted() {
+        let transport = InMemoryTransport::new();
+        let mut shard_sub = transport.subscribe("svc.mock.shard.0").await.unwrap();
+
+        let (forwarded_tx, forwarded_rx) = tokio::sync::oneshot::channel();
+        let shard_task = tokio::spawn(async move {
+            let _msg = shard_sub.next().await.unwrap();
+            let _ = forwarded_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        let router_config = test_config(1);
+        let router_transport = transport.clone();
+        let router_task =
+            tokio::spawn(
+                async move { run_router(&router_config, MockRouter, router_transport).await },
+            );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+
+        let request_a = serde_json::to_vec(&MockRequest {
+            key: "a".to_owned(),
+        })
+        .unwrap();
+        let request_b = serde_json::to_vec(&MockRequest {
+            key: "b".to_owned(),
+        })
+        .unwrap();
+
+        let client_a = {
+            let transport = transport.clone();
+            tokio::spawn(async move {
+                transport
+                    .request("svc.mock", &request_a, Duration::from_secs(10))
+                    .await
+            })
+        };
+
+        tokio::time::timeout(Duration::from_millis(250), forwarded_rx)
+            .await
+            .expect("router should forward the first request and hold the only permit")
+            .unwrap();
+
+        let response_b = tokio::time::timeout(
+            Duration::from_millis(250),
+            transport.request("svc.mock", &request_b, Duration::from_secs(1)),
+        )
+        .await
+        .expect("shed reply should not wait behind the in-flight request")
+        .unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&response_b).unwrap(),
+            serde_json::json!({"error": "overloaded"})
+        );
+
+        client_a.abort();
+        shard_task.abort();
+        router_task.abort();
+    }
+
     fn test_config(max_concurrent_requests: usize) -> ServiceConfig {
         ServiceConfig {
             service_name: "mock".to_owned(),
@@ -491,6 +886,7 @@ mod tests {
             postgres_ssl_ca: None,
             postgres_max_connections: 1,
             postgres_kv_table: "fluxer_kv".to_owned(),
+            postgres_prepared_statements: true,
         }
     }
 }

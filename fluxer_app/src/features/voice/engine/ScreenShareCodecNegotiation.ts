@@ -7,6 +7,7 @@ import {
 	type CodecPreference,
 	type CodecSupportInfo,
 	getCodecCapabilityReport,
+	isVideoCodecAllowedForPublish,
 	resolveEffectiveScreenShareEncoderMode,
 	type ScreenShareEncoderMode,
 	selectNativeScreenCaptureScreenShareCodec,
@@ -28,10 +29,17 @@ const PROTOCOL_TOPIC = 'fluxer.rtc.codec-negotiation.v1';
 const SELECT_PROTOCOL_OP = 1;
 const SESSION_UPDATE_OP = 14;
 const TEXT_ENCODER = new TextEncoder();
-const TEXT_DECODER = new TextDecoder();
+const TEXT_DECODER = new TextDecoder('utf-8', {fatal: true});
+const NEGOTIATION_MESSAGE_BYTES_MAX = 16 * 1024;
+const CODEC_ADVERTISEMENTS_MAX = 16;
+const NEGOTIATION_IDENTIFIER_CHARS_MAX = 256;
+const EXPERIMENTS_MAX = 16;
+const EXPERIMENT_NAME_CHARS_MAX = 128;
+const RTP_PAYLOAD_TYPE_MAX = 255;
+const CODEC_PRIORITY_MAX = 65_535;
 const CODEC_PREFERENCE: ReadonlyArray<VideoCodec> = ['av1', 'h265', 'h264', 'vp9', 'vp8'];
 const SOFTWARE_CODEC_PREFERENCE: ReadonlyArray<VideoCodec> = ['av1', 'vp9', 'h264', 'vp8', 'h265'];
-const COMPATIBILITY_FALLBACK_CODEC_PREFERENCE: ReadonlyArray<VideoCodec> = ['vp9', 'vp8'];
+const COMPATIBILITY_FALLBACK_CODEC_PREFERENCE: ReadonlyArray<VideoCodec> = ['h264', 'vp9', 'vp8'];
 const BASELINE_VIDEO_CODEC: VideoCodec = 'vp8';
 const VIDEO_CODEC_NAMES: Record<VideoCodec, FluxerVideoCodecName> = {
 	av1: 'AV1',
@@ -108,7 +116,7 @@ export interface FluxerSessionUpdateMessage {
 
 export type FluxerCodecNegotiationMessage = FluxerSelectProtocolMessage | FluxerSessionUpdateMessage;
 
-export interface CodecNegotiationSelection {
+interface CodecNegotiationSelection {
 	codec: VideoCodec;
 	reason: NegotiationReason;
 	candidates: Array<VideoCodec>;
@@ -130,10 +138,6 @@ type ScreenShareCodecNegotiationMachineEvent =
 			codecPreference: ReadonlyArray<VideoCodec>;
 	  }
 	| {type: 'negotiation.reset'};
-
-interface BindOptions {
-	onSelectedCodecChanged?: (selection: CodecNegotiationSelection) => void | Promise<void>;
-}
 
 function createId(prefix: string): string {
 	const cryptoObject = globalThis.crypto as Crypto | undefined;
@@ -179,8 +183,9 @@ export function getScreenShareCodecPreferenceOrder(
 	const encoderMode = resolveEffectiveScreenShareEncoderMode(VoiceSettings.getScreenShareEncoderMode());
 	const automaticOrder =
 		encoderMode === 'software' ? SOFTWARE_CODEC_PREFERENCE : getHardwareFirstScreenShareCodecPreferenceOrder();
-	if (preference !== 'auto') return [preference, ...automaticOrder.filter((codec) => codec !== preference)];
-	return automaticOrder;
+	const order =
+		preference !== 'auto' ? [preference, ...automaticOrder.filter((codec) => codec !== preference)] : automaticOrder;
+	return order.filter((codec) => isVideoCodecAllowedForPublish(codec));
 }
 
 function getHardwareFirstScreenShareCodecPreferenceOrder(): ReadonlyArray<VideoCodec> {
@@ -200,14 +205,15 @@ function getLocalEncodeCapabilities(): Record<VideoCodec, boolean> {
 		(codec) => report[codec].supported && report[codec].hardwareAccelerated === 'hardware',
 	);
 	const advertise = (codec: VideoCodec): boolean =>
-		(pinned === codec && report[codec].supported) ||
-		shouldAdvertiseVideoEncode(codec, report[codec], encoderMode, hardwareEncodeAvailable, report);
+		isVideoCodecAllowedForPublish(codec) &&
+		((pinned === codec && report[codec].supported) ||
+			shouldAdvertiseVideoEncode(codec, report[codec], encoderMode, hardwareEncodeAvailable, report));
 	return {
 		av1: advertise('av1'),
 		h265: advertise('h265'),
 		h264: advertise('h264'),
 		vp9: advertise('vp9'),
-		vp8: report.vp8.supported,
+		vp8: report.vp8.supported && isVideoCodecAllowedForPublish('vp8'),
 	};
 }
 
@@ -387,8 +393,16 @@ function isBooleanOrUndefined(value: unknown): value is boolean | undefined {
 	return value === undefined || typeof value === 'boolean';
 }
 
-function isNumberOrUndefined(value: unknown): value is number | undefined {
-	return value === undefined || typeof value === 'number';
+function isBoundedInteger(value: unknown, maximum: number): value is number {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maximum;
+}
+
+function isBoundedIntegerOrUndefined(value: unknown, maximum: number): value is number | undefined {
+	return value === undefined || isBoundedInteger(value, maximum);
+}
+
+function isBoundedString(value: unknown, maximumLength: number): value is string {
+	return typeof value === 'string' && value.length > 0 && value.length <= maximumLength;
 }
 
 function isFluxerVideoCodecName(value: unknown): value is FluxerVideoCodecName {
@@ -408,16 +422,22 @@ function isCodecAdvertisement(value: unknown): value is FluxerCodecAdvertisement
 	return (
 		isFluxerCodecName(value.name) &&
 		isFluxerCodecType(value.type) &&
-		typeof value.payload_type === 'number' &&
-		isNumberOrUndefined(value.rtx_payload_type) &&
-		typeof value.priority === 'number' &&
+		((value.name === 'opus' && value.type === 'audio') || (value.name !== 'opus' && value.type === 'video')) &&
+		isBoundedInteger(value.payload_type, RTP_PAYLOAD_TYPE_MAX) &&
+		isBoundedIntegerOrUndefined(value.rtx_payload_type, RTP_PAYLOAD_TYPE_MAX) &&
+		isBoundedInteger(value.priority, CODEC_PRIORITY_MAX) &&
 		isBooleanOrUndefined(value.encode) &&
 		isBooleanOrUndefined(value.decode)
 	);
 }
 
 function isCodecAdvertisementList(value: unknown): value is Array<FluxerCodecAdvertisement> {
-	return Array.isArray(value) && value.every(isCodecAdvertisement);
+	return (
+		Array.isArray(value) &&
+		value.length > 0 &&
+		value.length <= CODEC_ADVERTISEMENTS_MAX &&
+		value.every(isCodecAdvertisement)
+	);
 }
 
 function isSelectProtocolMessage(value: unknown): value is FluxerSelectProtocolMessage {
@@ -428,9 +448,11 @@ function isSelectProtocolMessage(value: unknown): value is FluxerSelectProtocolM
 		isObject(data) &&
 		data.mode === 'livekit-sfu' &&
 		isCodecAdvertisementList(value.d.codecs) &&
-		(typeof value.d.rtc_connection_id === 'string' || value.d.rtc_connection_id === null) &&
+		(isBoundedString(value.d.rtc_connection_id, NEGOTIATION_IDENTIFIER_CHARS_MAX) ||
+			value.d.rtc_connection_id === null) &&
 		Array.isArray(value.d.experiments) &&
-		value.d.experiments.every((experiment) => typeof experiment === 'string')
+		value.d.experiments.length <= EXPERIMENTS_MAX &&
+		value.d.experiments.every((experiment) => isBoundedString(experiment, EXPERIMENT_NAME_CHARS_MAX))
 	);
 }
 
@@ -449,13 +471,14 @@ function isSessionUpdateMessage(value: unknown): value is FluxerSessionUpdateMes
 	if (!isObject(value) || value.op !== SESSION_UPDATE_OP || !isObject(value.d)) return false;
 	return (
 		isFluxerVideoCodecName(value.d.video_codec) &&
-		typeof value.d.media_session_id === 'string' &&
+		isBoundedString(value.d.media_session_id, NEGOTIATION_IDENTIFIER_CHARS_MAX) &&
 		isNegotiationReason(value.d.reason) &&
 		isCodecAdvertisementList(value.d.codecs)
 	);
 }
 
 function parseMessage(payload: Uint8Array): FluxerCodecNegotiationMessage | null {
+	if (payload.byteLength === 0 || payload.byteLength > NEGOTIATION_MESSAGE_BYTES_MAX) return null;
 	try {
 		const parsed = JSON.parse(TEXT_DECODER.decode(payload)) as unknown;
 		if (isSelectProtocolMessage(parsed)) return parsed;
@@ -472,13 +495,20 @@ class ScreenShareCodecNegotiation {
 	private selectedCodec: VideoCodec | null = null;
 	private localCodecs: Array<FluxerCodecAdvertisement> = [];
 	private remoteCodecsByIdentity = new Map<string, Array<FluxerCodecAdvertisement>>();
-	private bindOptions: BindOptions = {};
 	private rtcConnectionId = createId('rtc');
 	private mediaSessionId = createId('media');
 	private negotiationSnapshot = createScreenShareCodecNegotiationSnapshot();
+	private bindingRevision = 0;
+	private onSelectionChanged: ((room: Room, codec: VideoCodec, reason: NegotiationReason) => void) | null = null;
 
 	getSelectedCodec(): VideoCodec | null {
 		return this.selectedCodec;
+	}
+
+	setSelectionChangeListener(
+		listener: ((room: Room, codec: VideoCodec, reason: NegotiationReason) => void) | null,
+	): void {
+		this.onSelectionChanged = listener;
 	}
 
 	selectScreenShareCodec(preference: CodecPreference = 'auto'): VideoCodec {
@@ -517,7 +547,11 @@ class ScreenShareCodecNegotiation {
 		selector: (preference: CodecPreference) => VideoCodec,
 		preference: CodecPreference,
 	): VideoCodec {
-		if (this.selectedCodec && this.canUseSelectedCodecForCurrentParticipants(this.selectedCodec)) {
+		if (
+			preference === 'auto' &&
+			this.selectedCodec &&
+			this.canUseSelectedCodecForCurrentParticipants(this.selectedCodec)
+		) {
 			return this.selectedCodec;
 		}
 		if (this.localCodecs.length === 0) this.localCodecs = buildLocalCodecAdvertisements();
@@ -528,7 +562,8 @@ class ScreenShareCodecNegotiation {
 			unknownParticipants,
 			getScreenShareCodecPreferenceOrder(preference),
 		);
-		return negotiated.codec ?? selector('auto');
+		if (getEncodeSet(this.localCodecs).has(negotiated.codec)) return negotiated.codec;
+		return selector(preference);
 	}
 
 	private getRemoteCodecInputs(room: Room | null = this.room): {
@@ -548,10 +583,10 @@ class ScreenShareCodecNegotiation {
 		return {knownRemoteCodecs, unknownParticipants};
 	}
 
-	bind(room: Room, options: BindOptions = {}): () => void {
+	bind(room: Room): () => void {
 		this.dispose();
 		this.room = room;
-		this.bindOptions = options;
+		const bindingRevision = this.bindingRevision;
 		const onDataReceived = (
 			payload: Uint8Array,
 			participant: Participant | undefined,
@@ -559,23 +594,24 @@ class ScreenShareCodecNegotiation {
 			topic?: string,
 		): void => {
 			if (topic !== PROTOCOL_TOPIC || !participant) return;
-			this.handleDataMessage(room, participant, payload, options);
+			this.handleDataMessage(room, participant, payload, bindingRevision);
 		};
 		const onParticipantConnected = (): void => {
-			void this.publishLocalCapabilities(room, 'participant-connected', options);
+			void this.publishBoundLocalCapabilities(room, 'participant-connected', bindingRevision);
 		};
 		const onParticipantDisconnected = (participant: Participant): void => {
+			if (!this.isBindingCurrent(room, bindingRevision)) return;
 			this.remoteCodecsByIdentity.delete(participant.identity);
-			void this.updateSelection(room, 'participant-disconnected', options);
+			void this.updateSelection(room, 'participant-disconnected', bindingRevision);
 		};
 		const onReconnected = (): void => {
-			void this.publishLocalCapabilities(room, 'reconnected', options);
+			void this.publishBoundLocalCapabilities(room, 'reconnected', bindingRevision);
 		};
 		room.on(RoomEvent.DataReceived, onDataReceived);
 		room.on(RoomEvent.ParticipantConnected, onParticipantConnected);
 		room.on(RoomEvent.ParticipantDisconnected, onParticipantDisconnected);
 		room.on(RoomEvent.Reconnected, onReconnected);
-		void this.publishLocalCapabilities(room, 'connected', options);
+		void this.publishBoundLocalCapabilities(room, 'connected', bindingRevision);
 		this.bindDisposer = () => {
 			room.off(RoomEvent.DataReceived, onDataReceived);
 			room.off(RoomEvent.ParticipantConnected, onParticipantConnected);
@@ -586,12 +622,12 @@ class ScreenShareCodecNegotiation {
 	}
 
 	dispose(): void {
+		this.bindingRevision += 1;
 		this.bindDisposer?.();
 		this.bindDisposer = null;
 		this.room = null;
 		this.selectedCodec = null;
 		this.localCodecs = [];
-		this.bindOptions = {};
 		this.remoteCodecsByIdentity.clear();
 		this.mediaSessionId = createId('media');
 		this.negotiationSnapshot = createScreenShareCodecNegotiationSnapshot();
@@ -600,17 +636,25 @@ class ScreenShareCodecNegotiation {
 	async publishLocalCapabilities(
 		room: Room | null = this.room,
 		reason: NegotiationReason = 'manual',
-		options: BindOptions = this.bindOptions,
+	): Promise<CodecNegotiationSelection | null> {
+		if (!room) return null;
+		return await this.publishBoundLocalCapabilities(room, reason, this.bindingRevision);
+	}
+
+	private async publishBoundLocalCapabilities(
+		room: Room,
+		reason: NegotiationReason,
+		bindingRevision: number,
 	): Promise<CodecNegotiationSelection | null> {
 		if (typeof window === 'undefined') return null;
-		if (!room?.localParticipant) return null;
-		this.room = room;
+		if (!room.localParticipant || !this.isBindingCurrent(room, bindingRevision)) return null;
 		await Promise.allSettled([
 			loadGpuEncoderReport(),
 			loadNativeHardwareEncoderCapabilities(),
 			loadVideoDecoderExclusions(),
 			loadOpenH264Status(),
 		]);
+		if (!this.isBindingCurrent(room, bindingRevision)) return null;
 		this.localCodecs = buildLocalCodecAdvertisements();
 		const message: FluxerSelectProtocolMessage = {
 			op: SELECT_PROTOCOL_OP,
@@ -625,15 +669,17 @@ class ScreenShareCodecNegotiation {
 			},
 		};
 		await this.publishMessage(room, message);
-		return await this.updateSelection(room, reason, options);
+		if (!this.isBindingCurrent(room, bindingRevision)) return null;
+		return await this.updateSelection(room, reason, bindingRevision);
 	}
 
-	private handleDataMessage(room: Room, participant: Participant, payload: Uint8Array, options: BindOptions): void {
+	private handleDataMessage(room: Room, participant: Participant, payload: Uint8Array, bindingRevision: number): void {
+		if (!this.isBindingCurrent(room, bindingRevision)) return;
 		const message = parseMessage(payload);
 		if (!message) return;
 		if (message.op === SELECT_PROTOCOL_OP) {
 			this.remoteCodecsByIdentity.set(participant.identity, message.d.codecs);
-			void this.updateSelection(room, 'data', options);
+			void this.updateSelection(room, 'data', bindingRevision);
 		} else if (message.op === SESSION_UPDATE_OP) {
 			this.remoteCodecsByIdentity.set(participant.identity, message.d.codecs);
 			logger.debug('Received remote codec session update', {
@@ -642,16 +688,16 @@ class ScreenShareCodecNegotiation {
 				mediaSessionId: message.d.media_session_id,
 				reason: message.d.reason,
 			});
-			void this.updateSelection(room, 'data', options);
+			void this.updateSelection(room, 'data', bindingRevision);
 		}
 	}
 
 	private async updateSelection(
 		room: Room,
 		reason: NegotiationReason,
-		options: BindOptions,
+		bindingRevision: number,
 	): Promise<CodecNegotiationSelection | null> {
-		if (!room.localParticipant) return null;
+		if (!room.localParticipant || !this.isBindingCurrent(room, bindingRevision)) return null;
 		if (this.localCodecs.length === 0) this.localCodecs = buildLocalCodecAdvertisements();
 		if (reason === 'participant-disconnected' && room.remoteParticipants.size === 0 && this.selectedCodec) {
 			logger.debug('Keeping active screen share codec after last viewer disconnected', {
@@ -676,8 +722,13 @@ class ScreenShareCodecNegotiation {
 		this.mediaSessionId = createId('media');
 		logger.info('Selected screen share codec from XState capability intersection', selection);
 		await this.publishSessionUpdate(room, selection);
-		await options.onSelectedCodecChanged?.(selection);
+		if (!this.isBindingCurrent(room, bindingRevision)) return null;
+		this.onSelectionChanged?.(room, selection.codec, selection.reason);
 		return selection;
+	}
+
+	private isBindingCurrent(room: Room, bindingRevision: number): boolean {
+		return this.room === room && this.bindingRevision === bindingRevision;
 	}
 
 	private async publishSessionUpdate(room: Room, selection: CodecNegotiationSelection): Promise<void> {

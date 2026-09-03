@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {LongPressable} from '@app/features/app/components/LongPressable';
+import Channels from '@app/features/channel/state/Channels';
 import {WATCH_STREAM_DESCRIPTOR} from '@app/features/i18n/utils/CommonMessageDescriptors';
 import {isKeyboardActivationKey} from '@app/features/input/utils/KeyboardUtils';
 import Permission from '@app/features/permissions/state/Permission';
 import {dimColor} from '@app/features/theme/utils/ColorUtils';
+import type {VoiceParticipantMenuSource} from '@app/features/ui/action_menu/items/VoiceParticipantMenuTypes';
+import {UserContextMenu} from '@app/features/ui/action_menu/UserContextMenu';
 import {VoiceParticipantContextMenu} from '@app/features/ui/action_menu/VoiceParticipantContextMenu';
 import {Button} from '@app/features/ui/button/Button';
 import * as ContextMenuCommands from '@app/features/ui/commands/ContextMenuCommands';
@@ -39,6 +42,7 @@ import {StreamInfoPill} from '@app/features/voice/components/StreamInfoPill';
 import {getStreamKey} from '@app/features/voice/components/StreamKeys';
 import {StreamSpectatorsPopout} from '@app/features/voice/components/StreamSpectatorsPopout';
 import {StreamWatchHoverCard} from '@app/features/voice/components/StreamWatchHoverCard';
+import {useScreenShareUnderperformance} from '@app/features/voice/components/useScreenShareUnderperformance';
 import {useScreenShareWatchFailure} from '@app/features/voice/components/useScreenShareWatchFailure';
 import {useStreamPreview} from '@app/features/voice/components/useStreamPreview';
 import {useStreamSpectators} from '@app/features/voice/components/useStreamSpectators';
@@ -62,6 +66,7 @@ import {
 	useEffectiveTrackRef,
 	useIntersection,
 	useScreenShareAudioPublication,
+	useScreenShareViewerDemand,
 	useScreensharePreviewUploader,
 	useScreenshareWatchSubscription,
 	useTileContextMenuActive,
@@ -74,6 +79,7 @@ import {
 	CONNECTION_DESCRIPTOR,
 	DESKTOP_DEVICE_DESCRIPTOR,
 	getSourceDataAttr,
+	getStreamUnderperformanceLabel,
 	isCameraSource,
 	logger,
 	MOBILE_DEVICE_DESCRIPTOR,
@@ -84,6 +90,7 @@ import {
 	STREAM_BUFFERING_DESCRIPTOR,
 	STREAM_ENDED_DESCRIPTOR,
 	STREAM_HIDDEN_DESCRIPTOR,
+	STREAM_NOT_KEEPING_UP_DESCRIPTOR,
 	TILE_AVATAR_BASE,
 	TILE_AVATAR_MEDIA_SIZE,
 	TILE_AVATAR_STYLE,
@@ -151,6 +158,7 @@ import {
 	PauseIcon,
 	SpeakerSlashIcon,
 	VideoCameraSlashIcon,
+	WarningIcon,
 } from '@phosphor-icons/react';
 import {clsx} from 'clsx';
 import type {Participant, RemoteTrackPublication, Track} from 'livekit-client';
@@ -335,6 +343,9 @@ const VoiceParticipantTileInner = observer(function VoiceParticipantTileInner({
 	const streamKey = useMemo(() => getStreamKey(guildId, channelId, connectionId), [guildId, channelId, connectionId]);
 	const {viewerIds, viewerUsers, spectatorEntries} = useStreamSpectators(isScreenShare ? streamKey : '', userId);
 	const hasSpectatorDemand = viewerIds.length > 0;
+	const streamUnderperformanceReason = useScreenShareUnderperformance(
+		isOwnScreenShare && !isFocusedPlaceholderTile && viewerUsers.length > 0,
+	);
 	const isCameraTile = isCameraSource(trackRef.source);
 	const cameraLocallyDisabled = callId !== '' && isCameraTile && CallMediaPrefs.isVideoDisabled(callId, identity);
 	const screenSharePublicationMigrationVersion = ScreenSharePublicationMigration.version;
@@ -448,6 +459,12 @@ const VoiceParticipantTileInner = observer(function VoiceParticipantTileInner({
 		streamKey,
 		onVideoSubscriptionError: reportVideoSubscriptionError,
 		getGraphSnapshot: getVoiceMediaGraphSnapshotForTile,
+	});
+	useScreenShareViewerDemand({
+		enabled: isInteractiveScreenShareTile && !isOwnScreenShare && isWatching && hasSubscribedScreenShareVideo,
+		publication,
+		videoRef,
+		onError: reportVideoSubscriptionError,
 	});
 	useEffect(() => {
 		if (!isScreenShare || isOwnScreenShare || isFocusedPlaceholderTile) return;
@@ -615,7 +632,7 @@ const VoiceParticipantTileInner = observer(function VoiceParticipantTileInner({
 	const participantDisplayName =
 		(participantUser ? NicknameUtils.getNickname(participantUser, guildId, channelId) : participant.name) ||
 		i18n._(UNKNOWN_USER_DESCRIPTOR);
-	const showStreamAudioControls = isScreenShare && !isOwnScreenShare && isWatching;
+	const showStreamAudioControls = isScreenShare && !isOwnScreenShare && isWatching && hasScreenShareAudio;
 	const viewerStreamCount = graphViewerStreamKeys.length;
 	const addStreamTooltipText = plural(
 		{count: viewerStreamCount},
@@ -624,44 +641,93 @@ const VoiceParticipantTileInner = observer(function VoiceParticipantTileInner({
 			other: 'Keep watching # streams and add this one',
 		},
 	);
+	const participantMenuSource = useMemo<VoiceParticipantMenuSource>(() => {
+		if (!isScreenShare) {
+			return isCameraTile && isCameraActive ? {kind: 'camera'} : {kind: 'participant'};
+		}
+		if (isOwnScreenShare) {
+			return {kind: 'screen-share', streamKey, state: {kind: 'own'}};
+		}
+		if (isWatching) {
+			return {
+				kind: 'screen-share',
+				streamKey,
+				state: {kind: 'remote-watched', hasAudio: hasScreenShareAudio, onStopWatching: stopWatching},
+			};
+		}
+		return {
+			kind: 'screen-share',
+			streamKey,
+			state: {
+				kind: 'remote-unwatched',
+				onWatch: () => {
+					startWatching();
+					VoiceCallLayoutCommands.setPinnedParticipant(identity, VoiceTrackSource.ScreenShare);
+				},
+			},
+		};
+	}, [
+		hasScreenShareAudio,
+		identity,
+		isCameraActive,
+		isCameraTile,
+		isOwnScreenShare,
+		isScreenShare,
+		isWatching,
+		startWatching,
+		stopWatching,
+		streamKey,
+	]);
+	const privateCallChannel = channelId ? Channels.getChannel(channelId) : null;
+	const usePrivateCallCameraMenu = participantMenuSource.kind === 'camera' && Boolean(privateCallChannel?.isPrivate());
+	const isGroupedParticipantItem =
+		isCurrentUser && participantUser !== undefined && hasMultipleConnectionsForCurrentUser(guildId, participantUser.id);
 	const handleContextMenu = useCallback(
 		(event: React.MouseEvent | MouseEvent) => {
 			if (!participantUser) return;
-			const isGroupedItem = isCurrentUser && hasMultipleConnectionsForCurrentUser(guildId, participantUser.id);
-			ContextMenuCommands.openFromEvent(event, ({onClose}) => (
-				<VoiceParticipantContextMenu
-					user={participantUser}
-					participantName={participantDisplayName}
-					onClose={onClose}
-					guildId={guildId}
-					connectionId={connectionId}
-					isGroupedItem={isGroupedItem}
-					streamKey={streamKey}
-					isScreenShare={isScreenShare}
-					isWatching={isWatching}
-					hasScreenShareAudio={hasScreenShareAudio}
-					isOwnScreenShare={isOwnScreenShare}
-					onStopWatching={stopWatching}
-					hiddenConnectionCount={groupHiddenCount}
-					deviceConnectionCount={groupDeviceConnectionCount}
-					isDeviceGroupExpanded={tileGroup?.isExpanded ?? false}
-					onToggleDeviceGroup={tileGroup?.onExpand}
-					data-flx="voice.voice-participant-tile.handle-context-menu.voice-participant-context-menu"
-				/>
-			));
+			ContextMenuCommands.openFromEvent(event, ({onClose}) =>
+				usePrivateCallCameraMenu && channelId ? (
+					<UserContextMenu
+						user={participantUser}
+						onClose={onClose}
+						channelId={channelId}
+						isCallContext
+						privateCallContext={{
+							connectionId,
+							isConnected: true,
+							participantName: participantDisplayName,
+							visualSource: 'camera',
+						}}
+						data-flx="voice.voice-participant-tile.handle-context-menu.user-context-menu"
+					/>
+				) : (
+					<VoiceParticipantContextMenu
+						user={participantUser}
+						participantName={participantDisplayName}
+						onClose={onClose}
+						guildId={guildId}
+						connectionId={connectionId}
+						surface="call-tile"
+						source={participantMenuSource}
+						isGroupedItem={isGroupedParticipantItem}
+						hiddenConnectionCount={groupHiddenCount}
+						deviceConnectionCount={groupDeviceConnectionCount}
+						isDeviceGroupExpanded={tileGroup?.isExpanded ?? false}
+						onToggleDeviceGroup={tileGroup?.onExpand}
+						data-flx="voice.voice-participant-tile.handle-context-menu.voice-participant-context-menu"
+					/>
+				),
+			);
 		},
 		[
 			participantUser,
 			participantDisplayName,
 			guildId,
 			connectionId,
-			isCurrentUser,
-			streamKey,
-			isScreenShare,
-			isWatching,
-			hasScreenShareAudio,
-			isOwnScreenShare,
-			stopWatching,
+			isGroupedParticipantItem,
+			participantMenuSource,
+			usePrivateCallCameraMenu,
+			channelId,
 			groupHiddenCount,
 			groupDeviceConnectionCount,
 			tileGroup,
@@ -1230,6 +1296,26 @@ const VoiceParticipantTileInner = observer(function VoiceParticipantTileInner({
 										</FocusRing>
 									</Tooltip>
 								)}
+								{isOwnScreenShare && viewerUsers.length > 0 && streamUnderperformanceReason && (
+									<Tooltip
+										text={getStreamUnderperformanceLabel(i18n, streamUnderperformanceReason)}
+										position="top"
+										data-flx="voice.voice-participant-tile.voice-participant-tile-inner.tooltip"
+									>
+										<div
+											className={clsx(voiceCallStyles.tileControlPillSlot, styles.streamUnderperformanceSlot)}
+											role="img"
+											aria-label={i18n._(STREAM_NOT_KEEPING_UP_DESCRIPTOR)}
+											data-flx="voice.voice-participant-tile.voice-participant-tile-inner.stream-underperformance-slot"
+										>
+											<WarningIcon
+												weight="fill"
+												className={styles.tilePillIcon}
+												data-flx="voice.voice-participant-tile.voice-participant-tile-inner.tile-pill-icon"
+											/>
+										</div>
+									</Tooltip>
+								)}
 								{isScreenShare && viewerUsers.length > 0 && (
 									<StreamSpectatorsPopout
 										viewerUsers={viewerUsers}
@@ -1395,13 +1481,9 @@ const VoiceParticipantTileInner = observer(function VoiceParticipantTileInner({
 					participant={connectionParticipant}
 					guildId={guildId}
 					connectionId={connectionId}
-					isConnectionItem
-					streamKey={streamKey}
-					isScreenShare={isScreenShare}
-					isWatching={isWatching}
-					hasScreenShareAudio={hasScreenShareAudio}
-					isOwnScreenShare={isOwnScreenShare}
-					onStopWatching={stopWatching}
+					surface="call-tile"
+					source={participantMenuSource}
+					isConnectionItem={isGroupedParticipantItem}
 					data-flx="voice.voice-participant-tile.voice-participant-tile-inner.voice-participant-bottom-sheet"
 				/>
 			)}

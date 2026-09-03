@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {updateScreenShareDisplayMediaSettings} from '@app/features/voice/engine/ScreenShareCaptureDiagnostics';
 import {
 	type CapturedScreenShareTracks,
+	type DisplayScreenShareCaptureContext,
 	stopMediaTrack,
 	stopUnselectedStreamTracks,
 } from '@app/features/voice/engine/voice_screen_share_manager/shared';
-import ActiveScreenShareSource from '@app/features/voice/state/ActiveScreenShareSource';
+import {ScreenShareAudioCaptureError} from '@app/features/voice/utils/ScreenShareAudioCaptureError';
 import type {ScreenShareCaptureOptions} from 'livekit-client';
 
 type DisplayMediaVideoConstraints = MediaTrackConstraints & {
+	colorSpace?: string;
 	cursor?: 'always' | 'motion' | 'never';
 	displaySurface?: 'browser' | 'monitor' | 'window';
 };
@@ -92,33 +93,59 @@ export function getDisplayMediaOptions(options?: ScreenShareCaptureOptions): Dis
 	} as DisplayMediaStreamOptions;
 }
 
+function buildCapturedDisplayMediaConstraints(
+	displayMediaOptions: DisplayMediaStreamOptions,
+	cursor: 'always' | 'motion' | 'never',
+): MediaTrackConstraints {
+	const requestedVideo =
+		typeof displayMediaOptions.video === 'object' && displayMediaOptions.video
+			? (displayMediaOptions.video as DisplayMediaVideoConstraints)
+			: undefined;
+	const constraints: DisplayMediaVideoConstraints = {colorSpace: 'rec709', cursor};
+	if (requestedVideo?.width !== undefined) constraints.width = requestedVideo.width;
+	if (requestedVideo?.height !== undefined) constraints.height = requestedVideo.height;
+	if (requestedVideo?.frameRate !== undefined) constraints.frameRate = requestedVideo.frameRate;
+	return constraints;
+}
+
 export async function createDisplayScreenShareTracks(
 	options?: ScreenShareCaptureOptions,
+	captureContext?: DisplayScreenShareCaptureContext,
 ): Promise<CapturedScreenShareTracks> {
 	if (!navigator.mediaDevices.getDisplayMedia) {
 		throw new Error('getDisplayMedia not supported');
 	}
-	const stream = await navigator.mediaDevices.getDisplayMedia(getDisplayMediaOptions(options));
-	const videoTrack = stream.getVideoTracks()[0];
-	if (!videoTrack) {
+	const displayMediaOptions = getDisplayMediaOptions(options);
+	const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+	try {
+		const videoTrack = stream.getVideoTracks()[0];
+		if (!videoTrack) {
+			throw new Error('No video track found in screen share capture');
+		}
+		if (options?.contentHint) {
+			videoTrack.contentHint = options.contentHint;
+		}
+		const cursor = resolveCapturedDisplayMediaCursorCapture(videoTrack, options);
+		await videoTrack
+			.applyConstraints(buildCapturedDisplayMediaConstraints(displayMediaOptions, cursor))
+			.catch(() => undefined);
+		const capturedAudioTrack = stream.getAudioTracks()[0];
+		const audioTrack = capturedAudioTrack?.readyState === 'live' ? capturedAudioTrack : undefined;
+		if (captureContext?.requireAudio && !audioTrack) {
+			throw new ScreenShareAudioCaptureError({
+				sourceId: captureContext.sourceId,
+				reason: 'required-audio-track-missing',
+				detail: 'display capture completed without the requested native audio track',
+			});
+		}
+		stopUnselectedStreamTracks(stream, [videoTrack, audioTrack]);
+		return {
+			videoTrack,
+			audioTrack,
+			displayCapture: captureContext,
+		};
+	} catch (error) {
 		stream.getTracks().forEach(stopMediaTrack);
-		throw new Error('No video track found in screen share capture');
+		throw error;
 	}
-	if (options?.contentHint) {
-		videoTrack.contentHint = options.contentHint;
-	}
-	await videoTrack.applyConstraints({colorSpace: 'rec709'} as MediaTrackConstraints).catch(() => undefined);
-	updateScreenShareDisplayMediaSettings(videoTrack, {
-		sourceId: ActiveScreenShareSource.getSourceId(),
-	});
-	const cursor = resolveCapturedDisplayMediaCursorCapture(videoTrack, options);
-	if ((videoTrack.getSettings() as DisplayMediaTrackSettings).cursor !== cursor) {
-		await videoTrack.applyConstraints({cursor} as MediaTrackConstraints).catch(() => undefined);
-	}
-	const audioTrack = stream.getAudioTracks()[0];
-	stopUnselectedStreamTracks(stream, [videoTrack, audioTrack]);
-	return {
-		videoTrack,
-		audioTrack,
-	};
 }

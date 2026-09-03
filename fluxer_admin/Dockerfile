@@ -24,6 +24,7 @@ RUN TAILWIND_OXIDE_VERSION="4.2.1" \
 
 COPY Cargo.lock Cargo.lock
 COPY fluxer_admin fluxer_admin
+COPY fluxer_common fluxer_common
 COPY packages/fonts/manifest.json packages/fonts/manifest.json
 COPY packages/fonts/NOTICE.md packages/fonts/NOTICE.md
 COPY packages/fonts/LICENSE-IBM-PLEX.txt packages/fonts/LICENSE-IBM-PLEX.txt
@@ -31,12 +32,17 @@ COPY packages/fonts/files/FluxerSans packages/fonts/files/FluxerSans
 COPY packages/fonts/files/FluxerMono packages/fonts/files/FluxerMono
 RUN printf '%s\n' \
 	'[workspace]' \
-	'members = ["fluxer_admin"]' \
+	'members = ["fluxer_admin", "fluxer_common"]' \
 	'resolver = "2"' \
 	'' \
 	'[workspace.package]' \
 	'edition = "2024"' \
 	'license = "AGPL-3.0-or-later"' \
+	'' \
+	'[profile.release]' \
+	'lto = "fat"' \
+	'codegen-units = 1' \
+	'strip = "symbols"' \
 	> Cargo.toml
 
 ENV FLUXER_BUILD_VERSION="${BUILD_VERSION}"
@@ -54,6 +60,20 @@ RUN test "$(ls target/release/build/fluxer_admin-*/out/static/fonts/*.woff2 | wc
 FROM debian:bookworm-slim AS runtime
 
 ARG BUILD_VERSION=""
+ARG SOURCE_SHA=""
+ARG SOURCE_DATE=""
+
+LABEL org.opencontainers.image.title="fluxer-admin"
+LABEL org.opencontainers.image.description="Fluxer admin console"
+LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
+LABEL org.opencontainers.image.vendor="Fluxer"
+LABEL org.opencontainers.image.url="https://fluxer.app"
+LABEL org.opencontainers.image.documentation="https://docs.fluxer.app"
+LABEL org.opencontainers.image.source="https://github.com/fluxerapp/fluxer"
+LABEL org.opencontainers.image.version="${BUILD_VERSION}"
+LABEL org.opencontainers.image.revision="${SOURCE_SHA}"
+LABEL org.opencontainers.image.created="${SOURCE_DATE}"
+LABEL app.fluxer.build-version="${BUILD_VERSION}"
 
 WORKDIR /usr/local/bin
 

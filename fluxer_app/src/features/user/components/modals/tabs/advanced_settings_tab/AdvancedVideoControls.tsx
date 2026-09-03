@@ -11,11 +11,10 @@ import {SwitchGroup, SwitchGroupItem} from '@app/features/ui/components/SwitchGr
 import PiP from '@app/features/ui/state/PiP';
 import {getElectronAPI, isDesktop} from '@app/features/ui/utils/NativeUtils';
 import styles from '@app/features/user/components/modals/tabs/AdvancedSettingsTab.module.css';
-import {CodecSelectorSection} from '@app/features/user/components/modals/tabs/components/CodecSelectorSection';
 import {CompactComboboxRow} from '@app/features/user/components/modals/tabs/components/CompactComboboxRow';
 import PrivacyPreferences from '@app/features/user/state/PrivacyPreferences';
 import * as VoiceSettingsCommands from '@app/features/voice/commands/VoiceSettingsCommands';
-import VoiceSettings, {DEFAULT_SCREEN_SHARE_MAX_BITRATE_MBPS} from '@app/features/voice/state/VoiceSettings';
+import VoiceSettings from '@app/features/voice/state/VoiceSettings';
 import type {
 	CodecPreference,
 	ScreenShareBackupCodecMode,
@@ -24,12 +23,18 @@ import type {
 	ScreenShareScalabilityModePreference,
 	ScreenShareSoftwareQuality,
 } from '@app/features/voice/utils/CodecCapabilityDetector';
+import {
+	getCodecCapabilityReport,
+	selectAutomaticScreenShareCodec,
+} from '@app/features/voice/utils/CodecCapabilityDetector';
+import {getGpuEncoderReportSync, loadGpuEncoderReport} from '@app/features/voice/utils/GpuEncoderCapabilities';
 import {setOpenH264Enabled} from '@app/features/voice/utils/OpenH264Status';
+import {CODEC_DISPLAY_LABEL} from '@app/features/voice/utils/ScreenShareCodecPolicy';
 import {msg} from '@lingui/core/macro';
 import {useLingui} from '@lingui/react/macro';
 import {GearIcon} from '@phosphor-icons/react';
 import {observer} from 'mobx-react-lite';
-import {useCallback, useEffect} from 'react';
+import {useCallback, useEffect, useState} from 'react';
 
 const OPENH264_LABEL_DESCRIPTOR = msg({
 	message: 'OpenH264 Video Codec provided by Cisco Systems, Inc.',
@@ -152,87 +157,106 @@ const CONTENT_HINT_TEXT_DESCRIPTOR = msg({
 	message: 'Text',
 	comment: 'Option label for a WebRTC content hint select.',
 });
-const MAX_BITRATE_DESCRIPTOR = msg({
-	message: 'Maximum screen share bitrate',
-	comment: 'Label for an advanced screen-share bitrate select.',
-});
-const MAX_BITRATE_DESCRIPTION_DESCRIPTOR = msg({
-	message: 'Upper bitrate cap before WebRTC adapts to the network.',
-	comment: 'Description for the maximum screen share bitrate select. Keep WebRTC literal.',
-});
 const CONFIGURE_DESCRIPTOR = msg({
 	message: 'Configure',
 	comment: 'Button label that opens a dedicated advanced settings modal for configuring screen-share encoder controls.',
 });
-const MBPS_DESCRIPTOR = msg({
-	message: '{megabits} Mbps',
-	comment: 'Screen share bitrate option label. Mbps means megabits per second.',
+
+const PREFERRED_SCREEN_SHARE_CODEC_DESCRIPTOR = msg({
+	message: 'Preferred screen share codec',
+	comment: 'Accessible label for the advanced screen-share codec preference select.',
 });
-
-const DECODE_CODEC_CAP_DESCRIPTOR = msg({
-	message: 'Emulate decode codec (testing)',
-	comment: 'Label for an advanced select that caps the best video codec this client advertises it can decode.',
+const AUTOMATIC_CODEC_OPTION_DESCRIPTOR = msg({
+	message: 'Automatic ({codec})',
+	comment: 'Option label for the screen-share codec select. codec is the automatically selected codec label.',
 });
-const DECODE_CODEC_CAP_AUTO_DESCRIPTOR = msg({
-	message: 'Automatic',
-	comment: 'Option label for the emulated decode codec select. Means advertise true decode support.',
+const AV1_REQUIRES_OPT_IN_OPTION_DESCRIPTOR = msg({
+	message: 'AV1 (requires opt-in)',
+	comment:
+		'Option label for the screen-share codec select while the AV1 opt-in is off and the option is disabled. AV1 is a codec name and should stay literal.',
 });
+const H265_REQUIRES_OPT_IN_OPTION_DESCRIPTOR = msg({
+	message: 'H.265 (requires opt-in)',
+	comment:
+		'Option label for the screen-share codec select while the HEVC opt-in is off and the option is disabled. H.265 is a codec name and should stay literal.',
+});
+const AV1_SCREEN_SHARE_OPT_IN_DESCRIPTOR = msg({
+	message: 'Allow AV1 for screen sharing',
+	comment: 'Switch label for the AV1 screen-share opt-in. AV1 is a codec name and should stay literal.',
+});
+const HEVC_SCREEN_SHARE_OPT_IN_DESCRIPTOR = msg({
+	message: 'Allow H.265 (HEVC) for screen sharing',
+	comment:
+		'Switch label for the H.265/HEVC screen-share opt-in. H.265 and HEVC are codec names and should stay literal.',
+});
+const SCREEN_SHARE_CODEC_OPTION_ORDER = ['av1', 'h265', 'h264', 'vp9', 'vp8'] as const;
 
-const SCREEN_SHARE_MAX_BITRATE_OPTIONS = [1, 5, 10, 15, 25, 50] as const;
-
-const getNearestNumericOptionValue = <V extends number>(
-	value: number,
-	options: ReadonlyArray<ComboboxOption<V>>,
-): V | undefined => {
-	let nearestOption: ComboboxOption<V> | undefined;
-	let nearestDistance = Number.POSITIVE_INFINITY;
-	for (const option of options) {
-		const distance = Math.abs(option.value - value);
-		if (distance < nearestDistance) {
-			nearestDistance = distance;
-			nearestOption = option;
-		}
-	}
-	return nearestOption?.value;
-};
-
-const resolveScreenShareBitrateInput = (
-	inputValue: string,
-	options: ReadonlyArray<ComboboxOption<number>>,
-): number | undefined => {
-	const normalized = inputValue.trim().toLowerCase();
-	if (!normalized) return undefined;
-	const numericMatch = normalized.match(/([0-9]+(?:\.[0-9]+)?)/);
-	if (!numericMatch) return undefined;
-	const parsedValue = Number(numericMatch[1]);
-	if (!Number.isFinite(parsedValue)) return undefined;
-	const valueInMbps = normalized.includes('kbps') ? parsedValue / 1000 : parsedValue;
-	return getNearestNumericOptionValue(valueInMbps, options);
-};
-
-export const ScreenShareCodecControl = observer(() => (
-	<CodecSelectorSection data-flx="user.advanced-settings-tab.advanced-video-controls.screen-share-codec-control.codec-selector-section" />
-));
-
-export const EmulatedDecodeCodecCapControl = observer(() => {
+export const ScreenShareCodecControl = observer(() => {
 	const {i18n} = useLingui();
+	const encoderMode = VoiceSettings.getScreenShareEncoderMode();
+	const [gpuReport, setGpuReport] = useState(() => getGpuEncoderReportSync());
+	useEffect(() => {
+		if (gpuReport) return;
+		let cancelled = false;
+		void loadGpuEncoderReport().then((report) => {
+			if (!cancelled) setGpuReport(report);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [gpuReport]);
+	const automaticCodec = selectAutomaticScreenShareCodec(encoderMode).codec;
+	const av1OptIn = VoiceSettings.getScreenShareAv1OptIn();
+	const hevcOptIn = VoiceSettings.getScreenShareHevcOptIn();
+	const codecCapabilities = getCodecCapabilityReport();
 	const options: ReadonlyArray<ComboboxOption<CodecPreference>> = [
-		{value: 'auto', label: i18n._(DECODE_CODEC_CAP_AUTO_DESCRIPTOR)},
-		{value: 'av1', label: 'AV1'},
-		{value: 'h265', label: 'H.265'},
-		{value: 'vp9', label: 'VP9'},
-		{value: 'h264', label: 'H.264'},
-		{value: 'vp8', label: 'VP8'},
+		{value: 'auto', label: i18n._(AUTOMATIC_CODEC_OPTION_DESCRIPTOR, {codec: CODEC_DISPLAY_LABEL[automaticCodec]})},
+		...SCREEN_SHARE_CODEC_OPTION_ORDER.map((codec) => ({
+			value: codec,
+			label:
+				codec === 'av1' && !av1OptIn
+					? i18n._(AV1_REQUIRES_OPT_IN_OPTION_DESCRIPTOR)
+					: codec === 'h265' && !hevcOptIn
+						? i18n._(H265_REQUIRES_OPT_IN_OPTION_DESCRIPTOR)
+						: CODEC_DISPLAY_LABEL[codec],
+			isDisabled: !codecCapabilities[codec].supported,
+		})),
 	];
 	return (
 		<Combobox<CodecPreference, false>
-			value={VoiceSettings.emulatedDecodeVideoCodecCap}
+			value={VoiceSettings.getPreferredScreenShareCodec()}
 			options={options}
-			onChange={(value) => VoiceSettingsCommands.update({emulatedDecodeVideoCodecCap: value})}
+			onChange={(value) => VoiceSettingsCommands.update({preferredScreenShareCodec: value})}
 			density="compact"
 			isSearchable={false}
-			aria-label={i18n._(DECODE_CODEC_CAP_DESCRIPTOR)}
-			data-flx="user.advanced-settings-tab.select.emulated-decode-codec-cap"
+			aria-label={i18n._(PREFERRED_SCREEN_SHARE_CODEC_DESCRIPTOR)}
+			data-flx="user.advanced-settings-tab.select.preferred-screen-share-codec"
+		/>
+	);
+});
+
+export const ScreenShareAv1OptInControl = observer(() => {
+	const {i18n} = useLingui();
+	return (
+		<Switch
+			ariaLabel={i18n._(AV1_SCREEN_SHARE_OPT_IN_DESCRIPTOR)}
+			value={VoiceSettings.getScreenShareAv1OptIn()}
+			onChange={(value) => VoiceSettingsCommands.update({screenShareAv1OptIn: value})}
+			compact
+			data-flx="user.advanced-settings-tab.switch.screen-share-av1-opt-in"
+		/>
+	);
+});
+
+export const ScreenShareHevcOptInControl = observer(() => {
+	const {i18n} = useLingui();
+	return (
+		<Switch
+			ariaLabel={i18n._(HEVC_SCREEN_SHARE_OPT_IN_DESCRIPTOR)}
+			value={VoiceSettings.getScreenShareHevcOptIn()}
+			onChange={(value) => VoiceSettingsCommands.update({screenShareHevcOptIn: value})}
+			compact
+			data-flx="user.advanced-settings-tab.switch.screen-share-hevc-opt-in"
 		/>
 	);
 });
@@ -315,18 +339,6 @@ const ScreenShareEncoderControlsContent = observer(() => {
 		{value: 'detail', label: i18n._(CONTENT_HINT_DETAIL_DESCRIPTOR)},
 		{value: 'text', label: i18n._(CONTENT_HINT_TEXT_DESCRIPTOR)},
 	];
-	const bitrateOptions: ReadonlyArray<ComboboxOption<number>> = SCREEN_SHARE_MAX_BITRATE_OPTIONS.map((megabits) => ({
-		value: megabits,
-		label: i18n._(MBPS_DESCRIPTOR, {megabits}),
-	}));
-	const storedMaxBitrate = VoiceSettings.screenShareMaxBitrateMbps;
-	const selectedMaxBitrate =
-		getNearestNumericOptionValue(storedMaxBitrate, bitrateOptions) ?? DEFAULT_SCREEN_SHARE_MAX_BITRATE_MBPS;
-	useEffect(() => {
-		if (storedMaxBitrate !== selectedMaxBitrate) {
-			VoiceSettingsCommands.update({screenShareMaxBitrateMbps: selectedMaxBitrate});
-		}
-	}, [selectedMaxBitrate, storedMaxBitrate]);
 	return (
 		<div className={styles.controlStackCompact} data-flx="user.advanced-settings-tab.screen-share-encoder-controls">
 			<CompactComboboxRow<ScreenShareEncoderMode>
@@ -383,17 +395,6 @@ const ScreenShareEncoderControlsContent = observer(() => {
 				controlWidth="small"
 				dataFlx="user.advanced-settings-tab.select.screen-share-content-hint"
 				data-flx="user.advanced-settings-tab.advanced-video-controls.screen-share-encoder-controls-content.compact-combobox-row.update--5"
-			/>
-			<CompactComboboxRow<number>
-				label={i18n._(MAX_BITRATE_DESCRIPTOR)}
-				description={i18n._(MAX_BITRATE_DESCRIPTION_DESCRIPTOR)}
-				value={selectedMaxBitrate}
-				options={bitrateOptions}
-				onChange={(value) => VoiceSettingsCommands.update({screenShareMaxBitrateMbps: value})}
-				autoSelectValueFromInput={resolveScreenShareBitrateInput}
-				controlWidth="small"
-				dataFlx="user.advanced-settings-tab.select.screen-share-max-bitrate"
-				data-flx="user.advanced-settings-tab.advanced-video-controls.screen-share-encoder-controls-content.compact-combobox-row.update--6"
 			/>
 		</div>
 	);

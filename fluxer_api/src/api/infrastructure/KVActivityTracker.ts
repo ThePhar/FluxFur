@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type {IKVProvider} from '@pkgs/kv_client/src/IKVProvider';
+import {runSlotBatches, splitIntoSlotBatches} from '@pkgs/kv_client/src/KVHashSlots';
 import {seconds} from 'itty-time';
 import type {UserID} from '../BrandedTypes';
 import {Logger} from '../Logger';
@@ -10,6 +11,17 @@ const TTL_SECONDS = seconds('90 days');
 const STATE_VERSION_KEY = 'activity_tracker:state_version';
 const STATE_VERSION_TTL_SECONDS = seconds('1 day');
 const REBUILD_BATCH_SIZE = 100;
+
+function parseActivityValue(value: string | null): Date | null {
+	if (!value) {
+		return null;
+	}
+	const timestamp = parseInt(value, 10);
+	if (Number.isNaN(timestamp)) {
+		return null;
+	}
+	return new Date(timestamp);
+}
 
 export class KVActivityTracker {
 	private kvClient: IKVProvider;
@@ -35,15 +47,19 @@ export class KVActivityTracker {
 
 	async getActivity(userId: UserID): Promise<Date | null> {
 		const key = this.getActivityKey(userId);
-		const value = await this.kvClient.get(key);
-		if (!value) {
-			return null;
+		return parseActivityValue(await this.kvClient.get(key));
+	}
+
+	async getActivities(userIds: ReadonlyArray<UserID>): Promise<Map<UserID, Date | null>> {
+		const activities = new Map<UserID, Date | null>();
+		if (userIds.length === 0) {
+			return activities;
 		}
-		const timestamp = parseInt(value, 10);
-		if (Number.isNaN(timestamp)) {
-			return null;
+		const values = await this.kvClient.mget(...userIds.map((userId) => this.getActivityKey(userId)));
+		for (const [index, userId] of userIds.entries()) {
+			activities.set(userId, parseActivityValue(values[index] ?? null));
 		}
-		return new Date(timestamp);
+		return activities;
 	}
 
 	async needsRebuild(): Promise<boolean> {
@@ -59,6 +75,21 @@ export class KVActivityTracker {
 		return age > STATE_VERSION_TTL_SECONDS;
 	}
 
+	private async writeActivityBatch(entries: ReadonlyArray<{key: string; value: string}>): Promise<void> {
+		const batches = splitIntoSlotBatches(entries, (entry) => entry.key, this.kvClient.isClustered());
+		await runSlotBatches(batches, async (batch) => {
+			const pipeline = this.kvClient.pipeline();
+			for (const entry of batch) {
+				pipeline.setex(entry.key, TTL_SECONDS, entry.value);
+			}
+			for (const [error] of await pipeline.exec()) {
+				if (error) {
+					throw error;
+				}
+			}
+		});
+	}
+
 	async rebuildActivities(): Promise<void> {
 		Logger.info('Starting activity tracker rebuild from Cassandra');
 		const userRepository = new UserRepository();
@@ -66,8 +97,7 @@ export class KVActivityTracker {
 			const kvBatchSize = 1000;
 			let processedCount = 0;
 			let usersWithActivity = 0;
-			let pipeline = this.kvClient.pipeline();
-			let pipelineCount = 0;
+			let batch: Array<{key: string; value: string}> = [];
 			let pageState: string | null = null;
 			let iterationCount = 0;
 			while (!this.isShuttingDown) {
@@ -78,15 +108,11 @@ export class KVActivityTracker {
 				}
 				for (const user of users) {
 					if (user.lastActiveAt) {
-						const key = this.getActivityKey(user.id);
-						const value = user.lastActiveAt.getTime().toString();
-						pipeline.setex(key, TTL_SECONDS, value);
-						pipelineCount++;
+						batch.push({key: this.getActivityKey(user.id), value: user.lastActiveAt.getTime().toString()});
 						usersWithActivity++;
-						if (pipelineCount >= kvBatchSize) {
-							await pipeline.exec();
-							pipeline = this.kvClient.pipeline();
-							pipelineCount = 0;
+						if (batch.length >= kvBatchSize) {
+							await this.writeActivityBatch(batch);
+							batch = [];
 						}
 					}
 					processedCount++;
@@ -107,8 +133,8 @@ export class KVActivityTracker {
 				Logger.warn({processedCount, usersWithActivity}, 'Activity tracker rebuild interrupted by shutdown');
 				return;
 			}
-			if (pipelineCount > 0) {
-				await pipeline.exec();
+			if (batch.length > 0) {
+				await this.writeActivityBatch(batch);
 			}
 			await this.kvClient.setex(STATE_VERSION_KEY, STATE_VERSION_TTL_SECONDS, Date.now().toString());
 			Logger.info({processedCount, usersWithActivity}, 'Activity tracker rebuild completed');

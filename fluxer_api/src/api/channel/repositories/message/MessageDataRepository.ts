@@ -4,7 +4,7 @@ import {generateSnowflake} from '@fluxer/snowflake/src/Snowflake';
 import * as BucketUtils from '@fluxer/snowflake/src/SnowflakeBuckets';
 import type {ChannelID, MessageID} from '../../../BrandedTypes';
 import {BatchBuilder, deleteOneOrMany, fetchMany, fetchOne, upsertOne} from '../../../database/CassandraQueryExecution';
-import {Db} from '../../../database/CassandraTypes';
+import {Db, type QueryTemplate} from '../../../database/CassandraTypes';
 import {buildPatchFromData, executeVersionedUpdate} from '../../../database/CassandraVersionedUpdate';
 import type {ChannelMessageBucketRow, ChannelStateRow, MessageRow} from '../../../database/types/MessageTypes';
 import {MESSAGE_COLUMNS} from '../../../database/types/MessageTypes';
@@ -38,6 +38,77 @@ const FETCH_CHANNEL_STATE = ChannelState.select({
 	limit: 1,
 });
 
+function memoizeQueryByLimit(build: (limit: number) => QueryTemplate): (limit: number) => QueryTemplate {
+	const cache = new Map<number, QueryTemplate>();
+	return (limit: number) => {
+		const cached = cache.get(limit);
+		if (cached) return cached;
+		const query = build(limit);
+		cache.set(limit, query);
+		return query;
+	};
+}
+
+const fetchMessagesBeforeQuery = memoizeQueryByLimit((limit) =>
+	Messages.select({
+		where: [
+			Messages.where.eq('channel_id'),
+			Messages.where.eq('bucket'),
+			Messages.where.lt('message_id', 'before_message_id'),
+		],
+		orderBy: {col: 'message_id', direction: 'DESC'},
+		limit,
+	}),
+);
+const fetchMessagesAfterDescQuery = memoizeQueryByLimit((limit) =>
+	Messages.select({
+		where: [
+			Messages.where.eq('channel_id'),
+			Messages.where.eq('bucket'),
+			Messages.where.gt('message_id', 'after_message_id'),
+		],
+		orderBy: {col: 'message_id', direction: 'DESC'},
+		limit,
+	}),
+);
+const fetchMessagesBetweenQuery = memoizeQueryByLimit((limit) =>
+	Messages.select({
+		where: [
+			Messages.where.eq('channel_id'),
+			Messages.where.eq('bucket'),
+			Messages.where.gt('message_id', 'after_message_id'),
+			Messages.where.lt('message_id', 'before_message_id'),
+		],
+		orderBy: {col: 'message_id', direction: 'DESC'},
+		limit,
+	}),
+);
+const fetchMessagesLatestDescQuery = memoizeQueryByLimit((limit) =>
+	Messages.select({
+		where: [Messages.where.eq('channel_id'), Messages.where.eq('bucket')],
+		orderBy: {col: 'message_id', direction: 'DESC'},
+		limit,
+	}),
+);
+const fetchMessagesAfterAscQuery = memoizeQueryByLimit((limit) =>
+	Messages.select({
+		where: [
+			Messages.where.eq('channel_id'),
+			Messages.where.eq('bucket'),
+			Messages.where.gt('message_id', 'after_message_id'),
+		],
+		orderBy: {col: 'message_id', direction: 'ASC'},
+		limit,
+	}),
+);
+const fetchMessagesOldestAscQuery = memoizeQueryByLimit((limit) =>
+	Messages.select({
+		where: [Messages.where.eq('channel_id'), Messages.where.eq('bucket')],
+		orderBy: {col: 'message_id', direction: 'ASC'},
+		limit,
+	}),
+);
+
 export class MessageDataRepository {
 	async listMessages(
 		channelId: ChannelID,
@@ -66,71 +137,6 @@ export class MessageDataRepository {
 			return this.listMessagesAfter(channelId, afterMessageId, limit, options);
 		}
 		return this.listMessagesLatest(channelId, limit);
-	}
-
-	private makeFetchMessagesBefore(limit: number) {
-		return Messages.select({
-			where: [
-				Messages.where.eq('channel_id'),
-				Messages.where.eq('bucket'),
-				Messages.where.lt('message_id', 'before_message_id'),
-			],
-			orderBy: {col: 'message_id', direction: 'DESC'},
-			limit,
-		});
-	}
-
-	private makeFetchMessagesAfterDesc(limit: number) {
-		return Messages.select({
-			where: [
-				Messages.where.eq('channel_id'),
-				Messages.where.eq('bucket'),
-				Messages.where.gt('message_id', 'after_message_id'),
-			],
-			orderBy: {col: 'message_id', direction: 'DESC'},
-			limit,
-		});
-	}
-
-	private makeFetchMessagesBetween(limit: number) {
-		return Messages.select({
-			where: [
-				Messages.where.eq('channel_id'),
-				Messages.where.eq('bucket'),
-				Messages.where.gt('message_id', 'after_message_id'),
-				Messages.where.lt('message_id', 'before_message_id'),
-			],
-			orderBy: {col: 'message_id', direction: 'DESC'},
-			limit,
-		});
-	}
-
-	private makeFetchMessagesLatestDesc(limit: number) {
-		return Messages.select({
-			where: [Messages.where.eq('channel_id'), Messages.where.eq('bucket')],
-			orderBy: {col: 'message_id', direction: 'DESC'},
-			limit,
-		});
-	}
-
-	private makeFetchMessagesAfterAsc(limit: number) {
-		return Messages.select({
-			where: [
-				Messages.where.eq('channel_id'),
-				Messages.where.eq('bucket'),
-				Messages.where.gt('message_id', 'after_message_id'),
-			],
-			orderBy: {col: 'message_id', direction: 'ASC'},
-			limit,
-		});
-	}
-
-	private makeFetchMessagesOldestAsc(limit: number) {
-		return Messages.select({
-			where: [Messages.where.eq('channel_id'), Messages.where.eq('bucket')],
-			orderBy: {col: 'message_id', direction: 'ASC'},
-			limit,
-		});
 	}
 
 	private async listMessagesLatest(channelId: ChannelID, limit: number): Promise<Array<Message>> {
@@ -387,7 +393,7 @@ export class MessageDataRepository {
 			'fetchRowsForBucketAsc parameters',
 		);
 		if (bucket === meta.afterBucket) {
-			const q = this.makeFetchMessagesAfterAsc(limit);
+			const q = fetchMessagesAfterAscQuery(limit);
 			const rows = await fetchMany<MessageRow>(
 				q.bind({
 					channel_id: channelId,
@@ -397,7 +403,7 @@ export class MessageDataRepository {
 			);
 			return {rows, unbounded: false};
 		}
-		const q = this.makeFetchMessagesOldestAsc(limit);
+		const q = fetchMessagesOldestAscQuery(limit);
 		const rows = await fetchMany<MessageRow>(q.bind({channel_id: channelId, bucket}));
 		return {rows, unbounded: true};
 	}
@@ -431,7 +437,7 @@ export class MessageDataRepository {
 			'fetchRowsForBucket parameters',
 		);
 		if (meta.before && meta.after && meta.beforeBucket === bucket && meta.afterBucket === bucket) {
-			const q = this.makeFetchMessagesBetween(limit);
+			const q = fetchMessagesBetweenQuery(limit);
 			const rows = await fetchMany<MessageRow>(
 				q.bind({
 					channel_id: channelId,
@@ -443,7 +449,7 @@ export class MessageDataRepository {
 			return {rows, unbounded: false};
 		}
 		if (meta.before && meta.beforeBucket === bucket) {
-			const q = this.makeFetchMessagesBefore(limit);
+			const q = fetchMessagesBeforeQuery(limit);
 			const rows = await fetchMany<MessageRow>(
 				q.bind({
 					channel_id: channelId,
@@ -454,7 +460,7 @@ export class MessageDataRepository {
 			return {rows, unbounded: false};
 		}
 		if (meta.after && meta.afterBucket === bucket) {
-			const q = this.makeFetchMessagesAfterDesc(limit);
+			const q = fetchMessagesAfterDescQuery(limit);
 			const rows = await fetchMany<MessageRow>(
 				q.bind({
 					channel_id: channelId,
@@ -464,7 +470,7 @@ export class MessageDataRepository {
 			);
 			return {rows, unbounded: false};
 		}
-		const q = this.makeFetchMessagesLatestDesc(limit);
+		const q = fetchMessagesLatestDescQuery(limit);
 		const rows = await fetchMany<MessageRow>(q.bind({channel_id: channelId, bucket}));
 		return {rows, unbounded: true};
 	}
@@ -484,7 +490,7 @@ export class MessageDataRepository {
 				bucket,
 			}),
 		);
-		await batch.execute(true);
+		await batch.execute(false);
 	}
 
 	private async markBucketEmpty(channelId: ChannelID, bucket: number): Promise<void> {
@@ -502,7 +508,7 @@ export class MessageDataRepository {
 				updated_at: new Date(),
 			}),
 		);
-		await batch.execute(true);
+		await batch.execute(false);
 	}
 
 	private async touchChannelHasMessages(channelId: ChannelID): Promise<void> {
@@ -534,6 +540,28 @@ export class MessageDataRepository {
 					last_message_bucket: Db.set(newLastMessageBucket),
 					updated_at: Db.set(new Date()),
 				},
+			),
+		);
+	}
+
+	private async recordChannelStateForMessage(
+		channelId: ChannelID,
+		messageId: MessageID,
+		messageBucket: number,
+	): Promise<void> {
+		const state = await this.getChannelState(channelId);
+		const prev = state?.last_message_id ?? null;
+		const patch = {
+			created_bucket: Db.set(BucketUtils.makeBucket(channelId)),
+			has_messages: Db.set(true),
+			updated_at: Db.set(new Date()),
+		};
+		await upsertOne(
+			ChannelState.patchByPk(
+				{channel_id: channelId},
+				prev !== null && messageId <= prev
+					? patch
+					: {...patch, last_message_id: Db.set(messageId), last_message_bucket: Db.set(messageBucket)},
 			),
 		);
 	}
@@ -718,19 +746,8 @@ export class MessageDataRepository {
 				updated_at: new Date(),
 			}),
 		);
-		const createdBucket = BucketUtils.makeBucket(data.channel_id);
-		batch.addPrepared(
-			ChannelState.patchByPk(
-				{channel_id: data.channel_id},
-				{
-					created_bucket: Db.set(createdBucket),
-					has_messages: Db.set(true),
-					updated_at: Db.set(new Date()),
-				},
-			),
-		);
-		await batch.execute();
-		await this.advanceChannelStateLastMessageIfNewer(data.channel_id, data.message_id, data.bucket);
+		await batch.execute(false);
+		await this.recordChannelStateForMessage(data.channel_id, data.message_id, data.bucket);
 		return new Message({...data, version: finalVersion});
 	}
 

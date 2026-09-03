@@ -13,7 +13,6 @@ import {
 import {KeybindRecorder} from '@app/features/input/components/KeybindRecorder';
 import Keybind, {getDefaultKeybind} from '@app/features/input/state/InputKeybind';
 import {openMacPermissionsModal} from '@app/features/permissions/system/commands/MacPermissionsModalCommands';
-import {MacPermissionsSettingsRow} from '@app/features/permissions/system/components/MacPermissionsSettingsRow';
 import NativePermission from '@app/features/permissions/system/state/NativePermission';
 import {Button} from '@app/features/ui/button/Button';
 import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
@@ -188,10 +187,6 @@ const ENTRANCE_SOUND_DESCRIPTOR = msg({
 	message: 'Entrance sound',
 	comment: 'Subsection title in the voice tab. Keep it concise.',
 });
-const MACOS_DESCRIPTOR = msg({
-	message: 'macOS',
-	comment: 'Subsection title in the voice tab for macOS-specific settings. Keep it concise.',
-});
 
 type NoiseSuppressionMethod = 'enhanced' | 'standard' | 'none';
 
@@ -207,7 +202,7 @@ function resolveNoiseSuppressionMethod(deepFilterEnabled: boolean, browserNsEnab
 	return 'none';
 }
 
-export const VoiceTab: React.FC<VoiceTabProps> = observer(({voiceSettings, autoRequestPermission = true}) => {
+export const VoiceTab: React.FC<VoiceTabProps> = observer(({voiceSettings, autoRequestPermission = false}) => {
 	const {i18n} = useLingui();
 	const {
 		inputDeviceId,
@@ -522,7 +517,7 @@ export const VoiceTab: React.FC<VoiceTabProps> = observer(({voiceSettings, autoR
 	return (
 		<>
 			<SettingsTabSection title={i18n._(INPUT_AND_OUTPUT_DESCRIPTOR)} data-flx="user.voice-tab.devices-section">
-				{devices.length === 0 && permissionStatus !== 'loading' && permissionStatus !== 'granted' ? (
+				{inputDevices.length === 0 && permissionStatus !== 'loading' ? (
 					<div className={styles.deviceNotice} data-flx="user.voice-tab.device-notice">
 						<div className={styles.deviceNoticeText} data-flx="user.voice-tab.device-notice-text">
 							<div className={styles.deviceNoticeTitle} data-flx="user.voice-tab.device-notice-title">
@@ -540,21 +535,25 @@ export const VoiceTab: React.FC<VoiceTabProps> = observer(({voiceSettings, autoR
 											Allow {PRODUCT_NAME} to access your microphone. Check your browser's address bar or settings.
 										</Trans>
 									)
+								) : permissionStatus === 'granted' ? (
+									<Trans>Connect a microphone and try again.</Trans>
 								) : (
 									i18n._(PRODUCT_NEEDS_MICROPHONE_ACCESS_DESCRIPTOR, {productName: PRODUCT_NAME})
 								)}
 							</p>
 						</div>
-						<Button
-							variant="secondary"
-							small={true}
-							onClick={() => {
-								void requestPermission();
-							}}
-							data-flx="user.voice-tab.button"
-						>
-							<Trans>Allow microphone</Trans>
-						</Button>
+						{permissionStatus !== 'granted' ? (
+							<Button
+								variant="secondary"
+								small={true}
+								onClick={() => {
+									void requestPermission();
+								}}
+								data-flx="user.voice-tab.button"
+							>
+								<Trans>Allow microphone</Trans>
+							</Button>
+						) : null}
 					</div>
 				) : null}
 				<CompactComboboxRow
@@ -698,11 +697,6 @@ export const VoiceTab: React.FC<VoiceTabProps> = observer(({voiceSettings, autoR
 			>
 				<EntranceSoundSection data-flx="user.voice-tab.entrance-sound-section" />
 			</SettingsTabSection>
-			{NativePermission.isNativeMacDesktop && (
-				<SettingsTabSection title={i18n._(MACOS_DESCRIPTOR)} data-flx="user.voice-tab.macos-section">
-					<MacPermissionsSettingsRow data-flx="user.voice-tab.macos-permissions-row" />
-				</SettingsTabSection>
-			)}
 		</>
 	);
 });

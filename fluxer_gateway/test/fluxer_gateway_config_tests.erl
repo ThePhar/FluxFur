@@ -127,10 +127,74 @@ env_only_push_and_http_runtime_config_test() ->
         end
     ).
 
+rpc_concurrency_keys_are_independent_test() ->
+    with_envs(
+        [
+            {"FLUXER_GATEWAY_HTTP_RPC_MAX_CONCURRENCY", "128"},
+            {"FLUXER_GATEWAY_NATS_RPC_MAX_HANDLERS", "2048"}
+        ],
+        fun() ->
+            Config = fluxer_gateway_config:load(),
+            ?assertEqual(128, maps:get(gateway_http_rpc_max_concurrency, Config)),
+            ?assertEqual(2048, maps:get(gateway_nats_rpc_max_handlers, Config))
+        end
+    ).
+
+rpc_concurrency_key_defaults_test() ->
+    Config = fluxer_gateway_config:build_config(#{}),
+    ?assertEqual(512, maps:get(gateway_nats_rpc_max_handlers, Config)),
+    ?assertEqual(512, maps:get(gateway_http_rpc_max_concurrency, Config)).
+
 optional_string_test() ->
     ?assertEqual(undefined, fluxer_gateway_config:optional_string(undefined)),
     ?assertEqual("hello", fluxer_gateway_config:optional_string(<<"hello">>)),
     ?assertEqual("", fluxer_gateway_config:optional_string(<<>>)).
+
+public_endpoints_env_non_default_port_test() ->
+    with_envs(
+        [
+            {"FLUXER_BASE_DOMAIN", "fluxer.example"},
+            {"FLUXER_PUBLIC_SCHEME", "https"},
+            {"FLUXER_PUBLIC_PORT", "8443"},
+            {"FLUXER_GATEWAY_MEDIA_PROXY_ENDPOINT", "https://fluxer.example/media"},
+            {"FLUXER_GATEWAY_STATIC_CDN_ENDPOINT", "https://fluxer.example"}
+        ],
+        fun() ->
+            Config = fluxer_gateway_config:load(),
+            ?assertEqual(
+                <<"https://fluxer.example:8443/media">>,
+                maps:get(media_proxy_endpoint, Config)
+            ),
+            ?assertEqual(
+                <<"https://fluxer.example:8443">>, maps:get(static_cdn_endpoint, Config)
+            )
+        end
+    ).
+
+public_endpoints_env_default_port_test() ->
+    with_envs(
+        [
+            {"FLUXER_BASE_DOMAIN", "fluxer.example"},
+            {"FLUXER_PUBLIC_SCHEME", "https"},
+            {"FLUXER_PUBLIC_PORT", "443"},
+            {"FLUXER_GATEWAY_MEDIA_PROXY_ENDPOINT", "https://fluxer.example/media"},
+            {"FLUXER_GATEWAY_STATIC_CDN_ENDPOINT", "https://cdn.othercdn.net"}
+        ],
+        fun() ->
+            Config = fluxer_gateway_config:load(),
+            ?assertEqual(
+                <<"https://fluxer.example/media">>, maps:get(media_proxy_endpoint, Config)
+            ),
+            ?assertEqual(
+                <<"https://cdn.othercdn.net">>, maps:get(static_cdn_endpoint, Config)
+            )
+        end
+    ).
+
+public_endpoints_defaults_test() ->
+    Config = fluxer_gateway_config:build_config(#{}),
+    ?assertEqual(undefined, maps:get(media_proxy_endpoint, Config)),
+    ?assertEqual(<<"http://localhost:8088">>, maps:get(static_cdn_endpoint, Config)).
 
 with_envs([], Fun) ->
     Fun();

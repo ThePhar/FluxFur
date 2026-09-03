@@ -3,14 +3,16 @@ name = "fluxer_admin"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+publish = false
 build = "build.rs"
 
 [dependencies]
-anyhow = "1.0.102"
+anyhow = "1.0.104"
 axum = { version = "0.8.9", features = ["macros"] }
 base64 = "0.22.1"
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 cookie = "0.18.1"
+fluxer_common = { path = "../fluxer_common" }
 hmac = "0.13.0"
 maud = { version = "0.27.0", features = ["axum"] }
 rand = "0.10"

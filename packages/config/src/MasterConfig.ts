@@ -61,6 +61,7 @@ export interface MasterConfig {
 			ssl_ca: string;
 			max_connections: number;
 			kv_table: string;
+			prepared_statements: boolean;
 		};
 	};
 	s3?: {
@@ -90,7 +91,11 @@ export interface MasterConfig {
 	services: {
 		api: {
 			port: number;
+			headers_timeout_ms: number;
+			request_timeout_ms: number;
+			max_inflight_requests: number;
 			ip_ban_exempt_ips: Array<string>;
+			desktop_github_redirect_countries: Array<string>;
 			presigned_attachment_uploads_enabled: boolean;
 			presigned_downloads_enabled: boolean;
 			presigned_harvest_downloads_enabled: boolean;
@@ -208,6 +213,7 @@ export interface MasterConfig {
 			provider: 'smtp' | 'none';
 			from_email: string;
 			from_name: string;
+			app_base_url: string;
 			webhook_secret?: string;
 			smtp?: {
 				host: string;
@@ -364,6 +370,7 @@ export interface MasterConfig {
 		disable_rate_limits: boolean;
 		test_mode_enabled: boolean;
 		test_harness_token?: string;
+		validate_responses?: boolean;
 	};
 	geoip: {
 		maxmind_db_path: string;

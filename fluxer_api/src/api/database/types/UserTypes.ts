@@ -311,24 +311,6 @@ export interface UserGuildSettingsRow {
 	version: number;
 }
 
-export interface ExpressionPackRow {
-	pack_id: GuildID;
-	pack_type: string;
-	creator_id: UserID;
-	name: string;
-	description: Nullish<string>;
-	created_at: Date;
-	updated_at: Date;
-	version: number;
-}
-
-export interface PackInstallationRow {
-	user_id: UserID;
-	pack_id: GuildID;
-	pack_type: string;
-	installed_at: Date;
-}
-
 export interface SavedMessageRow {
 	user_id: UserID;
 	channel_id: ChannelID;
@@ -342,34 +324,6 @@ export const SAVED_MESSAGE_COLUMNS = [
 	'message_id',
 	'saved_at',
 ] as const satisfies ReadonlyArray<keyof SavedMessageRow>;
-
-export interface ScheduledMessageRow {
-	user_id: UserID;
-	scheduled_message_id: MessageID;
-	channel_id: ChannelID;
-	payload: string;
-	scheduled_at: Date;
-	scheduled_local_at: string;
-	timezone: string;
-	status: string;
-	status_reason: string | null;
-	created_at: Date;
-	invalidated_at: Date | null;
-}
-
-export const SCHEDULED_MESSAGE_COLUMNS = [
-	'user_id',
-	'scheduled_message_id',
-	'channel_id',
-	'payload',
-	'scheduled_at',
-	'scheduled_local_at',
-	'timezone',
-	'status',
-	'status_reason',
-	'created_at',
-	'invalidated_at',
-] as const satisfies ReadonlyArray<keyof ScheduledMessageRow>;
 
 export interface FavoriteMemeRow {
 	user_id: UserID;
@@ -543,16 +497,6 @@ export const USER_SETTINGS_COLUMNS = [
 	'default_share_voice_activity',
 	'version',
 ] as const satisfies ReadonlyArray<keyof UserSettingsRow>;
-export const EXPRESSION_PACK_COLUMNS = [
-	'pack_id',
-	'pack_type',
-	'creator_id',
-	'name',
-	'description',
-	'created_at',
-	'updated_at',
-	'version',
-] as const satisfies ReadonlyArray<keyof ExpressionPackRow>;
 export const USER_GUILD_SETTINGS_COLUMNS = [
 	'user_id',
 	'guild_id',

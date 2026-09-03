@@ -27,13 +27,19 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM ${DEBIAN_BASE} AS runtime
 ARG BUILD_VERSION=""
+ARG SOURCE_SHA=""
+ARG SOURCE_DATE=""
 
 LABEL org.opencontainers.image.title="fluxer-media-proxy"
 LABEL org.opencontainers.image.description="High-throughput media transcoding proxy: libvips + libavformat + libcurl"
 LABEL org.opencontainers.image.licenses="AGPL-3.0-or-later"
-LABEL org.opencontainers.image.source="https://github.com/fluxer/fluxer/tree/main/fluxer_media_proxy"
-LABEL org.opencontainers.image.documentation="https://github.com/fluxer/fluxer/blob/main/fluxer_media_proxy/README.md"
+LABEL org.opencontainers.image.vendor="Fluxer"
+LABEL org.opencontainers.image.url="https://fluxer.app"
+LABEL org.opencontainers.image.documentation="https://docs.fluxer.app"
+LABEL org.opencontainers.image.source="https://github.com/fluxerapp/fluxer"
 LABEL org.opencontainers.image.version="${BUILD_VERSION}"
+LABEL org.opencontainers.image.revision="${SOURCE_SHA}"
+LABEL org.opencontainers.image.created="${SOURCE_DATE}"
 LABEL app.fluxer.build-version="${BUILD_VERSION}"
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -74,7 +80,7 @@ WORKDIR /var/lib/fluxer
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD ["sh", "-c", "exec 3<>/dev/tcp/127.0.0.1/${FLUXER_MEDIA_PROXY_PORT:-8080} && printf 'GET /_health HTTP/1.0\\r\\n\\r\\n' >&3 && grep -q '200' <&3"]
+    CMD ["/usr/local/bin/fluxer-media-proxy", "healthcheck"]
 
 ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["/usr/local/bin/fluxer-media-proxy"]

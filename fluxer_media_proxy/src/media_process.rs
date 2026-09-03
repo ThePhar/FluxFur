@@ -1074,11 +1074,8 @@ fn output_is_sdr(format: AssetExtension) -> bool {
     )
 }
 
-fn source_maybe_hdr(input: &[u8]) -> bool {
-    matches!(
-        mime::sniff(input).mime,
-        "image/avif" | "image/heic" | "image/heif"
-    )
+fn source_maybe_hdr(sniffed_mime: &str) -> bool {
+    matches!(sniffed_mime, "image/avif" | "image/heic" | "image/heif")
 }
 
 fn tone_map_if_hdr(image: native::VipsImageHandle) -> Result<native::VipsImageHandle, MediaError> {
@@ -1205,12 +1202,18 @@ fn resize_animated_gif_with_ffmpeg(
             dims.width,
             dims.height,
             options.deadline_ms.unwrap_or(0),
+            i64::from(Limits::animated_frames()),
+            Limits::animated_total_pixels().min(i64::MAX as usize) as i64,
             &mut out_ptr,
             &mut out_size,
         )
     };
     if rc == -2 {
         return Err(MediaError::RequestTimeout);
+    }
+    if rc == -3 {
+        clear_vips_error();
+        return Err(MediaError::InvalidImageDimensions);
     }
     if rc != 0 || out_ptr.is_null() {
         clear_vips_error();
@@ -1277,6 +1280,7 @@ pub fn transform_image(input: &[u8], options: &ImageOptions) -> Result<Processed
         && !options.cover_crop
         && sniffed.mime == "image/gif"
     {
+        probe_animated(input)?;
         let bytes = if let Some(dims) = gif_resize_dims(sniffed, options) {
             resize_animated_gif_with_ffmpeg(input, dims, options)?
         } else {
@@ -1314,7 +1318,7 @@ pub fn transform_image(input: &[u8], options: &ImageOptions) -> Result<Processed
         animated_probe,
         options.effort_override,
     );
-    let tone_map_eligible = source_maybe_hdr(input) && output_is_sdr(format);
+    let tone_map_eligible = source_maybe_hdr(sniffed.mime) && output_is_sdr(format);
     let use_heif_path = matches!(sniffed.mime, "image/avif" | "image/heic" | "image/heif")
         && (options.animated || tone_map_eligible);
     if use_heif_path

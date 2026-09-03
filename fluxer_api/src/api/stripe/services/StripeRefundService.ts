@@ -252,7 +252,7 @@ export class StripeRefundService {
 			return;
 		}
 		const user = await this.userRepository.findUnique(userId);
-		if (!user || user.firstRefundAt) {
+		if (!user) {
 			return;
 		}
 		const subscriptionId = refund.metadata.subscription_id;

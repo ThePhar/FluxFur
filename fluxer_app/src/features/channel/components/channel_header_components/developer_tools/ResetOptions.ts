@@ -31,7 +31,6 @@ export const DEFAULT_DEVELOPER_OPTIONS = {
 	selfHostedModeOverride: false,
 	forceShowVanityURLDisclaimer: false,
 	forceShowVoiceConnection: false,
-	showExpressionPacksSettings: false,
 	showProfileTimezoneSettings: false,
 	premiumScenarioOverride: null,
 	premiumTypeOverride: null,
@@ -69,7 +68,6 @@ export const DEFAULT_DEVELOPER_OPTIONS = {
 	mockTitlebarPlatformOverride: 'auto',
 	mockAttachmentStates: {},
 	noOpInAppReports: false,
-	gameCaptureInjectionMethod: 'auto',
 } satisfies DeveloperOptionsState;
 const PREMIUM_SCENARIO_OVERRIDE_KEYS = new Set<keyof DeveloperOptionsState>([
 	'premiumTypeOverride',

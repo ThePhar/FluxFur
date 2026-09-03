@@ -116,6 +116,16 @@ export class AttachmentProcessingService {
 		);
 		const hasVirusDetected = results.some((result) => result.hasVirusDetected);
 		if (hasVirusDetected) {
+			await Promise.all(
+				results.map(async (result) => {
+					if (result.sourceLocalPath) {
+						await fs.promises.unlink(result.sourceLocalPath).catch(() => undefined);
+					}
+				}),
+			);
+			for (const result of results) {
+				this.deleteUploadObject(result.copyOperation.sourceBucket, result.copyOperation.sourceKey);
+			}
 			return {attachments: [], hasVirusDetected: true};
 		}
 		const copyResults = await mapWithConcurrency(results, ATTACHMENT_PROCESSING_CONCURRENCY, (result) =>
@@ -199,7 +209,7 @@ export class AttachmentProcessingService {
 		}
 		const attachmentId = createAttachmentID(await this.snowflakeService.generate());
 		const cdnKey = makeAttachmentCdnKey(message.channelId, attachmentId, attachment.filename);
-		let contentType = attachment.content_type ?? getContentType(attachment.filename);
+		let contentType = pendingUpload.content_type ?? getContentType(attachment.filename);
 		let size = BigInt(uploadedFile.contentLength);
 		const clientFlags =
 			(attachment.flags ?? 0) & (MessageAttachmentFlags.IS_SPOILER | MessageAttachmentFlags.CONTAINS_EXPLICIT_MEDIA);

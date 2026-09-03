@@ -46,6 +46,12 @@ export class ReadStateService {
 				mentionCount: readState.mentionCount,
 				manual,
 				version: readState.version,
+			}).catch((error) => {
+				Logger.error(
+					{userId: userId.toString(), channelId: channelId.toString(), error},
+					'Failed to dispatch MESSAGE_ACK',
+				);
+				return null;
 			});
 		}
 		return readState;
@@ -171,14 +177,13 @@ export class ReadStateService {
 		try {
 			const appliedUpdates = await this.repository.bulkIncrementMentionCounts(updates);
 			const uniqueUserIds = Array.from(new Set(appliedUpdates.map((update) => update.userId)));
-			await Promise.all(
-				uniqueUserIds.map((userId) =>
-					this.gatewayService.invalidatePushBadgeCount({userId}).catch((error) => {
-						Logger.error({userId: userId.toString(), error}, 'Failed to invalidate push badge count');
-						return null;
-					}),
-				),
-			);
+			if (uniqueUserIds.length === 0) {
+				return;
+			}
+			await this.gatewayService.invalidatePushBadgeCounts({userIds: uniqueUserIds}).catch((error) => {
+				Logger.error({userCount: uniqueUserIds.length, error}, 'Failed to invalidate push badge counts');
+				return null;
+			});
 		} catch (error) {
 			Logger.error({error}, 'Bulk increment mention counts failed');
 			throw error;

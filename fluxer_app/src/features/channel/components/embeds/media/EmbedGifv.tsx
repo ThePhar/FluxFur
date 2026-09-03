@@ -181,6 +181,7 @@ const useImagePreview = ({
 	message,
 	sourceChannel,
 	providerName,
+	allowAttachmentDelete = false,
 }: {
 	proxyUrl: string;
 	embedUrl: string;
@@ -195,6 +196,7 @@ const useImagePreview = ({
 	message?: Message;
 	sourceChannel?: Channel | null;
 	providerName?: string;
+	allowAttachmentDelete?: boolean;
 }): {viewerItem: MediaViewerItem; openPreview: (event: React.MouseEvent | React.KeyboardEvent) => void} => {
 	const viewerItem = useMemo<MediaViewerItem>(
 		() => ({
@@ -223,9 +225,10 @@ const useImagePreview = ({
 				messageId,
 				message,
 				sourceChannel,
+				allowAttachmentDelete,
 			});
 		},
-		[viewerItem, channelId, messageId, message, sourceChannel],
+		[viewerItem, channelId, messageId, message, sourceChannel, allowAttachmentDelete],
 	);
 	return {viewerItem, openPreview};
 };
@@ -405,7 +408,7 @@ export const EmbedGifv: FC<
 			},
 			[visibilityRef],
 		);
-		const {dimensions, style} = mediaCalculator.calculate({width: naturalWidth, height: naturalHeight});
+		const {dimensions} = mediaCalculator.calculate({width: naturalWidth, height: naturalHeight});
 		const canPlayInline = isInlinePlayableVideoSize({width: naturalWidth, height: naturalHeight});
 		const posterSource = thumbnailProxyURL && thumbnailProxyURL.length > 0 ? thumbnailProxyURL : videoProxyURL;
 		const posterURL = useMemo(() => {
@@ -461,6 +464,7 @@ export const EmbedGifv: FC<
 			message,
 			sourceChannel: messageViewContext?.channel,
 			providerName,
+			allowAttachmentDelete: !isPreview && snapshotIndex === undefined,
 		});
 		const handleDeleteClick = useDeleteAttachment(message, attachmentId);
 		const handleDownloadClick = useCallback(
@@ -530,8 +534,11 @@ export const EmbedGifv: FC<
 			safePause(video);
 		}, [shouldPlay]);
 		if (shouldBlur) {
-			const {width: _width, height: _height, ...styleWithoutDimensions} = style;
-			const blurContainerStyle = {...styleWithoutDimensions, maxWidth: '100%', width: '100%'};
+			const blurContainerStyle: React.CSSProperties = {
+				maxWidth: '100%',
+				width: remFromPx(dimensions.width),
+				...aspectRatioStyle,
+			};
 			return (
 				<div
 					ref={visibilityRef}
@@ -715,7 +722,7 @@ export const EmbedGif: FC<
 			},
 			[visibilityRef],
 		);
-		const {dimensions, style} = mediaCalculator.calculate({width: naturalWidth, height: naturalHeight});
+		const {dimensions} = mediaCalculator.calculate({width: naturalWidth, height: naturalHeight});
 		const {width: displayWidth, height: displayHeight} = dimensions;
 		const gifAutoPlay = useShouldAnimate({kind: 'gif'});
 		const animationPolicyAllowed = useShouldAnimate({
@@ -795,6 +802,7 @@ export const EmbedGif: FC<
 			contentHash,
 			message,
 			sourceChannel: messageViewContext?.channel,
+			allowAttachmentDelete: !isPreview && snapshotIndex === undefined,
 		});
 		const {scheduleViewerWarm, cancelViewerWarm} = useMediaViewerHoverWarm(viewerItem, {
 			allowAnimated: gifAutoPlay,
@@ -851,8 +859,11 @@ export const EmbedGif: FC<
 			],
 		);
 		if (shouldBlur) {
-			const {width: _width, height: _height, ...styleWithoutDimensions} = style;
-			const blurContainerStyle = {...styleWithoutDimensions, maxWidth: '100%', width: '100%'};
+			const blurContainerStyle: React.CSSProperties = {
+				maxWidth: '100%',
+				width: remFromPx(dimensions.width),
+				...aspectRatioStyle,
+			};
 			return (
 				<div
 					ref={visibilityRef}

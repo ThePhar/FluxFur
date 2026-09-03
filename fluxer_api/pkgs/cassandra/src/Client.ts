@@ -6,6 +6,12 @@ import cassandra from 'cassandra-driver';
 
 const distance = cassandra.types.distance;
 
+const MAX_REQUESTS_PER_CONNECTION = 2048;
+const CONNECT_TIMEOUT_MS = 5000;
+const DEFAULT_READ_TIMEOUT_MS = 5000;
+
+export const BACKGROUND_READ_TIMEOUT_MS = 12000;
+
 interface CassandraConfig {
 	hosts: Array<string>;
 	port?: number | undefined;
@@ -13,6 +19,7 @@ interface CassandraConfig {
 	localDc: string;
 	username?: string | undefined;
 	password?: string | undefined;
+	readTimeoutMs?: number | undefined;
 }
 
 interface CassandraClientOptions {
@@ -63,6 +70,7 @@ class CassandraClient implements ICassandraClient {
 			localDc: config.localDc,
 			username: config.username,
 			password: config.password,
+			readTimeoutMs: config.readTimeoutMs,
 		};
 		this.logger = options.logger ?? NoopLogger;
 		this.client = null;
@@ -83,11 +91,15 @@ class CassandraClient implements ICassandraClient {
 				port: this.config.port ?? 9042,
 			},
 			pooling: {
-				maxRequestsPerConnection: 32768,
+				maxRequestsPerConnection: MAX_REQUESTS_PER_CONNECTION,
 				coreConnectionsPerHost: {
 					[distance.local]: 4,
 					[distance.remote]: 2,
 				},
+			},
+			socketOptions: {
+				connectTimeout: CONNECT_TIMEOUT_MS,
+				readTimeout: this.config.readTimeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
 			},
 			encoding: {
 				map: Map,

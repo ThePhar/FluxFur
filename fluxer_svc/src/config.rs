@@ -4,6 +4,10 @@ use std::env;
 use std::net::{IpAddr, SocketAddr};
 use std::time::Duration;
 
+const DEFAULT_MAX_CONCURRENT_REQUESTS: usize = 64;
+const MESSAGES_MAX_CONCURRENT_REQUESTS: usize = 192;
+const SNOWFLAKES_MAX_CONCURRENT_REQUESTS: usize = 320;
+
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
     pub service_name: String,
@@ -31,6 +35,7 @@ pub struct ServiceConfig {
     pub postgres_ssl_ca: Option<String>,
     pub postgres_max_connections: usize,
     pub postgres_kv_table: String,
+    pub postgres_prepared_statements: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -140,6 +145,17 @@ impl ServiceConfig {
             .transpose()?
             .unwrap_or(20)
             .max(1);
+        let postgres_prepared_statements =
+            optional_from(&get, "FLUXER_POSTGRES_PREPARED_STATEMENTS")
+                .map(|v| parse_bool(&v))
+                .transpose()?
+                .unwrap_or(true);
+
+        let max_concurrent_requests = optional_from(&get, "FLUXER_SVC_MAX_CONCURRENT_REQUESTS")
+            .map(|v| v.parse::<usize>())
+            .transpose()?
+            .unwrap_or_else(|| default_max_concurrent_requests(&service_name))
+            .max(1);
 
         Ok(Self {
             service_name,
@@ -155,11 +171,7 @@ impl ServiceConfig {
                 .unwrap_or(100_000),
             cache_ttl: Duration::from_millis(cache_ttl_ms),
             cache_hard_ttl: Duration::from_millis(cache_hard_ttl_ms),
-            max_concurrent_requests: optional_from(&get, "FLUXER_SVC_MAX_CONCURRENT_REQUESTS")
-                .map(|v| v.parse::<usize>())
-                .transpose()?
-                .unwrap_or(64)
-                .max(1),
+            max_concurrent_requests,
             scylla_hosts,
             scylla_keyspace: optional_from(&get, "FLUXER_CASSANDRA_KEYSPACE")
                 .unwrap_or_else(|| "fluxer".to_owned()),
@@ -180,7 +192,16 @@ impl ServiceConfig {
             postgres_max_connections,
             postgres_kv_table: optional_from(&get, "FLUXER_POSTGRES_KV_TABLE")
                 .unwrap_or_else(|| "fluxer_kv".to_owned()),
+            postgres_prepared_statements,
         })
+    }
+}
+
+fn default_max_concurrent_requests(service_name: &str) -> usize {
+    match service_name {
+        "messages" => MESSAGES_MAX_CONCURRENT_REQUESTS,
+        "snowflakes" => SNOWFLAKES_MAX_CONCURRENT_REQUESTS,
+        _ => DEFAULT_MAX_CONCURRENT_REQUESTS,
     }
 }
 
@@ -330,6 +351,7 @@ mod tests {
         assert_eq!(None, cfg.postgres_ssl_ca);
         assert_eq!(20, cfg.postgres_max_connections);
         assert_eq!("fluxer_kv", cfg.postgres_kv_table);
+        assert!(cfg.postgres_prepared_statements);
     }
 
     #[test]
@@ -346,6 +368,7 @@ mod tests {
             ("FLUXER_POSTGRES_SSL_CA", "ca-pem"),
             ("FLUXER_POSTGRES_MAX_CONNECTIONS", "7"),
             ("FLUXER_POSTGRES_KV_TABLE", "fluxer_kv_dev"),
+            ("FLUXER_POSTGRES_PREPARED_STATEMENTS", "false"),
         ]);
 
         assert_eq!(DatabaseBackend::Postgres, cfg.database_backend);
@@ -362,6 +385,42 @@ mod tests {
         assert_eq!(Some("ca-pem".to_owned()), cfg.postgres_ssl_ca);
         assert_eq!(7, cfg.postgres_max_connections);
         assert_eq!("fluxer_kv_dev", cfg.postgres_kv_table);
+        assert!(!cfg.postgres_prepared_statements);
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_prepared_statements_value() {
+        let result = ServiceConfig::from_env_reader(|name| {
+            (name == "FLUXER_POSTGRES_PREPARED_STATEMENTS").then(|| "maybe".to_owned())
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn raises_concurrency_defaults_for_hot_path_services() {
+        assert_eq!(
+            MESSAGES_MAX_CONCURRENT_REQUESTS,
+            config_from_pairs(&[("FLUXER_SVC_NAME", "messages")]).max_concurrent_requests
+        );
+        assert_eq!(
+            SNOWFLAKES_MAX_CONCURRENT_REQUESTS,
+            config_from_pairs(&[("FLUXER_SVC_NAME", "snowflakes")]).max_concurrent_requests
+        );
+        assert_eq!(
+            DEFAULT_MAX_CONCURRENT_REQUESTS,
+            config_from_pairs(&[("FLUXER_SVC_NAME", "users")]).max_concurrent_requests
+        );
+    }
+
+    #[test]
+    fn concurrency_env_override_wins_over_service_default() {
+        let cfg = config_from_pairs(&[
+            ("FLUXER_SVC_NAME", "messages"),
+            ("FLUXER_SVC_MAX_CONCURRENT_REQUESTS", "32"),
+        ]);
+
+        assert_eq!(32, cfg.max_concurrent_requests);
     }
 
     #[test]

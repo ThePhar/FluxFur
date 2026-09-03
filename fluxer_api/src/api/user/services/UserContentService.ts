@@ -3,8 +3,10 @@
 import crypto from 'node:crypto';
 import type {Readable} from 'node:stream';
 import {MAX_BOOKMARKS_NON_PREMIUM} from '@fluxer/constants/src/LimitConstants';
+import {ValidationErrorCodes} from '@fluxer/constants/src/ValidationErrorCodes';
 import {UnknownChannelError} from '@fluxer/errors/src/domains/channel/UnknownChannelError';
 import {UnknownMessageError} from '@fluxer/errors/src/domains/channel/UnknownMessageError';
+import {InputValidationError} from '@fluxer/errors/src/domains/core/InputValidationError';
 import {MaxBookmarksError} from '@fluxer/errors/src/domains/core/MaxBookmarksError';
 import {MissingPermissionsError} from '@fluxer/errors/src/domains/core/MissingPermissionsError';
 import {UnknownGuildError} from '@fluxer/errors/src/domains/guild/UnknownGuildError';
@@ -22,6 +24,7 @@ import type {
 } from '@fluxer/schema/src/domains/user/UserRequestSchemas';
 import type {SavedMessageStatus} from '@fluxer/schema/src/domains/user/UserResponseSchemas';
 import {snowflakeToDate} from '@fluxer/snowflake/src/Snowflake';
+import {isPubliclyRoutableUrlShape} from '@pkgs/http_client/src/PublicInternetRequestUrlPolicy';
 import type {IWorkerService} from '@pkgs/worker/src/contracts/IWorkerService';
 import {ms} from 'itty-time';
 import type {ApiContext} from '../../ApiContext';
@@ -85,6 +88,18 @@ function createWebPushSubscriptionId(endpoint: string): string {
 	return crypto.createHash('sha256').update(endpoint).digest('hex').substring(0, 32);
 }
 
+function assertPublicPushEndpoint(endpoint: string, fieldName: string): void {
+	let parsedUrl: URL;
+	try {
+		parsedUrl = new URL(endpoint);
+	} catch {
+		throw InputValidationError.fromCode(fieldName, ValidationErrorCodes.INVALID_URL_FORMAT);
+	}
+	if (!isPubliclyRoutableUrlShape(parsedUrl)) {
+		throw InputValidationError.fromCode(fieldName, ValidationErrorCodes.URL_NOT_PUBLICLY_ROUTABLE);
+	}
+}
+
 function normalizeMobileAppId(appId: string | undefined): string {
 	const normalized = appId?.trim();
 	return normalized && normalized.length > 0 ? normalized : DEFAULT_MOBILE_APP_ID;
@@ -141,23 +156,54 @@ export class UserContentService {
 	}): Promise<Array<Message>> {
 		const {userId, limit, everyone, roles, guilds, before} = params;
 		const mentions = await this.userRepository.listRecentMentions(userId, everyone, roles, guilds, limit, before);
-		const messagePromises = mentions.map(async (mention) => {
-			try {
-				return await this.channelService.messages.retrieval.getMessage({
-					userId,
-					channelId: mention.channelId,
-					messageId: mention.messageId,
-				});
-			} catch (error) {
-				if (error instanceof UnknownMessageError || isUnreachableEntityError(error)) {
-					return null;
-				}
-				throw error;
-			}
-		});
-		const messageResults = await Promise.all(messagePromises);
-		const messages = messageResults.filter((message): message is Message => message != null);
+		const messagesByChannel = await this.readMessagesByChannel(userId, mentions);
+		const messages = mentions
+			.map((mention) => this.pickMessage(messagesByChannel, mention))
+			.filter((message): message is Message => message != null);
 		return messages.sort((a, b) => (b.id > a.id ? 1 : -1));
+	}
+
+	private async readMessagesByChannel(
+		userId: UserID,
+		entries: ReadonlyArray<{channelId: ChannelID; messageId: MessageID}>,
+	): Promise<Map<string, Map<string, Message> | null>> {
+		const grouped = new Map<string, {channelId: ChannelID; messageIds: Array<MessageID>}>();
+		for (const entry of entries) {
+			const key = entry.channelId.toString();
+			const group = grouped.get(key);
+			if (group) {
+				group.messageIds.push(entry.messageId);
+			} else {
+				grouped.set(key, {channelId: entry.channelId, messageIds: [entry.messageId]});
+			}
+		}
+		const messagesByChannel = new Map<string, Map<string, Message> | null>();
+		await Promise.all(
+			Array.from(grouped, async ([key, group]) => {
+				try {
+					const messages = await this.channelService.messages.retrieval.getMessagesByIds({
+						userId,
+						channelId: group.channelId,
+						messageIds: group.messageIds,
+					});
+					messagesByChannel.set(key, messages);
+				} catch (error) {
+					if (isUnreachableEntityError(error)) {
+						messagesByChannel.set(key, null);
+						return;
+					}
+					throw error;
+				}
+			}),
+		);
+		return messagesByChannel;
+	}
+
+	private pickMessage(
+		messagesByChannel: ReadonlyMap<string, Map<string, Message> | null>,
+		entry: {channelId: ChannelID; messageId: MessageID},
+	): Message | null {
+		return messagesByChannel.get(entry.channelId.toString())?.get(entry.messageId.toString()) ?? null;
 	}
 
 	async deleteRecentMention({userId, messageId}: {userId: UserID; messageId: MessageID}): Promise<void> {
@@ -181,35 +227,33 @@ export class UserContentService {
 
 	async getSavedMessages({userId, limit}: {userId: UserID; limit: number}): Promise<Array<SavedMessageEntry>> {
 		const savedMessages = await this.userRepository.listSavedMessages(userId, limit);
-		const messagePromises = savedMessages.map(async (savedMessage) => {
-			let message: Message | null = null;
-			let status: SavedMessageStatus = 'available';
-			try {
-				message = await this.channelService.messages.retrieval.getMessage({
-					userId,
+		const messagesByChannel = await this.readMessagesByChannel(userId, savedMessages);
+		const results: Array<SavedMessageEntry> = [];
+		const staleMessageIds: Array<MessageID> = [];
+		for (const savedMessage of savedMessages) {
+			const channelMessages = messagesByChannel.get(savedMessage.channelId.toString());
+			if (channelMessages === null) {
+				results.push({
 					channelId: savedMessage.channelId,
 					messageId: savedMessage.messageId,
+					status: 'missing_permissions',
+					message: null,
 				});
-			} catch (error) {
-				if (error instanceof UnknownMessageError) {
-					await this.userRepository.deleteSavedMessage(userId, savedMessage.messageId);
-					return null;
-				}
-				if (isUnreachableEntityError(error)) {
-					status = 'missing_permissions';
-				} else {
-					throw error;
-				}
+				continue;
 			}
-			return {
+			const message = this.pickMessage(messagesByChannel, savedMessage);
+			if (!message) {
+				staleMessageIds.push(savedMessage.messageId);
+				continue;
+			}
+			results.push({
 				channelId: savedMessage.channelId,
 				messageId: savedMessage.messageId,
-				status,
+				status: 'available',
 				message,
-			};
-		});
-		const messageResults = await Promise.all(messagePromises);
-		const results = messageResults.filter((result): result is NonNullable<typeof result> => result != null);
+			});
+		}
+		await Promise.all(staleMessageIds.map((messageId) => this.userRepository.deleteSavedMessage(userId, messageId)));
 		return results.sort((a, b) => (b.messageId > a.messageId ? 1 : a.messageId > b.messageId ? -1 : 0));
 	}
 
@@ -266,6 +310,7 @@ export class UserContentService {
 		userAgent?: string;
 	}): Promise<PushSubscription> {
 		const {userId, authSessionIdHash, endpoint, keys, userAgent} = params;
+		assertPublicPushEndpoint(endpoint, 'endpoint');
 		const subscriptionId = createWebPushSubscriptionId(endpoint);
 		const data: PushSubscriptionRow = {
 			user_id: userId,
@@ -306,6 +351,7 @@ export class UserContentService {
 		userAgent?: string;
 	}): Promise<PushSubscription> {
 		const {userId, authSessionIdHash, oldEndpoint, endpoint, keys, userAgent} = params;
+		assertPublicPushEndpoint(endpoint, 'endpoint');
 		const oldSubscriptionId = createWebPushSubscriptionId(oldEndpoint);
 		const newSubscriptionId = createWebPushSubscriptionId(endpoint);
 		if (oldSubscriptionId !== newSubscriptionId) {
@@ -330,6 +376,9 @@ export class UserContentService {
 
 	async registerMobileDevice(params: RegisterMobileDeviceParams): Promise<PushSubscription> {
 		const {userId, authSessionIdHash, device} = params;
+		if (device.platform === 'android_unified_push') {
+			assertPublicPushEndpoint(device.token, 'token');
+		}
 		const appId = normalizeMobileAppId(device.app_id);
 		const providerEnvironment = normalizeProviderEnvironment(device.platform, device.provider_environment);
 		const subscriptionId = createPushSubscriptionId([device.platform, appId, providerEnvironment ?? '', device.token]);

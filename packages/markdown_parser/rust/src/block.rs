@@ -161,7 +161,7 @@ pub(crate) fn parse_block(state: &mut RuntimeState<'_>) -> Result<BlockParseResu
             let starts_with_fence =
                 starts_with(trimmed, "```") && fence_pos == line.len() - trimmed.len();
             if starts_with_fence {
-                if let Some(result) = parse_code_block(state.parser, &state.lines, current)? {
+                if let Some(result) = parse_code_block(&state.lines, current)? {
                     if let Some(extra) = &result.extra_content {
                         state.lines[result.new_line_index].text = extra.content.clone();
                         state.lines[result.new_line_index].offset = extra.offset;
@@ -181,7 +181,7 @@ pub(crate) fn parse_block(state: &mut RuntimeState<'_>) -> Result<BlockParseResu
             }
             let inline_nodes = crate::inline::parse_inline(state.parser, prefix, line_offset)?;
             let code_lines = slice_lines_from_fence(&state.lines, current, fence_pos);
-            if let Some(code_result) = parse_code_block(state.parser, &code_lines, 0)? {
+            if let Some(code_result) = parse_code_block(&code_lines, 0)? {
                 let new_line_index = current + code_result.new_line_index;
                 let mut extra_nodes = Vec::new();
                 if inline_nodes.len() > 1 {
@@ -447,11 +447,7 @@ fn parse_multiline_blockquote(
     })
 }
 
-fn parse_code_block(
-    _parser: &mut MarkdownParser,
-    lines: &[Line],
-    current: usize,
-) -> Result<Option<CodeBlockResult>, ParseError> {
+fn parse_code_block(lines: &[Line], current: usize) -> Result<Option<CodeBlockResult>, ParseError> {
     if current >= lines.len() {
         return Ok(None);
     }
@@ -958,7 +954,7 @@ fn try_parse_nested_list(
     }
     let trimmed = trim_start(&lines[current].text);
     if starts_with(trimmed, "```")
-        && let Some(result) = parse_code_block(parser, lines, current)?
+        && let Some(result) = parse_code_block(lines, current)?
     {
         return Ok(Some(ListResult {
             node: result.node,
@@ -1194,6 +1190,26 @@ pub(crate) fn is_block_start(line: &str, flags: u32) -> bool {
         || (ParserFlags::has(flags, ParserFlags::ALLOW_CODE_BLOCKS) && starts_with(line, "```"))
         || (ParserFlags::has(flags, ParserFlags::ALLOW_LISTS) && match_list_item(line).is_some())
         || is_blockquote_start(line, flags)
+}
+
+pub(crate) fn opens_code_block_midline(lines: &[Line], index: usize, flags: u32) -> bool {
+    if !ParserFlags::has(flags, ParserFlags::ALLOW_CODE_BLOCKS) || index >= lines.len() {
+        return false;
+    }
+    let line = &lines[index].text;
+    let Some(fence_pos) = line.find("```") else {
+        return false;
+    };
+    let trimmed = trim_start(line);
+    if starts_with(trimmed, "```") && fence_pos == line.len() - trimmed.len() {
+        return false;
+    }
+    let prefix = &line[..fence_pos];
+    if has_open_inline_code(prefix) {
+        return false;
+    }
+    let code_lines = slice_lines_from_fence(lines, index, fence_pos);
+    matches!(parse_code_block(&code_lines, 0), Ok(Some(_)))
 }
 
 pub(crate) fn is_table_start(lines: &[Line], index: usize, flags: u32) -> bool {

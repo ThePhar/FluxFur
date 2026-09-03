@@ -3,7 +3,6 @@
 import {createHash} from 'node:crypto';
 import {UserFlags} from '@fluxer/constants/src/UserConstants';
 import {RateLimitError} from '@fluxer/errors/src/domains/core/RateLimitError';
-import {extractClientIp} from '@fluxer/ip_utils/src/ClientIp';
 import {getSameIpDecisionKey} from '@fluxer/ip_utils/src/IpAddress';
 import type {BucketConfig, RateLimitResult, RateLimitScope} from '@pkgs/rate_limit/src/IRateLimitService';
 import type {Context, MiddlewareHandler} from 'hono';
@@ -11,6 +10,7 @@ import {createMiddleware} from 'hono/factory';
 import * as AuthSession from '../auth/AuthSession';
 import {Config} from '../Config';
 import type {HonoEnv} from '../types/HonoEnv';
+import {getRequestClientIp} from '../utils/RequestClientIp';
 
 type AccountType = 'user' | 'bot' | 'webhook';
 
@@ -52,12 +52,13 @@ function shouldShowHeadersOnSuccess(accountType: AccountType): boolean {
 function getClientIdentifier(ctx: Context<HonoEnv>): string {
 	const user = ctx.get('user');
 	if (user?.id) {
-		return `user:${user.id}`;
+		const tokenType = ctx.get('authTokenType') ?? 'session';
+		if (tokenType === 'bearer') {
+			return `user:${user.id}:bearer:${ctx.get('oauthBearerApplicationId') ?? 'unknown'}`;
+		}
+		return `user:${user.id}:${tokenType}`;
 	}
-	const ip = extractClientIp(ctx.req.raw, {
-		trustClientIpHeader: Config.proxy.trust_client_ip_header,
-		clientIpHeaderName: Config.proxy.client_ip_header,
-	});
+	const ip = getRequestClientIp(ctx);
 	if (!ip) return 'internal';
 	return `ip:${getSameIpDecisionKey(ip) ?? ip}`;
 }
@@ -79,13 +80,12 @@ function getGlobalRateLimit(ctx: Context<HonoEnv>): number {
 	return 50;
 }
 
-function resolveBucket(bucket: string, ctx: Context<HonoEnv>): string {
+function resolveBucket(bucket: string, clientId: string, ctx: Context<HonoEnv>): string {
 	let resolved = bucket;
 	const params = ctx.req.param();
 	for (const [key, value] of Object.entries(params)) {
 		resolved = resolved.replace(`:${key}`, String(value));
 	}
-	const clientId = getClientIdentifier(ctx);
 	return `${clientId}:${resolved}`;
 }
 
@@ -130,6 +130,7 @@ async function revokeAuthenticatedSessionOnGlobalRateLimit(ctx: Context<HonoEnv>
 }
 
 export function RateLimitMiddleware(routeConfig: RouteRateLimitConfig): MiddlewareHandler<HonoEnv> {
+	const routeBucketHash = getBucketHash(routeConfig.bucket);
 	return createMiddleware<HonoEnv>(async (ctx, next) => {
 		if (!shouldEnforceRateLimits(ctx)) {
 			await next();
@@ -148,7 +149,6 @@ export function RateLimitMiddleware(routeConfig: RouteRateLimitConfig): Middlewa
 		const accountType = getAccountType(ctx);
 		const showHeaders = shouldShowHeadersOnSuccess(accountType);
 		const clientId = getClientIdentifier(ctx);
-		const routeBucketHash = getBucketHash(routeConfig.bucket);
 		if (!routeConfig.config.exemptFromGlobal) {
 			const globalLimit = getGlobalRateLimit(ctx);
 			const globalResult = await rateLimitService.checkGlobalLimit(clientId, globalLimit);
@@ -165,7 +165,7 @@ export function RateLimitMiddleware(routeConfig: RouteRateLimitConfig): Middlewa
 				});
 			}
 		}
-		const bucket = resolveBucket(routeConfig.bucket, ctx);
+		const bucket = resolveBucket(routeConfig.bucket, clientId, ctx);
 		const bucketConfigWithAlgorithm: BucketConfig = {
 			...routeConfig.config,
 			algorithm: 'leaky_bucket',

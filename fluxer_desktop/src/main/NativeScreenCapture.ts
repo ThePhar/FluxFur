@@ -19,6 +19,7 @@ import type {
 import {ipcMain} from 'electron';
 import {getTccStatus} from './MacTcc';
 import {isValidStartOptions, normalizeScreenCaptureDimension} from './NativeScreenCaptureValidation';
+import {requirePrivilegedRendererDocumentSender} from './PrivilegedRendererDocuments';
 
 const logger = createChildLogger('NativeScreenCapture');
 const requireModule = createRequire(import.meta.url);
@@ -827,7 +828,6 @@ async function startNativeScreenCapture(
 		width: requestedWidth,
 		height: requestedHeight,
 		frameRate: options.frameRate ?? 30,
-		injectionMethod: options.sourceKind === 'game' ? options.injectionMethod : undefined,
 		captureId,
 		colorRange: options.colorRange,
 		colorSpace: options.colorSpace,
@@ -945,14 +945,16 @@ export function registerNativeScreenCaptureHandlers(): void {
 		'native-screen-capture:get-availability',
 		(): Promise<NativeScreenCaptureAvailability> => getNativeScreenCaptureAvailability(),
 	);
-	ipcMain.handle(
-		'native-screen-capture:list-sources',
-		(): Promise<Array<NativeScreenCaptureSource>> => listNativeScreenCaptureSources(),
-	);
+	ipcMain.handle('native-screen-capture:list-sources', (event): Promise<Array<NativeScreenCaptureSource>> => {
+		requirePrivilegedRendererDocumentSender(event, 'native-screen-capture:list-sources');
+		return listNativeScreenCaptureSources();
+	});
 	ipcMain.handle(
 		'native-screen-capture:start',
-		(event, options: NativeScreenCaptureStartOptions): Promise<NativeScreenCaptureStartResult> =>
-			startNativeScreenCapture(event.sender, options),
+		(event, options: NativeScreenCaptureStartOptions): Promise<NativeScreenCaptureStartResult> => {
+			requirePrivilegedRendererDocumentSender(event, 'native-screen-capture:start');
+			return startNativeScreenCapture(event.sender, options);
+		},
 	);
 	ipcMain.handle(
 		'native-screen-capture:get-diagnostics',

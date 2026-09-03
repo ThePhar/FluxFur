@@ -29,6 +29,7 @@ env_config() ->
     #{
         <<"env">> => env_binary("FLUXER_ENV", <<"development">>),
         <<"internal">> => env_internal_config(),
+        <<"public">> => env_public_config(),
         <<"proxy">> => env_proxy_config(),
         <<"services">> => env_services_config(),
         <<"auth">> => env_auth_config(),
@@ -42,12 +43,21 @@ env_internal_config() ->
         <<"api">> => env_binary("FLUXER_INTERNAL_API_ENDPOINT", <<"http://127.0.0.1:8080">>)
     }.
 
+-spec env_public_config() -> map().
+env_public_config() ->
+    #{
+        <<"base_domain">> => env_optional_binary("FLUXER_BASE_DOMAIN"),
+        <<"scheme">> => env_optional_binary("FLUXER_PUBLIC_SCHEME"),
+        <<"port">> => env_optional_binary("FLUXER_PUBLIC_PORT")
+    }.
+
 -spec env_proxy_config() -> map().
 env_proxy_config() ->
     #{
         <<"client_ip_header">> => env_binary(
             "FLUXER_CLIENT_IP_HEADER_NAME", <<"x-forwarded-for">>
-        )
+        ),
+        <<"trust_client_ip_header">> => env_bool("FLUXER_TRUST_CLIENT_IP_HEADER", false)
     }.
 
 -spec env_services_config() -> map().
@@ -98,6 +108,9 @@ env_gateway_base_config() ->
         <<"shutdown_drain_wait_ms">> => env_int("FLUXER_GATEWAY_SHUTDOWN_DRAIN_WAIT_MS", 5000),
         <<"gateway_http_rpc_max_concurrency">> => env_int(
             "FLUXER_GATEWAY_HTTP_RPC_MAX_CONCURRENCY", 512
+        ),
+        <<"gateway_nats_rpc_max_handlers">> => env_int(
+            "FLUXER_GATEWAY_NATS_RPC_MAX_HANDLERS", 512
         ),
         <<"gateway_http_failure_threshold">> => env_int(
             "FLUXER_GATEWAY_HTTP_FAILURE_THRESHOLD", 6
@@ -182,12 +195,13 @@ build_config(RawConfig) ->
     Apns = get_map(Push, [<<"apns">>]),
     Fcm = get_map(Push, [<<"fcm">>]),
     Proxy = get_map(RawConfig, [<<"proxy">>]),
+    Public = get_map(RawConfig, [<<"public">>]),
     lists:foldl(fun maps:merge/2, #{}, [
         build_core_config(Service, Internal, Nats, Proxy),
-        build_push_config(Service),
+        build_push_config(Service, Public),
         build_sharding_config(Service),
         build_http_config(Service),
-        build_cluster_config(Service),
+        build_cluster_config(Service, Public),
         build_vapid_config(Vapid),
         build_apns_config(Apns),
         build_fcm_config(Fcm),
@@ -200,18 +214,21 @@ build_core_config(Service, Internal, Nats, Proxy) ->
         port => get_int(Service, <<"port">>, 8080),
         gateway_role => normalize_gateway_role(get_value(Service, <<"gateway_role">>)),
         client_ip_header => get_binary(Proxy, <<"client_ip_header">>, <<"x-forwarded-for">>),
+        trust_client_ip_header => get_bool(Proxy, <<"trust_client_ip_header">>, false),
         api_internal_url => get_binary(Internal, <<"api">>, <<"http://127.0.0.1:8088">>),
         api_rpc_endpoint => get_optional_binary(Service, <<"api_rpc_endpoint">>),
         nats_core_url => get_string(Nats, <<"core_url">>, "nats://127.0.0.1:4222"),
         nats_auth_token => get_string(Nats, <<"auth_token">>, ""),
         rpc_auth_token => get_string(Service, <<"rpc_auth_token">>, ""),
+        gateway_nats_rpc_max_handlers =>
+            get_int(Service, <<"gateway_nats_rpc_max_handlers">>, 512),
         identify_rate_limit_enabled => get_bool(
             Service, <<"identify_rate_limit_enabled">>, false
         )
     }.
 
--spec build_push_config(map()) -> config().
-build_push_config(Service) ->
+-spec build_push_config(map(), map()) -> config().
+build_push_config(Service, Public) ->
     #{
         push_enabled => get_bool(Service, <<"push_enabled">>, true),
         push_user_guild_settings_cache_mb =>
@@ -223,8 +240,8 @@ build_push_config(Service) ->
         push_badge_counts_cache_mb => get_int(Service, <<"push_badge_counts_cache_mb">>, 256),
         push_badge_counts_cache_ttl_seconds =>
             get_int(Service, <<"push_badge_counts_cache_ttl_seconds">>, 60),
-        static_cdn_endpoint => get_binary(
-            Service, <<"static_cdn_endpoint">>, <<"http://localhost:8088">>
+        static_cdn_endpoint => public_endpoint(
+            get_binary(Service, <<"static_cdn_endpoint">>, <<"http://localhost:8088">>), Public
         ),
         push_dispatcher_max_inflight => get_int(
             Service, <<"push_dispatcher_max_inflight">>, 16
@@ -271,8 +288,8 @@ build_http_config(Service) ->
             get_int(Service, <<"gateway_http_cleanup_max_age_ms">>, 300000)
     }.
 
--spec build_cluster_config(map()) -> config().
-build_cluster_config(Service) ->
+-spec build_cluster_config(map(), map()) -> config().
+build_cluster_config(Service, Public) ->
     #{
         cluster_enabled => get_bool(Service, <<"cluster_enabled">>, false),
         cluster_discovery_dns_name =>
@@ -285,7 +302,9 @@ build_cluster_config(Service) ->
             get_int(Service, <<"cluster_discovery_poll_interval_ms">>, 5000),
         cluster_static_peers =>
             parse_node_list(get_optional_binary(Service, <<"cluster_static_peers">>)),
-        media_proxy_endpoint => get_optional_binary(Service, <<"media_proxy_endpoint">>)
+        media_proxy_endpoint => public_endpoint(
+            get_optional_binary(Service, <<"media_proxy_endpoint">>), Public
+        )
     }.
 
 -spec build_vapid_config(map()) -> config().
@@ -595,6 +614,17 @@ normalize_gateway_role(Value) when is_list(Value) ->
     normalize_gateway_role(unicode:characters_to_binary(config_char_list(Value)));
 normalize_gateway_role(_) ->
     all.
+
+-spec public_endpoint(binary() | undefined, map()) -> binary() | undefined.
+public_endpoint(undefined, _Public) ->
+    undefined;
+public_endpoint(Url, Public) ->
+    gateway_public_endpoint:normalize(
+        Url,
+        get_optional_binary(Public, <<"base_domain">>),
+        get_optional_binary(Public, <<"scheme">>),
+        get_optional_int(Public, <<"port">>)
+    ).
 
 -spec optional_string(binary() | undefined) -> string() | undefined.
 optional_string(undefined) -> undefined;

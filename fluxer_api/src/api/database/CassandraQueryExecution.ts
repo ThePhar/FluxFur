@@ -1,20 +1,37 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {ServiceUnavailableError} from '@fluxer/errors/src/domains/core/ServiceUnavailableError';
 import {getClient} from '@pkgs/cassandra/src/Client';
-import type cassandra from 'cassandra-driver';
+import cassandra from 'cassandra-driver';
 import {Logger} from '../Logger';
-import {getQueryType, logBatch, logQuery} from './CassandraDevLogger';
+import {logBatch, logQuery} from './CassandraDevLogger';
 import {getIsDev} from './CassandraMetaRegistry';
 import type {CassandraParams, KvQueryMeta, PreparedQuery, QueryTemplate} from './CassandraTypes';
 import {
 	assertNoUndefinedParams,
 	chunkArray,
-	isUnsafePreparedStatement,
+	getStatementMeta,
 	normalizeExecuteArgs,
 	normalizeInParams,
 } from './CassandraTypes';
 
 const DEFAULT_MAX_PARTITION_KEYS_PER_QUERY = 100;
+
+function isDriverOverloadError(err: unknown): boolean {
+	if (err instanceof cassandra.errors.BusyConnectionError) {
+		return true;
+	}
+	if (err instanceof cassandra.errors.NoHostAvailableError && err.innerErrors) {
+		return Object.values(err.innerErrors as Record<string, unknown>).some(
+			(innerError) => innerError instanceof cassandra.errors.BusyConnectionError,
+		);
+	}
+	return false;
+}
+
+export function mapCassandraDriverError(err: unknown): unknown {
+	return isDriverOverloadError(err) ? new ServiceUnavailableError() : err;
+}
 
 export interface CassandraQueryExecutorForTesting {
 	executeQuery<T = Record<string, unknown>, P extends CassandraParams = CassandraParams>(
@@ -81,8 +98,9 @@ export async function executeQuery<T = Record<string, unknown>, P extends Cassan
 	params?: P,
 ): Promise<Array<T>> {
 	const {cql, params: boundRaw} = normalizeExecuteArgs(queryOrPrepared, params);
-	const bound = normalizeInParams(cql, boundRaw);
-	if (isUnsafePreparedStatement(cql)) {
+	const meta = getStatementMeta(cql);
+	const bound = normalizeInParams(meta, boundRaw);
+	if (meta.unsafe) {
 		throw new Error('Cannot prepare a statement that looks like `SELECT *`');
 	}
 	assertNoUndefinedParams(bound as Record<string, unknown>);
@@ -94,14 +112,14 @@ export async function executeQuery<T = Record<string, unknown>, P extends Cassan
 			kvMeta: typeof queryOrPrepared === 'string' ? undefined : queryOrPrepared.kvMeta,
 		});
 	}
-	const startTime = getIsDev() ? performance.now() : Date.now();
-	const queryType = getQueryType(cql);
+	const isDev = getIsDev();
+	const startTime = isDev ? performance.now() : 0;
 	try {
 		const result = await getClient().execute(cql, bound, {prepare: true});
-		const rows = await collectSelectRows<T>(queryType, result);
-		if (getIsDev()) {
+		const rows = await collectSelectRows<T>(meta.type, result);
+		if (isDev) {
 			const durationMs = performance.now() - startTime;
-			logQuery(queryType, cql, bound as Record<string, unknown>, durationMs, rows.length);
+			logQuery(meta.type, cql, bound as Record<string, unknown>, durationMs, rows.length);
 		}
 		return rows;
 	} catch (err: unknown) {
@@ -121,7 +139,7 @@ export async function executeQuery<T = Record<string, unknown>, P extends Cassan
 		}
 		const errorMessage = err instanceof Error ? err.message : String(err);
 		Logger.warn({error: errorMessage, query: cql, params: paramSummary}, 'Cassandra query failed');
-		throw err;
+		throw mapCassandraDriverError(err);
 	}
 }
 
@@ -146,11 +164,13 @@ export async function fetchPage<T = Record<string, unknown>, P extends Cassandra
 	options: {
 		pageSize: number;
 		pageState?: string | null;
+		readTimeout?: number | undefined;
 	},
 ): Promise<PagedQueryResult<T>> {
 	const {cql, params: boundRaw} = normalizeExecuteArgs(queryOrPrepared, params);
-	const bound = normalizeInParams(cql, boundRaw);
-	if (isUnsafePreparedStatement(cql)) {
+	const meta = getStatementMeta(cql);
+	const bound = normalizeInParams(meta, boundRaw);
+	if (meta.unsafe) {
 		throw new Error('Cannot prepare a statement that looks like `SELECT *`');
 	}
 	assertNoUndefinedParams(bound as Record<string, unknown>);
@@ -174,6 +194,7 @@ export async function fetchPage<T = Record<string, unknown>, P extends Cassandra
 		prepare: true,
 		fetchSize: options.pageSize,
 		pageState: options.pageState ?? undefined,
+		readTimeout: options.readTimeout,
 	});
 	return {
 		rows: (result.rows as Array<T>) ?? [],
@@ -231,7 +252,7 @@ interface BatchQuery {
 async function executeBatch(queries: Array<BatchQuery>, atomic = true): Promise<void> {
 	if (queries.length === 0) return;
 	for (const {query} of queries) {
-		if (isUnsafePreparedStatement(query)) {
+		if (getStatementMeta(query).unsafe) {
 			throw new Error('Cannot prepare a statement that looks like `SELECT *`');
 		}
 	}
@@ -248,12 +269,20 @@ async function executeBatch(queries: Array<BatchQuery>, atomic = true): Promise<
 		logged: atomic,
 		counter: false,
 	};
-	const startTime = getIsDev() ? performance.now() : 0;
-	await getClient().batch(
-		queries.map(({query, params}) => ({query, params: normalizeInParams(query, params as CassandraParams)})),
-		options,
-	);
-	if (getIsDev()) {
+	const isDev = getIsDev();
+	const startTime = isDev ? performance.now() : 0;
+	try {
+		await getClient().batch(
+			queries.map(({query, params}) => ({
+				query,
+				params: normalizeInParams(getStatementMeta(query), params as CassandraParams),
+			})),
+			options,
+		);
+	} catch (err: unknown) {
+		throw mapCassandraDriverError(err);
+	}
+	if (isDev) {
 		const durationMs = performance.now() - startTime;
 		logBatch(queries, durationMs);
 	}

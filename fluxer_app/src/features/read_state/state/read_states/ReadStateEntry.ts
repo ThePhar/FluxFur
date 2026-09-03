@@ -274,13 +274,13 @@ export class ReadStateEntry {
 		});
 		const hasUnreadBoundary = foundAckMessage || loadedOlderMessages || !messages.hasMoreBefore;
 		const hasNewestMessages = messages.hasNewestMessages();
-		this.estimated = !hasNewestMessages || !hasUnreadBoundary;
+		this.estimated = !hasNewestMessages || (!hasUnreadBoundary && messages.length === loadedUnreadCount);
 		if (this.estimated) {
 			this.unreadCount = Math.max(previousUnreadCount, loadedUnreadCount);
 		} else {
 			this.unreadCount = loadedUnreadCount;
 		}
-		this.oldestUnreadMessageId = hasUnreadBoundary ? (this.storedOldestUnreadMessageId ?? oldestUnread) : null;
+		this.oldestUnreadMessageId = this.storedOldestUnreadMessageId ?? oldestUnread;
 	}
 
 	shouldMentionFor(message: MessageModel | WireMessage, userId: string, isPrivate: boolean): boolean {

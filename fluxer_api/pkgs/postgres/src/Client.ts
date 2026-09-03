@@ -14,10 +14,15 @@ interface PostgresConfig {
 	sslCa?: string;
 	maxConnections?: number;
 	kvTable?: string;
+	preparedStatements?: boolean;
 }
 
 export interface PostgresQueryable {
-	query<T extends QueryResultRow = QueryResultRow>(text: string, values?: Array<unknown>): Promise<QueryResult<T>>;
+	query<T extends QueryResultRow = QueryResultRow>(
+		text: string,
+		values?: Array<unknown>,
+		name?: string,
+	): Promise<QueryResult<T>>;
 }
 
 export interface IPostgresClient extends PostgresQueryable {
@@ -92,15 +97,20 @@ class PostgresClient implements IPostgresClient {
 	async query<T extends QueryResultRow = QueryResultRow>(
 		text: string,
 		values: Array<unknown> = [],
+		name?: string,
 	): Promise<QueryResult<T>> {
-		return this.getPool().query<T>(text, values);
+		return this.getPool().query<T>({text, values, name: this.statementName(name)});
+	}
+
+	private statementName(name: string | undefined): string | undefined {
+		return this.config.preparedStatements === false ? undefined : name;
 	}
 
 	async transaction<T>(fn: (client: PostgresQueryable) => Promise<T>): Promise<T> {
 		const client = await this.getPool().connect();
 		try {
 			await client.query('BEGIN');
-			const result = await fn(client);
+			const result = await fn(poolClientQueryable(client, this.config.preparedStatements !== false));
 			await client.query('COMMIT');
 			return result;
 		} catch (error) {
@@ -121,6 +131,13 @@ class PostgresClient implements IPostgresClient {
 		}
 		return this.pool;
 	}
+}
+
+function poolClientQueryable(client: PoolClient, preparedStatements: boolean): PostgresQueryable {
+	return {
+		query: <T extends QueryResultRow = QueryResultRow>(text: string, values: Array<unknown> = [], name?: string) =>
+			client.query<T>({text, values, name: preparedStatements ? name : undefined}),
+	};
 }
 
 async function rollback(client: PoolClient): Promise<void> {

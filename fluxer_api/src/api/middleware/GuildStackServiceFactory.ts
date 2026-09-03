@@ -9,7 +9,6 @@ import {ChannelService} from '../channel/services/ChannelService';
 import type {IFavoriteMemeRepository} from '../favorite_meme/IFavoriteMemeRepository';
 import type {GuildAuditLogService} from '../guild/GuildAuditLogService';
 import type {IGuildRepositoryAggregate} from '../guild/repositories/IGuildRepositoryAggregate';
-import type {ExpressionAssetPurger} from '../guild/services/content/ExpressionAssetPurger';
 import {GuildService} from '../guild/services/GuildService';
 import type {AvatarService} from '../infrastructure/AvatarService';
 import type {IPurgeQueue} from '../infrastructure/BunnyPurgeQueue';
@@ -23,8 +22,6 @@ import type {UserCacheService} from '../infrastructure/UserCacheService';
 import type {InviteRepository} from '../invite/InviteRepository';
 import {InviteService} from '../invite/InviteService';
 import type {LimitConfigService} from '../limits/LimitConfigService';
-import type {PackRepository} from '../pack/PackRepository';
-import {PackService} from '../pack/PackService';
 import type {ReadStateService} from '../read_state/ReadStateService';
 import type {IUserRepository} from '../user/IUserRepository';
 import type {VoiceAvailabilityService} from '../voice/VoiceAvailabilityService';
@@ -32,7 +29,6 @@ import type {IWebhookRepository} from '../webhook/IWebhookRepository';
 
 interface GuildStackServiceFactoryDependencies {
 	apiContext: ApiContext;
-	packRepository: PackRepository;
 	channelRepository: IChannelRepository;
 	userRepository: IUserRepository;
 	guildRepository: IGuildRepositoryAggregate;
@@ -42,7 +38,6 @@ interface GuildStackServiceFactoryDependencies {
 	avatarService: AvatarService;
 	entityAssetService: EntityAssetService;
 	assetDeletionQueue: IAssetDeletionQueue;
-	expressionAssetPurger: ExpressionAssetPurger;
 	userCacheService: UserCacheService;
 	limitConfigService: LimitConfigService;
 	embedService: EmbedService;
@@ -58,75 +53,77 @@ interface GuildStackServiceFactoryDependencies {
 	ipInfoService: IpInfoService;
 }
 
-interface GuildStackServices {
-	packService: PackService;
+export interface GuildStackServices {
 	channelService: ChannelService;
 	guildService: GuildService;
 	inviteService: InviteService;
 }
 
+class LazyGuildStackServices implements GuildStackServices {
+	private cachedChannelService: ChannelService | undefined;
+	private cachedGuildService: GuildService | undefined;
+	private cachedInviteService: InviteService | undefined;
+
+	constructor(private readonly dependencies: GuildStackServiceFactoryDependencies) {}
+
+	get channelService(): ChannelService {
+		this.cachedChannelService ??= new ChannelService(
+			this.dependencies.apiContext,
+			this.dependencies.channelRepository,
+			this.dependencies.userRepository,
+			this.dependencies.guildRepository,
+			this.dependencies.userCacheService,
+			this.dependencies.embedService,
+			this.dependencies.readStateService,
+			this.dependencies.storageService,
+			this.dependencies.attachmentUploadTraceRepository,
+			this.dependencies.avatarService,
+			this.dependencies.virusScanService,
+			this.dependencies.purgeQueue,
+			this.dependencies.favoriteMemeRepository,
+			this.dependencies.guildAuditLogService,
+			this.dependencies.voiceRoomStore,
+			this.dependencies.liveKitService,
+			this.dependencies.inviteRepository,
+			this.dependencies.webhookRepository,
+			this.dependencies.limitConfigService,
+			this.dependencies.voiceAvailabilityService,
+		);
+		return this.cachedChannelService;
+	}
+
+	get guildService(): GuildService {
+		this.cachedGuildService ??= new GuildService(
+			this.dependencies.apiContext,
+			this.dependencies.guildRepository,
+			this.dependencies.channelRepository,
+			this.dependencies.inviteRepository,
+			this.channelService,
+			this.dependencies.userCacheService,
+			this.dependencies.entityAssetService,
+			this.dependencies.avatarService,
+			this.dependencies.assetDeletionQueue,
+			this.dependencies.webhookRepository,
+			this.dependencies.guildAuditLogService,
+			this.dependencies.limitConfigService,
+			this.dependencies.ipInfoService,
+		);
+		return this.cachedGuildService;
+	}
+
+	get inviteService(): InviteService {
+		this.cachedInviteService ??= new InviteService(
+			this.dependencies.apiContext,
+			this.dependencies.inviteRepository,
+			this.guildService,
+			this.channelService,
+			this.dependencies.guildAuditLogService,
+			this.dependencies.limitConfigService,
+		);
+		return this.cachedInviteService;
+	}
+}
+
 export function createGuildStackServices(dependencies: GuildStackServiceFactoryDependencies): GuildStackServices {
-	const packService = new PackService(
-		dependencies.apiContext,
-		dependencies.packRepository,
-		dependencies.guildRepository,
-		dependencies.avatarService,
-		dependencies.expressionAssetPurger,
-		dependencies.userCacheService,
-		dependencies.limitConfigService,
-	);
-	const channelService = new ChannelService(
-		dependencies.apiContext,
-		dependencies.channelRepository,
-		dependencies.userRepository,
-		dependencies.guildRepository,
-		packService,
-		dependencies.userCacheService,
-		dependencies.embedService,
-		dependencies.readStateService,
-		dependencies.storageService,
-		dependencies.attachmentUploadTraceRepository,
-		dependencies.avatarService,
-		dependencies.virusScanService,
-		dependencies.purgeQueue,
-		dependencies.favoriteMemeRepository,
-		dependencies.guildAuditLogService,
-		dependencies.voiceRoomStore,
-		dependencies.liveKitService,
-		dependencies.inviteRepository,
-		dependencies.webhookRepository,
-		dependencies.limitConfigService,
-		dependencies.voiceAvailabilityService,
-	);
-	const guildService = new GuildService(
-		dependencies.apiContext,
-		dependencies.guildRepository,
-		dependencies.channelRepository,
-		dependencies.inviteRepository,
-		channelService,
-		dependencies.userCacheService,
-		dependencies.entityAssetService,
-		dependencies.avatarService,
-		dependencies.assetDeletionQueue,
-		dependencies.webhookRepository,
-		dependencies.guildAuditLogService,
-		dependencies.limitConfigService,
-		dependencies.ipInfoService,
-	);
-	const inviteService = new InviteService(
-		dependencies.apiContext,
-		dependencies.inviteRepository,
-		guildService,
-		channelService,
-		dependencies.guildAuditLogService,
-		dependencies.packRepository,
-		packService,
-		dependencies.limitConfigService,
-	);
-	return {
-		packService,
-		channelService,
-		guildService,
-		inviteService,
-	};
+	return new LazyGuildStackServices(dependencies);
 }

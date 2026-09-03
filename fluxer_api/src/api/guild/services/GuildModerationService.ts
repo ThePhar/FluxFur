@@ -27,7 +27,10 @@ import type {GuildAuditLogService} from '../GuildAuditLogService';
 import type {GuildAuditLogChange} from '../GuildAuditLogTypes';
 import {mapGuildBansToResponse} from '../GuildModel';
 import type {IGuildRepositoryAggregate} from '../repositories/IGuildRepositoryAggregate';
+import {createGuildMfaEnforcer} from './GuildMfaEnforcement';
 import {GuildMemberSearchIndexService} from './member/GuildMemberSearchIndexService';
+
+const SECONDS_PER_DAY = 86_400;
 
 export class GuildModerationService {
 	private readonly searchIndexService: GuildMemberSearchIndexService;
@@ -44,25 +47,43 @@ export class GuildModerationService {
 		this.searchIndexService = new GuildMemberSearchIndexService();
 	}
 
+	private async checkModerationPermission(params: {
+		guildId: GuildID;
+		userId: UserID;
+		permission: bigint;
+	}): Promise<void> {
+		const {guildId, userId, permission} = params;
+		const hasPermission = await this.gatewayService.checkPermission({guildId, userId, permission});
+		if (!hasPermission) throw new MissingPermissionsError();
+		const guildData = await this.gatewayService.getGuildData({guildId, userId});
+		const enforceGuildMfa = await createGuildMfaEnforcer({userRepository: this.userRepository, guildData, userId});
+		enforceGuildMfa(permission);
+	}
+
 	async banMember(
 		params: {
 			userId: UserID;
 			targetId: UserID;
 			guildId: GuildID;
 			deleteMessageDays?: number;
+			deleteMessageSeconds?: number;
 			reason?: string | null;
 			banDurationSeconds?: number;
 			skipGuildAuditLog?: boolean;
 		},
 		auditLogReason?: string | null,
 	): Promise<void> {
-		const {userId, guildId, targetId, deleteMessageDays, reason, banDurationSeconds, skipGuildAuditLog} = params;
-		const hasPermission = await this.gatewayService.checkPermission({
-			guildId,
+		const {
 			userId,
-			permission: Permissions.BAN_MEMBERS,
-		});
-		if (!hasPermission) throw new MissingPermissionsError();
+			guildId,
+			targetId,
+			deleteMessageDays,
+			deleteMessageSeconds,
+			reason,
+			banDurationSeconds,
+			skipGuildAuditLog,
+		} = params;
+		await this.checkModerationPermission({guildId, userId, permission: Permissions.BAN_MEMBERS});
 		if (userId === targetId) throw new UnknownGuildMemberError();
 		const targetUser = await this.userRepository.findUnique(targetId);
 		if (!targetUser) {
@@ -73,11 +94,13 @@ export class GuildModerationService {
 			const canManage = await this.gatewayService.checkTargetMember({guildId, userId, targetUserId: targetId});
 			if (!canManage) throw new MissingPermissionsError();
 		}
-		if (deleteMessageDays && deleteMessageDays > 0) {
+		const effectiveDeleteMessageSeconds =
+			deleteMessageSeconds ?? (deleteMessageDays !== undefined ? deleteMessageDays * SECONDS_PER_DAY : undefined);
+		if (effectiveDeleteMessageSeconds && effectiveDeleteMessageSeconds > 0) {
 			await this.workerService.addJob('deleteUserMessagesInGuildByTime', {
 				guildId: guildId.toString(),
 				userId: targetId.toString(),
-				days: deleteMessageDays,
+				seconds: effectiveDeleteMessageSeconds,
 			});
 		}
 		const targetIp = isIpBanExempt(targetUser.lastActiveIp) ? null : targetUser.lastActiveIp || null;
@@ -145,12 +168,7 @@ export class GuildModerationService {
 		requestCache: RequestCache;
 	}): Promise<Array<GuildBanResponse>> {
 		const {userId, guildId, requestCache} = params;
-		const hasPermission = await this.gatewayService.checkPermission({
-			guildId,
-			userId,
-			permission: Permissions.BAN_MEMBERS,
-		});
-		if (!hasPermission) throw new MissingPermissionsError();
+		await this.checkModerationPermission({guildId, userId, permission: Permissions.BAN_MEMBERS});
 		const bans = await this.guildRepository.listBans(guildId);
 		return await mapGuildBansToResponse(bans, this.userCacheService, requestCache);
 	}
@@ -164,12 +182,7 @@ export class GuildModerationService {
 		auditLogReason?: string | null,
 	): Promise<void> {
 		const {userId, guildId, targetId} = params;
-		const hasPermission = await this.gatewayService.checkPermission({
-			guildId,
-			userId,
-			permission: Permissions.BAN_MEMBERS,
-		});
-		if (!hasPermission) throw new MissingPermissionsError();
+		await this.checkModerationPermission({guildId, userId, permission: Permissions.BAN_MEMBERS});
 		const ban = await this.guildRepository.getBan(guildId, targetId);
 		if (!ban) {
 			throw InputValidationError.fromCode('user_id', ValidationErrorCodes.USER_IS_NOT_BANNED);

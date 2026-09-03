@@ -7,6 +7,7 @@ import {
 	MessageFlagsDescriptions,
 } from '@fluxer/constants/src/ChannelConstants';
 import {AVATAR_MAX_SIZE, MAX_MESSAGE_LENGTH_PREMIUM} from '@fluxer/constants/src/LimitConstants';
+import {ClientUploadedAttachmentRequest} from '@fluxer/schema/src/domains/message/AttachmentSchemas';
 import {
 	MessageContentRequest,
 	MessageNonceRequest,
@@ -61,7 +62,7 @@ export const WebhookTokenUpdateRequest = z
 
 export type WebhookTokenUpdateRequest = z.infer<typeof WebhookTokenUpdateRequest>;
 
-const WebhookAttachmentRequest = z.object({
+const WebhookMultipartAttachmentRequest = z.object({
 	id: z
 		.union([SnowflakeType, coerceNumberFromString(Int32Type)])
 		.optional()
@@ -85,11 +86,10 @@ const WebhookAttachmentRequest = z.object({
 	).optional(),
 });
 
-export const WebhookMessageRequest = z
+const WebhookMessageRequestBase = z
 	.object({
 		content: MessageContentRequest.nullish(),
 		embeds: z.array(RichEmbedRequest).optional().describe('Array of embed objects to include in the message'),
-		attachments: z.array(WebhookAttachmentRequest).optional().describe('Array of attachment objects'),
 		message_reference: MessageReferenceRequest.nullish().describe(
 			'Reference to another message (for replies or forwards)',
 		),
@@ -109,7 +109,23 @@ export const WebhookMessageRequest = z
 	})
 	.partial();
 
+export const WebhookMessageRequest = WebhookMessageRequestBase.extend({
+	attachments: z
+		.array(ClientUploadedAttachmentRequest)
+		.optional()
+		.describe('Array of attachments uploaded through the presigned upload endpoint'),
+});
+
 export type WebhookMessageRequest = z.infer<typeof WebhookMessageRequest>;
+
+export const WebhookMultipartMessageRequest = WebhookMessageRequestBase.extend({
+	attachments: z
+		.array(WebhookMultipartAttachmentRequest)
+		.optional()
+		.describe('Array of multipart attachment metadata objects'),
+});
+
+export type WebhookMultipartMessageRequest = z.infer<typeof WebhookMultipartMessageRequest>;
 
 export const WebhookMessageEditRequest = z
 	.object({

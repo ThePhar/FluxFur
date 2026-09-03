@@ -3,7 +3,6 @@
 import assert from 'node:assert/strict';
 import {isElectronPlatform} from '@app/features/platform/types/Platform';
 import {Logger} from '@app/features/platform/utils/AppLogger';
-import * as VoicePresenceHeartbeatCommands from '@app/features/voice/commands/VoicePresenceHeartbeatCommands';
 import {Store} from '@app/features/voice/engine/Store';
 import {sendVoiceStateDisconnect} from '@app/features/voice/engine/VoiceChannelConnector';
 import {
@@ -35,11 +34,15 @@ import {
 	assertOptionalNonEmptyString,
 	assertVoiceServerUpdateShape,
 	hasAnyTerminalTransport,
-	isPresenceConnectionReady,
 	isReadyToRepublishTrack,
 } from '@app/features/voice/engine/v2/VoiceEngineV2AppAdapterAssertions';
 import {VoiceEngineV2AppReconnectPolicy} from '@app/features/voice/engine/v2/VoiceEngineV2AppReconnectPolicy';
 import VoiceRegionTeleport from '@app/features/voice/state/VoiceRegionTeleport';
+import {
+	findVideoPublishCodecPolicyViolation,
+	getRoomVideoPublishDefaults,
+} from '@app/features/voice/utils/CodecCapabilityDetector';
+import {SCREEN_SHARE_MAX_VIDEO_BITRATE_BPS} from '@app/features/voice/utils/ScreenShareOptions';
 import {
 	getVideoDecoderExclusionsSync,
 	loadVideoDecoderExclusions,
@@ -60,7 +63,6 @@ import {timer} from 'rxjs';
 const logger = new Logger('VoiceEngineV2AppConnectionHostAdapter');
 const VOICE_SERVER_TIMEOUT_MS = 5000;
 const VIDEO_DECODER_EXCLUSION_TIMEOUT_MS = 500;
-const VOICE_PRESENCE_HEARTBEAT_INTERVAL_MS = 15000;
 
 export interface VoiceServerUpdateData {
 	token: string;
@@ -133,19 +135,6 @@ async function getRoomVideoDecoderExclusions(): Promise<RoomOptions['subscriberV
 	}
 }
 
-function isSamePresenceConnection(
-	activeSub: Subscription | null,
-	activeConnection: {channelId: string; connectionId: string} | null,
-	channelId: string,
-	connectionId: string,
-): boolean {
-	if (!activeSub) return false;
-	if (!activeConnection) return false;
-	if (activeConnection.channelId !== channelId) return false;
-	if (activeConnection.connectionId !== connectionId) return false;
-	return true;
-}
-
 function createWebAudioMixOption(): RoomOptions['webAudioMix'] {
 	const audioContext = getSharedVoiceAudioContext();
 	if (audioContext) {
@@ -153,6 +142,13 @@ function createWebAudioMixOption(): RoomOptions['webAudioMix'] {
 		return {audioContext};
 	}
 	return true;
+}
+
+function createRoomPublishDefaults(): RoomOptions['publishDefaults'] {
+	return {
+		screenShareEncoding: {maxBitrate: SCREEN_SHARE_MAX_VIDEO_BITRATE_BPS, maxFramerate: 30, priority: 'high'},
+		...getRoomVideoPublishDefaults(),
+	};
 }
 
 function createRoomOptions(
@@ -167,6 +163,7 @@ function createRoomOptions(
 		adaptiveStream: false,
 		dynacast: true,
 		webAudioMix: createWebAudioMixOption(),
+		publishDefaults: createRoomPublishDefaults(),
 		subscriberVideoCodecExclusions,
 	};
 	let e2eeKeyProvider: ExternalE2EEKeyProvider | null = null;
@@ -210,8 +207,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 	private reconnect = new VoiceEngineV2AppReconnectPolicy();
 	private voiceServerTimeoutSub: Subscription | null = null;
 	private hotSwapTimeoutSub: Subscription | null = null;
-	private voicePresenceHeartbeatSub: Subscription | null = null;
-	private voicePresenceHeartbeatConnection: {channelId: string; connectionId: string} | null = null;
 	private isLocalDisconnecting = false;
 	private hotSwapOperationQueue: Array<HotSwapQueuedOperation> = [];
 
@@ -336,71 +331,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 		this.update(() => {
 			this.transitionConnection({type: 'hotSwap.clearQueue'});
 		});
-	}
-
-	private startVoicePresenceHeartbeatForCurrentConnection(): void {
-		const {channelId, connectionId, connected} = this.connectionState;
-		if (!isPresenceConnectionReady(connected, channelId, connectionId)) {
-			this.stopVoicePresenceHeartbeat();
-			return;
-		}
-		const presenceChannelId = channelId as string;
-		const presenceConnectionId = connectionId as string;
-		if (
-			isSamePresenceConnection(
-				this.voicePresenceHeartbeatSub,
-				this.voicePresenceHeartbeatConnection,
-				presenceChannelId,
-				presenceConnectionId,
-			)
-		) {
-			return;
-		}
-		this.stopVoicePresenceHeartbeat();
-		this.voicePresenceHeartbeatConnection = {channelId: presenceChannelId, connectionId: presenceConnectionId};
-		this.voicePresenceHeartbeatSub = timer(0, VOICE_PRESENCE_HEARTBEAT_INTERVAL_MS).subscribe(() => {
-			void this.sendVoicePresenceHeartbeat(presenceChannelId, presenceConnectionId, {requireConnected: true});
-		});
-	}
-
-	private stopVoicePresenceHeartbeat(options: {markEnded?: boolean} = {}): void {
-		const connection = this.voicePresenceHeartbeatConnection;
-		if (this.voicePresenceHeartbeatSub) {
-			this.voicePresenceHeartbeatSub.unsubscribe();
-			this.voicePresenceHeartbeatSub = null;
-		}
-		this.voicePresenceHeartbeatConnection = null;
-		if (options.markEnded && connection) {
-			void this.markVoicePresenceHeartbeatEnded(connection);
-		}
-	}
-
-	private async sendVoicePresenceHeartbeat(
-		channelId: string,
-		connectionId: string,
-		options: {requireConnected: boolean},
-	): Promise<void> {
-		const current = this.connectionState;
-		if (
-			current.channelId !== channelId ||
-			current.connectionId !== connectionId ||
-			(options.requireConnected && !current.connected)
-		) {
-			return;
-		}
-		try {
-			await VoicePresenceHeartbeatCommands.heartbeat({channelId, connectionId});
-		} catch (error) {
-			logger.warn('Voice presence heartbeat failed', {channelId, connectionId, error});
-		}
-	}
-
-	private async markVoicePresenceHeartbeatEnded(connection: {channelId: string; connectionId: string}): Promise<void> {
-		try {
-			await VoicePresenceHeartbeatCommands.end(connection);
-		} catch (error) {
-			logger.warn('Voice presence heartbeat end failed', {...connection, error});
-		}
 	}
 
 	get lastConnectedChannel(): {
@@ -637,7 +567,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			this.update(() => {
 				this.transitionConnection({type: 'connection.failed', reason: 'error'});
 			});
-			this.stopVoicePresenceHeartbeat({markEnded: true});
 			this.throttle.setInFlightConnect(false);
 			this.reconnect.setReconnectState('error');
 			void onConnectFailed?.(guildId, resolvedChannelId, connectionId, attemptId, error ?? new Error(message));
@@ -675,7 +604,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 						} catch (error) {
 							logger.warn('Failed to disconnect stale room', error);
 						}
-						this.stopVoicePresenceHeartbeat({markEnded: true});
 						return;
 					}
 					logger.info('Initializing voice connection');
@@ -691,7 +619,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 						this.update(() => {
 							this.transitionConnection({type: 'connection.failed', reason: 'error'});
 						});
-						this.stopVoicePresenceHeartbeat({markEnded: true});
 						this.throttle.setInFlightConnect(false);
 						this.reconnect.setReconnectState('error');
 						void onConnectFailed?.(guildId, resolvedChannelId, connectionId, attemptId, error);
@@ -761,6 +688,7 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			adaptiveStream: false,
 			dynacast: true,
 			webAudioMix: createWebAudioMixOption(),
+			publishDefaults: createRoomPublishDefaults(),
 			subscriberVideoCodecExclusions: cachedExclusions && cachedExclusions.length > 0 ? cachedExclusions : undefined,
 		};
 		if (!this.isLatestConnectionAttempt(attemptId) || this.connectionState.room !== existingRoom) {
@@ -834,7 +762,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 					this.transitionConnection({type: 'hotSwap.complete', room: newRoom, endpoint, connectionId});
 				});
 				this.clearHotSwapTimeout();
-				this.startVoicePresenceHeartbeatForCurrentConnection();
 				onHotSwapComplete?.(newRoom, attemptId, guildId, channelId);
 				await this.drainHotSwapQueue();
 				try {
@@ -884,6 +811,7 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			Array.from(oldParticipant.trackPublications.values()),
 		);
 		const errors: Array<{source: string; error: unknown}> = [];
+		let codecPolicyFailure: Error | null = null;
 		for (const publication of publications) {
 			const track = publication.track as LocalTrack | undefined;
 			if (!isReadyToRepublishTrack(track)) {
@@ -903,7 +831,16 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 					source: publication.source,
 					name: publication.trackName,
 				};
-				await newParticipant.publishTrack(track.mediaStreamTrack, publishOptions);
+				const republished = await newParticipant.publishTrack(track.mediaStreamTrack, publishOptions);
+				const violation = publishOptions.videoCodec
+					? findVideoPublishCodecPolicyViolation(publishOptions.videoCodec, republished.options?.videoCodec)
+					: null;
+				if (violation) {
+					codecPolicyFailure = new Error(
+						`Region hot-swap: ${publication.source} negotiated ${violation.negotiated} after requesting ${violation.requested}`,
+					);
+					break;
+				}
 			} catch (error) {
 				errors.push({source: publication.source ?? 'unknown', error});
 				logger.warn('Region hot-swap: failed to republish track', {
@@ -912,6 +849,7 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 				});
 			}
 		}
+		if (codecPolicyFailure) throw codecPolicyFailure;
 		const screenShareFailure = errors.find(
 			(error) => error.source === Track.Source.ScreenShare || error.source === Track.Source.ScreenShareAudio,
 		);
@@ -960,7 +898,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 		this.reconnect.setLastConnectedChannel(guildId, channelId);
 		this.throttle.setInFlightConnect(false);
 		this.reconnect.resetOnConnection();
-		this.startVoicePresenceHeartbeatForCurrentConnection();
 		assert.ok(this.connectionState.connected, 'markConnected post-condition: connection state reflects connected');
 		logger.info('Connection established');
 	}
@@ -973,7 +910,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 		this.invalidateThrottleAttempt();
 		this.throttle.setInFlightConnect(false);
 		this.reconnect.setReconnectState(reason);
-		this.stopVoicePresenceHeartbeat({markEnded: true});
 		logger.info('Connection terminated', {reason});
 	}
 
@@ -991,7 +927,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			this.transitionConnection({type: 'connection.reconnected'});
 		});
 		this.reconnect.resetOnConnection();
-		this.startVoicePresenceHeartbeatForCurrentConnection();
 		logger.info('Connection reconnected');
 	}
 
@@ -1013,7 +948,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 		});
 		this.invalidateThrottleAttempt();
 		this.reconnect.setReconnectState(reason);
-		this.stopVoicePresenceHeartbeat({markEnded: true});
 		this.update(() => {
 			this.isLocalDisconnecting = false;
 		});
@@ -1034,7 +968,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			this.transitionConnection({type: 'connection.disconnectForChannelMove'});
 		});
 		this.invalidateThrottleAttempt();
-		this.stopVoicePresenceHeartbeat({markEnded: true});
 		logger.info('Disconnected for channel move (preserving connectionId)');
 	}
 
@@ -1070,7 +1003,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			this.disconnectRoomForTerminalUnload(previousRoom, 'previous-hot-swap');
 		}
 		this.disconnectRoomForTerminalUnload(room, 'current');
-		this.stopVoicePresenceHeartbeat({markEnded: true});
 		this.throttle.setInFlightConnect(false);
 		this.update(() => {
 			this.isLocalDisconnecting = false;
@@ -1188,7 +1120,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			this.transitionConnection({type: 'connection.reset'});
 		});
 		this.invalidateThrottleAttempt();
-		this.stopVoicePresenceHeartbeat({markEnded: true});
 		this.throttle.setInFlightConnect(false);
 	}
 
@@ -1206,7 +1137,6 @@ export class VoiceEngineV2AppConnectionHostAdapter extends Store {
 			this.transitionConnection({type: 'connection.abort'});
 		});
 		this.invalidateThrottleAttempt();
-		this.stopVoicePresenceHeartbeat({markEnded: true});
 		this.throttle.setInFlightConnect(false);
 		logger.info('Connection aborted due to gateway error');
 	}

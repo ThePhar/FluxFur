@@ -40,10 +40,11 @@ import {
 } from '@app/features/user/components/modals/tabs/advanced_settings_tab/AdvancedDesktopControls';
 import {UnreadBadgeCustomizationControl} from '@app/features/user/components/modals/tabs/advanced_settings_tab/AdvancedExperimentalControls';
 import {
-	EmulatedDecodeCodecCapControl,
 	OpenH264Control,
+	ScreenShareAv1OptInControl,
 	ScreenShareCodecControl,
 	ScreenShareEncoderControls,
+	ScreenShareHevcOptInControl,
 	ScreenSharePreviewBehaviorControl,
 } from '@app/features/user/components/modals/tabs/advanced_settings_tab/AdvancedVideoControls';
 import {
@@ -83,7 +84,8 @@ export const DIRECT_CONTROL_ITEM_IDS = new Set([
 	'voice-video-new-device-alerts',
 	'voice-video-connection-volume-controls',
 	'voice-video-screen-share-codec',
-	'voice-video-emulated-decode-codec-cap',
+	'voice-video-screen-share-av1-opt-in',
+	'voice-video-screen-share-hevc-opt-in',
 	'voice-video-openh264-codec',
 	'voice-video-screen-share-preview-behavior',
 	'voice-video-screen-share-encoder-controls',
@@ -96,7 +98,6 @@ export const DIRECT_CONTROL_ITEM_IDS = new Set([
 
 export const FULL_WIDTH_CONTROL_ITEM_IDS = new Set([
 	'appearance-voice-channel-join-behavior',
-	'voice-video-screen-share-codec',
 	'voice-video-screen-share-preview-behavior',
 ]);
 
@@ -122,6 +123,8 @@ export const COMPACT_SWITCH_CONTROL_ITEM_IDS = new Set([
 	'voice-video-new-device-alerts',
 	'voice-video-connection-volume-controls',
 	'voice-video-openh264-codec',
+	'voice-video-screen-share-av1-opt-in',
+	'voice-video-screen-share-hevc-opt-in',
 	'advanced-unread-badge-customization',
 	'client-developer-mode',
 	'accessibility-stay-interactive-unfocused',
@@ -268,9 +271,13 @@ export const AdvancedSettingControl = observer(({item}: {item: SearchableSetting
 			return (
 				<ScreenShareCodecControl data-flx="user.advanced-setting-direct-controls.advanced-setting-control.screen-share-codec-control" />
 			);
-		case 'voice-video-emulated-decode-codec-cap':
+		case 'voice-video-screen-share-av1-opt-in':
 			return (
-				<EmulatedDecodeCodecCapControl data-flx="user.advanced-setting-direct-controls.advanced-setting-control.emulated-decode-codec-cap-control" />
+				<ScreenShareAv1OptInControl data-flx="user.advanced-setting-direct-controls.advanced-setting-control.screen-share-av1-opt-in-control" />
+			);
+		case 'voice-video-screen-share-hevc-opt-in':
+			return (
+				<ScreenShareHevcOptInControl data-flx="user.advanced-setting-direct-controls.advanced-setting-control.screen-share-hevc-opt-in-control" />
 			);
 		case 'voice-video-openh264-codec':
 			return (

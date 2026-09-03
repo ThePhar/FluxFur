@@ -2,14 +2,13 @@
 
 import type {WebhookEvent} from 'livekit-server-sdk';
 import {TrackSource, WebhookReceiver} from 'livekit-server-sdk';
-import type {ChannelID, GuildID, UserID} from '../BrandedTypes';
+import type {ChannelID, GuildID} from '../BrandedTypes';
 import {Config} from '../Config';
 import {Logger} from '../Logger';
 import type {LimitConfigService} from '../limits/LimitConfigService';
 import {resolveLimitSafe} from '../limits/LimitConfigUtils';
 import {createLimitMatchContext} from '../limits/LimitMatchContextBuilder';
 import type {IUserRepository} from '../user/IUserRepository';
-import type {VoicePresenceHeartbeatStore} from '../voice/VoicePresenceHeartbeatStore';
 import type {VoiceTopology} from '../voice/VoiceTopology';
 import type {IGatewayService} from './IGatewayService';
 import type {ILiveKitService} from './ILiveKitService';
@@ -39,7 +38,6 @@ export class LiveKitWebhookService {
 		private liveKitService: ILiveKitService,
 		private voiceTopology: VoiceTopology,
 		private limitConfigService: LimitConfigService,
-		private voicePresenceHeartbeatStore: VoicePresenceHeartbeatStore | null = null,
 	) {
 		this.receivers = new Map();
 		this.serverMap = new Map();
@@ -140,43 +138,6 @@ export class LiveKitWebhookService {
 		);
 	}
 
-	private async markVoicePresenceHeartbeatEnded(params: {
-		channelId: ChannelID;
-		userId: UserID;
-		connectionId: string;
-	}): Promise<void> {
-		if (this.voicePresenceHeartbeatStore === null) {
-			return;
-		}
-		try {
-			await this.voicePresenceHeartbeatStore.markHeartbeatEnded(params);
-		} catch (error) {
-			Logger.warn(
-				{
-					error,
-					channelId: params.channelId.toString(),
-					userId: params.userId.toString(),
-					connectionId: params.connectionId,
-				},
-				'Failed to mark v2 voice presence heartbeat ended',
-			);
-		}
-	}
-
-	private async markChannelVoicePresenceHeartbeatsEnded(channelId: ChannelID): Promise<void> {
-		if (this.voicePresenceHeartbeatStore === null) {
-			return;
-		}
-		try {
-			await this.voicePresenceHeartbeatStore.markChannelHeartbeatsEnded(channelId);
-		} catch (error) {
-			Logger.warn(
-				{error, channelId: channelId.toString()},
-				'Failed to clear active v2 voice presence heartbeats for finished room',
-			);
-		}
-	}
-
 	async handleRoomFinished(event: WebhookEvent, apiKey: string): Promise<void> {
 		if (event.event !== 'room_finished' || !event.room) {
 			return;
@@ -210,7 +171,6 @@ export class LiveKitWebhookService {
 				);
 				return;
 			}
-			await this.markChannelVoicePresenceHeartbeatsEnded(context.channelId);
 			await this.voiceRoomStore.deleteRoomServer(undefined, context.channelId);
 			Logger.debug({channelId: context.channelId.toString()}, 'Cleared DM voice room server pinning');
 		} else {
@@ -227,7 +187,6 @@ export class LiveKitWebhookService {
 				);
 				return;
 			}
-			await this.markChannelVoicePresenceHeartbeatsEnded(context.channelId);
 			await this.voiceRoomStore.deleteRoomServer(context.guildId, context.channelId);
 			Logger.debug(
 				{guildId: context.guildId.toString(), channelId: context.channelId.toString()},
@@ -338,11 +297,6 @@ export class LiveKitWebhookService {
 					},
 					'LiveKit participant_joined rejected - disconnecting participant',
 				);
-				await this.markVoicePresenceHeartbeatEnded({
-					channelId: context.channelId,
-					userId: context.userId,
-					connectionId: context.connectionId,
-				});
 				try {
 					await this.liveKitService.disconnectParticipant({
 						guildId,
@@ -479,11 +433,6 @@ export class LiveKitWebhookService {
 				);
 				return;
 			}
-			await this.markVoicePresenceHeartbeatEnded({
-				channelId: context.channelId,
-				userId: context.userId,
-				connectionId: context.connectionId,
-			});
 			const guildId = context.type === 'guild' ? context.guildId : undefined;
 			Logger.info(
 				{
@@ -584,11 +533,18 @@ export class LiveKitWebhookService {
 					height: track.height,
 					trackSource: trackSourceLabel,
 				},
-				'User without higher video quality entitlement attempted to publish video exceeding free tier limits - disconnecting',
+				'User without higher video quality entitlement published video exceeding free tier limits - muting track and revoking source',
 			);
+			if (!track.sid) {
+				Logger.warn(
+					{userId: userId.toString(), roomName: room.name, trackSource: trackSourceLabel},
+					'Track published without a sid, cannot enforce free tier video limits',
+				);
+				return;
+			}
 			const roomContext = parseRoomName(room.name);
 			if (!roomContext) {
-				Logger.warn({roomName: room.name}, 'Unknown room name format, cannot disconnect');
+				Logger.warn({roomName: room.name}, 'Unknown room name format, cannot enforce free tier video limits');
 				return;
 			}
 			let regionId: string | undefined;
@@ -618,7 +574,7 @@ export class LiveKitWebhookService {
 			if (!regionId || !serverId) {
 				Logger.warn(
 					{participantId: participant.identity, roomName: room.name, apiKey},
-					'Missing region or server info, cannot disconnect',
+					'Missing region or server info, cannot enforce free tier video limits',
 				);
 				return;
 			}
@@ -636,21 +592,26 @@ export class LiveKitWebhookService {
 					height: track.height,
 					trackSource: trackSourceLabel,
 				},
-				'Disconnecting user without higher video quality entitlement for exceeding video quality limits',
+				'Muting oversized track and revoking its publish source for user without higher video quality entitlement',
 			);
-			await this.liveKitService.disconnectParticipant({
+			const muted = await this.liveKitService.muteParticipantTrack({
 				userId,
 				guildId,
 				channelId: roomContext.channelId,
 				connectionId,
 				regionId,
 				serverId,
+				trackSid: track.sid,
+				muted: true,
 			});
-			await this.gatewayService.disconnectVoiceUserIfInChannel({
+			const revoked = await this.liveKitService.revokeParticipantPublishSource({
+				userId,
 				guildId,
 				channelId: roomContext.channelId,
-				userId,
 				connectionId,
+				regionId,
+				serverId,
+				source: track.source,
 			});
 			Logger.info(
 				{
@@ -662,8 +623,13 @@ export class LiveKitWebhookService {
 					width: track.width,
 					height: track.height,
 					trackSource: trackSourceLabel,
+					trackSid: track.sid,
+					muted,
+					revoked,
 				},
-				'Disconnected user without higher video quality entitlement for exceeding video quality limits',
+				muted || revoked
+					? 'Enforced free tier video limits on user without higher video quality entitlement'
+					: 'Failed to enforce free tier video limits on user without higher video quality entitlement',
 			);
 		} catch (error) {
 			Logger.error({error}, 'Error processing track_published event');

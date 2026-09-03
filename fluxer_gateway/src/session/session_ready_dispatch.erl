@@ -61,16 +61,17 @@ dispatch_ready_to_socket(State) ->
         #{children => [PresencesSpan, UsersSpan, BuildSpan]},
         GwTimings0
     ),
-    FinalReadyData = FinalReadyData0#{
-        <<"_timings_gw">> => gateway_timings_payload:finalize(GwTimings)
-    },
+    FinalReadyData = apply_timings_visibility(
+        is_staff_session(State), GwTimings, FinalReadyData0
+    ),
     StateWithTimings = gateway_timings:put_state(GwTimings, State),
     StateAfterReady = dispatch_event(ready, FinalReadyData, StateWithTimings),
     StateAfterGuilds = dispatch_bot_guild_creates(
         IsBot, CollectedGuilds, Guilds, StateAfterReady
     ),
     schedule_call_creates(StateAfterGuilds, SessionId),
-    FinalState = StateAfterGuilds#{
+    StateAfterPresences = release_pending_presences(StateAfterGuilds, CollectedPresences),
+    FinalState = StateAfterPresences#{
         ready => undefined,
         collected_guild_states => [],
         collected_sessions => [],
@@ -78,6 +79,77 @@ dispatch_ready_to_socket(State) ->
     },
     erlang:garbage_collect(),
     {noreply, FinalState}.
+
+-spec release_pending_presences(session_state(), [map()]) -> session_state().
+release_pending_presences(State, CollectedPresences) ->
+    Covered = covered_presence_ids(CollectedPresences),
+    Pruned = drop_covered_pending_presences(State, Covered),
+    Flushed = session_dispatch:flush_all_pending_presences(Pruned),
+    Flushed#{suppress_presence_updates => false}.
+
+-spec covered_presence_ids([map()]) -> #{integer() => true}.
+covered_presence_ids(CollectedPresences) ->
+    lists:foldl(
+        fun(Presence, Acc) ->
+            case presence_user_id(Presence) of
+                undefined -> Acc;
+                UserId -> Acc#{UserId => true}
+            end
+        end,
+        #{},
+        CollectedPresences
+    ).
+
+-spec drop_covered_pending_presences(session_state(), #{integer() => true}) -> session_state().
+drop_covered_pending_presences(State, Covered) when map_size(Covered) =:= 0 ->
+    State;
+drop_covered_pending_presences(State, Covered) ->
+    case maps:get(pending_presences, State, undefined) of
+        undefined ->
+            State;
+        Pending ->
+            State#{pending_presences => filter_pending_presences(Pending, Covered)}
+    end.
+
+-spec filter_pending_presences(term(), #{integer() => true}) -> term().
+filter_pending_presences(Pending, Covered) ->
+    Keep = fun(Entry) -> not covered_entry(Entry, Covered) end,
+    try queue:filter(Keep, Pending) of
+        Filtered -> Filtered
+    catch
+        error:_ when is_list(Pending) -> lists:filter(Keep, Pending);
+        error:_ -> Pending
+    end.
+
+-spec covered_entry(term(), #{integer() => true}) -> boolean().
+covered_entry(#{user_id := UserId}, Covered) when is_integer(UserId) ->
+    maps:is_key(UserId, Covered);
+covered_entry(_Entry, _Covered) ->
+    false.
+
+-spec presence_user_id(term()) -> integer() | undefined.
+presence_user_id(Presence) when is_map(Presence) ->
+    User = maps:get(<<"user">>, Presence, #{}),
+    presence_id(User);
+presence_user_id(_Presence) ->
+    undefined.
+
+-spec presence_id(term()) -> integer() | undefined.
+presence_id(User) when is_map(User) ->
+    snowflake_id:parse_maybe(maps:get(<<"id">>, User, undefined));
+presence_id(_User) ->
+    undefined.
+-spec is_staff_session(session_state()) -> boolean().
+is_staff_session(#{is_staff := true}) ->
+    true;
+is_staff_session(_State) ->
+    false.
+
+-spec apply_timings_visibility(boolean(), gateway_timings:recorder(), map()) -> map().
+apply_timings_visibility(true, GwTimings, ReadyData) ->
+    ReadyData#{<<"_timings_gw">> => gateway_timings_payload:finalize(GwTimings)};
+apply_timings_visibility(false, _GwTimings, ReadyData) ->
+    maps:without([<<"_timings">>], ReadyData).
 
 -spec build_final_ready_data(
     session_state(),

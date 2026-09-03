@@ -28,6 +28,7 @@ import {RoleUpdateFailedModal} from '@app/features/moderation/components/alerts/
 import Permission from '@app/features/permissions/state/Permission';
 import PermissionLayout from '@app/features/permissions/state/PermissionLayout';
 import * as PermissionUtils from '@app/features/permissions/utils/PermissionUtils';
+import {Logger} from '@app/features/platform/utils/AppLogger';
 import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
 import {modal} from '@app/features/ui/commands/ModalCommands';
 import * as ToastCommands from '@app/features/ui/commands/ToastCommands';
@@ -43,9 +44,15 @@ import {observer} from 'mobx-react-lite';
 import type React from 'react';
 import {useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState} from 'react';
 
+const logger = new Logger('GuildRolesTab');
 const NEW_ROLE_DESCRIPTOR = msg({
 	message: 'New role',
 	comment: 'Default name for a newly created role in the community roles settings tab. Short label.',
+});
+const ROLE_COPY_NAME_DESCRIPTOR = msg({
+	message: '{name} copy',
+	comment:
+		'Default name for a role created by duplicating another role in the community roles settings tab. {name} is the source role name; translate the whole label so "copy" can move or inflect as the language needs.',
 });
 const DELETE_ROLE_DESCRIPTOR = msg({
 	message: 'Delete role',
@@ -85,6 +92,7 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 	const [mobileShowEditor, setMobileShowEditor] = useState(false);
 	const [roleUpdates, setRoleUpdates] = useState<Map<string, RoleUpdate>>(new Map());
 	const [pendingRoleOrder, setPendingRoleOrder] = useState<Array<string> | null>(null);
+	const [optimisticRoleOrder, setOptimisticRoleOrder] = useState<Array<string> | null>(null);
 	const [hoistOrderMode, setHoistOrderMode] = useState(false);
 	const [pendingHoistOrder, setPendingHoistOrder] = useState<Array<string> | null>(null);
 	const [permissionSearchQuery, setPermissionSearchQuery] = useState('');
@@ -98,13 +106,16 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 		if (!guild) return [];
 		const rolesList = Object.values(guild.roles);
 		const sorted = sortRolesByPosition(rolesList);
-		if (pendingRoleOrder) {
-			return pendingRoleOrder
+		const order = pendingRoleOrder ?? optimisticRoleOrder;
+		if (order) {
+			const mapped = order
 				.map((id: string) => sorted.find((r: GuildRole) => r.id === id))
 				.filter((r): r is GuildRole => r != null);
+			const missing = sorted.filter((r: GuildRole) => !order.includes(r.id));
+			return [...mapped, ...missing];
 		}
 		return sorted;
-	}, [guild, pendingRoleOrder]);
+	}, [guild, pendingRoleOrder, optimisticRoleOrder]);
 	useEffect(() => {
 		if (!pendingRoleOrder || !guild) return;
 		const sortedIds = sortRolesByPosition(Object.values(guild.roles)).map((role: GuildRole) => role.id);
@@ -112,6 +123,13 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 		const matches = pendingRoleOrder.every((id, index) => id === sortedIds[index]);
 		if (matches) setPendingRoleOrder(null);
 	}, [pendingRoleOrder, guild]);
+	useEffect(() => {
+		if (!optimisticRoleOrder || !guild) return;
+		const sortedIds = sortRolesByPosition(Object.values(guild.roles)).map((role: GuildRole) => role.id);
+		if (optimisticRoleOrder.length !== sortedIds.length) return;
+		const matches = optimisticRoleOrder.every((id, index) => id === sortedIds[index]);
+		if (matches) setOptimisticRoleOrder(null);
+	}, [optimisticRoleOrder, guild]);
 	const hoistedRoles = useMemo(() => {
 		if (!guild) return [];
 		const rolesList = Object.values(guild.roles).filter((role) => role.hoist && !role.isEveryone);
@@ -341,6 +359,59 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 			);
 		}
 	}, [guild]);
+	const handleDuplicateRole = useCallback(
+		async (sourceRoleId: string) => {
+			if (!guild || !canManageRoles) return;
+			const sourceRole = guild.roles[sourceRoleId];
+			if (!sourceRole) return;
+			const copyName = i18n._(ROLE_COPY_NAME_DESCRIPTOR, {name: sourceRole.name}).slice(0, 100);
+			const grantablePermissions = sourceRole.permissions & currentUserPermissions;
+			pendingRoleCreationRef.current = true;
+			try {
+				const createdRole = await GuildCommands.createRole(guild.id, copyName, {
+					color: sourceRole.color,
+					permissions: grantablePermissions,
+				});
+				const orderedRoleIds = roles.map((role: GuildRole) => role.id).filter((id) => id !== createdRole.id);
+				const sourceIndex = orderedRoleIds.indexOf(sourceRoleId);
+				const insertIndex = sourceIndex === -1 ? orderedRoleIds.length : sourceIndex + 1;
+				orderedRoleIds.splice(insertIndex, 0, createdRole.id);
+				setOptimisticRoleOrder(orderedRoleIds);
+				await GuildCommands.updateRole(guild.id, createdRole.id, {
+					hoist: sourceRole.hoist,
+					mentionable: sourceRole.mentionable,
+				});
+				try {
+					const submittableRoleOrder = createSubmittableRoleOrderIds({
+						guildId: guild.id,
+						orderedRoleIds,
+						isRoleLocked: (roleId) => {
+							if (roleId === createdRole.id) return false;
+							const role = guild.roles[roleId];
+							if (!role) return true;
+							return isRoleLocked(role);
+						},
+					});
+					if (submittableRoleOrder.length > 0) {
+						await GuildCommands.setRoleOrder(guild.id, submittableRoleOrder);
+					}
+				} catch (error) {
+					logger.error(`Failed to position duplicated role in guild ${guild.id}:`, error);
+					setOptimisticRoleOrder(null);
+				}
+				ToastCommands.createToast({type: 'success', children: <Trans>Role created successfully</Trans>});
+			} catch (_error) {
+				pendingRoleCreationRef.current = false;
+				setOptimisticRoleOrder(null);
+				ModalCommands.push(
+					modal(() => (
+						<RoleCreateFailedModal data-flx="guild.guild-tabs.guild-roles-tab.handle-duplicate-role.role-create-failed-modal" />
+					)),
+				);
+			}
+		},
+		[guild, canManageRoles, roles, isRoleLocked, currentUserPermissions, i18n],
+	);
 	const handleDeleteRole = useCallback(() => {
 		if (!selectedRole || selectedRole.isEveryone || !guild) return;
 		const currentIndex = roles.findIndex((r: GuildRole) => r.id === selectedRole.id);
@@ -386,6 +457,30 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 			)),
 		);
 	}, [selectedRole, guild, roles]);
+	const handleContextMenuDeleteRole = useCallback(
+		async (roleId: string) => {
+			if (!guild) return;
+			const role = guild.roles[roleId];
+			if (!role || role.isEveryone || isRoleLocked(role)) return;
+			const currentIndex = roles.findIndex((r: GuildRole) => r.id === roleId);
+			const nextRole = roles[currentIndex + 1] ?? roles[0];
+			try {
+				await GuildCommands.deleteRole(guild.id, roleId);
+				ToastCommands.createToast({type: 'success', children: <Trans>Role deleted successfully</Trans>});
+				setSelectedRoleId((current) => (current === roleId ? (nextRole?.id ?? null) : current));
+			} catch (_error) {
+				ModalCommands.push(
+					modal(() => (
+						<RoleDeleteFailedModal
+							roleName={role.name}
+							data-flx="guild.guild-tabs.guild-roles-tab.handle-context-menu-delete-role.role-delete-failed-modal"
+						/>
+					)),
+				);
+			}
+		},
+		[guild, roles, isRoleLocked],
+	);
 	const evaluateRoleMove = useCallback(
 		(draggedRoleId: string, targetRoleId: string | null, position: 'before' | 'after') => {
 			if (!guild) return null;
@@ -500,6 +595,8 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 				isRoleLocked={isRoleLocked}
 				onSelectRole={setSelectedRoleId}
 				onCreateRole={handleCreateRole}
+				onDuplicateRole={handleDuplicateRole}
+				onDeleteRole={handleContextMenuDeleteRole}
 				onEnterHoistOrderMode={handleEnterHoistOrderMode}
 				onExitHoistOrderMode={handleExitHoistOrderMode}
 				onResetHoistOrder={handleResetHoistOrder}
@@ -519,6 +616,8 @@ const GuildRolesTab: React.FC<{guildId: string}> = observer(({guildId}) => {
 		isGuildOwner,
 		canManageRoles,
 		handleCreateRole,
+		handleDuplicateRole,
+		handleContextMenuDeleteRole,
 		evaluateRoleMove,
 		handleRoleDrop,
 		evaluateHoistMove,

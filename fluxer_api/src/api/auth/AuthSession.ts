@@ -35,15 +35,6 @@ interface LogoutAuthSessionsParams {
 	sessionIdHashes: Array<string>;
 }
 
-interface UpdateUserActivityParams {
-	userId: UserID;
-	clientIp: string;
-	user?: User;
-	action?: 'session_authenticated' | 'bearer_fallback_session_authenticated' | 'unknown';
-	tokenType?: 'session' | 'bearer';
-	sessionId?: string;
-}
-
 interface DispatchAuthSessionChangeParams {
 	userId: UserID;
 	oldAuthSessionIdHash: string;
@@ -91,6 +82,7 @@ export async function createAuthSession(
 	if (user.isBot) throw new BotUserAuthSessionCreationDeniedError();
 	if (user.traits.has(REGISTRATION_PENDING_APPROVAL_TRAIT)) throw new RegistrationPendingApprovalError();
 	if (user.traits.has(REGISTRATION_REJECTED_TRAIT)) throw new RegistrationRejectedError();
+	user = await AuthUtility.handleBanStatus(ctx, user);
 	const now = new Date();
 	const token = await AuthUtility.generateAuthToken(ctx);
 	let clientCountry: string | null = null;
@@ -150,11 +142,6 @@ export async function getAuthSessions(ctx: ApiContext, userId: UserID): Promise<
 
 export async function updateAuthSessionLastUsed(ctx: ApiContext, tokenHash: Uint8Array): Promise<void> {
 	await ctx.services.userActivityBuffer.recordAuthSessionActivity(Buffer.from(tokenHash), new Date());
-}
-
-export async function updateUserActivity(ctx: ApiContext, {userId, clientIp}: UpdateUserActivityParams): Promise<void> {
-	const {users} = ctx.services;
-	await users.updateUserActivity(userId, clientIp);
 }
 
 export async function revokeToken(ctx: ApiContext, token: string): Promise<void> {

@@ -5,7 +5,6 @@ import type {Channel} from '@app/features/channel/models/Channel';
 import Channels from '@app/features/channel/state/Channels';
 import {UNKNOWN_CHANNEL_DESCRIPTOR} from '@app/features/channel/utils/ChannelMessageDescriptors';
 import * as ChannelUtils from '@app/features/channel/utils/ChannelUtils';
-import DeveloperOptions from '@app/features/devtools/state/DeveloperOptions';
 import type {Guild} from '@app/features/guild/models/Guild';
 import Guilds from '@app/features/guild/state/Guilds';
 import {
@@ -61,10 +60,7 @@ function getChannelRecency(channel: {id: string; lastMessageId: string | null}):
 }
 
 function getChannelSortWeight(channelId: string, baseWeight: number): number {
-	const unreadCount = ReadStates.getUnreadCount(channelId);
-	const mentionCount = ReadStates.getMentionCount(channelId);
-	const hasUnread = unreadCount > 0 || mentionCount > 0;
-	return hasUnread ? baseWeight + UNREAD_SORT_WEIGHT_BOOST : baseWeight;
+	return ReadStates.isUnreadOrMentioned(channelId) ? baseWeight + UNREAD_SORT_WEIGHT_BOOST : baseWeight;
 }
 
 export function buildChannelCandidate(
@@ -326,12 +322,7 @@ export function buildCandidateSets(i18n: I18n): CandidateSets {
 		});
 	}
 	const settingsCandidates: Array<SettingsCandidate> = [];
-	const hasExpressionPackAccess =
-		(Users.getCurrentUser()?.isStaff() ?? false) && DeveloperOptions.showExpressionPacksSettings;
 	const accessibleTabs = getSettingsTabs(i18n).filter((tab) => {
-		if (!hasExpressionPackAccess && tab.type === 'expression_packs') {
-			return false;
-		}
 		if (!UserSettings.developerMode && (tab.type === 'embed_debugger' || tab.type === 'component_gallery')) {
 			return false;
 		}

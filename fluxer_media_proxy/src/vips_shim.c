@@ -532,9 +532,14 @@ static int fluxer_gif_setup_filter_graph(
         goto fail;
     sink_ctx = avfilter_graph_alloc_filter(graph, avfilter_get_by_name("buffersink"), "out");
     if (sink_ctx == NULL) goto fail;
-    enum AVPixelFormat sink_fmts[] = { AV_PIX_FMT_PAL8, AV_PIX_FMT_NONE };
-    if (av_opt_set_int_list(sink_ctx, "pix_fmts", sink_fmts, AV_PIX_FMT_NONE,
-                            AV_OPT_SEARCH_CHILDREN) < 0)
+    enum AVPixelFormat sink_fmt = AV_PIX_FMT_PAL8;
+#if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100)
+    if (av_opt_set_array(sink_ctx, "pixel_formats", AV_OPT_SEARCH_CHILDREN,
+                         0, 1, AV_OPT_TYPE_PIXEL_FMT, &sink_fmt) < 0)
+#else
+    if (av_opt_set_bin(sink_ctx, "pix_fmts", (const uint8_t *)&sink_fmt,
+                       sizeof(sink_fmt), AV_OPT_SEARCH_CHILDREN) < 0)
+#endif
         goto fail;
     if (avfilter_init_dict(sink_ctx, NULL) < 0) goto fail;
 
@@ -584,6 +589,8 @@ int fluxer_ffmpeg_resize_gif(
     int target_width,
     int target_height,
     long long deadline_unix_ms,
+    long long max_frames,
+    long long max_total_pixels,
     void **out_buf,
     size_t *out_size
 ) {
@@ -685,6 +692,8 @@ int fluxer_ffmpeg_resize_gif(
 
     int64_t next_pts = 0;
     int64_t last_packet_duration = 0;
+    long long frames_decoded = 0;
+    long long decoded_pixels = 0;
     AVRational out_tb = (AVRational){ 1, 100 };
     int read_rc = 0;
     while ((read_rc = av_read_frame(in_fmt, packet)) >= 0) {
@@ -704,6 +713,14 @@ int fluxer_ffmpeg_resize_gif(
             int recv_rc = avcodec_receive_frame(dec_ctx, frame);
             if (recv_rc == AVERROR(EAGAIN) || recv_rc == AVERROR_EOF) break;
             if (recv_rc < 0) goto cleanup;
+            frames_decoded++;
+            if (max_frames > 0 && frames_decoded > max_frames) { rc = -3; goto cleanup; }
+            {
+                long long fw = frame->width > 0 ? frame->width : dec_ctx->width;
+                long long fh = frame->height > 0 ? frame->height : dec_ctx->height;
+                decoded_pixels += fw * fh;
+            }
+            if (max_total_pixels > 0 && decoded_pixels > max_total_pixels) { rc = -3; goto cleanup; }
             frame->pts = next_pts;
             int64_t duration = frame->duration > 0 ? frame->duration : last_packet_duration;
             int64_t duration_cs = duration > 0 ? av_rescale_q(duration, in_stream->time_base, out_tb) : 2;
@@ -723,6 +740,14 @@ int fluxer_ffmpeg_resize_gif(
             int recv_rc = avcodec_receive_frame(dec_ctx, frame);
             if (recv_rc == AVERROR(EAGAIN) || recv_rc == AVERROR_EOF) break;
             if (recv_rc < 0) goto cleanup;
+            frames_decoded++;
+            if (max_frames > 0 && frames_decoded > max_frames) { rc = -3; goto cleanup; }
+            {
+                long long fw = frame->width > 0 ? frame->width : dec_ctx->width;
+                long long fh = frame->height > 0 ? frame->height : dec_ctx->height;
+                decoded_pixels += fw * fh;
+            }
+            if (max_total_pixels > 0 && decoded_pixels > max_total_pixels) { rc = -3; goto cleanup; }
             frame->pts = next_pts;
             if (push_frame_delay_cs(&frame_delays_cs, &frame_delays_len, &frame_delays_cap, 2) != 0)
                 goto cleanup;
@@ -1921,17 +1946,6 @@ static inline float fluxer_pq_oetf(float l) {
     return powf(num / den, m2);
 }
 
-static inline float fluxer_hlg_oetf_display(float dl) {
-    if (dl <= 0.0f) return 0.0f;
-    if (dl >= 1.0f) dl = 1.0f;
-    float scene = powf(dl, 1.0f / 1.2f);
-    if (scene <= 1.0f / 12.0f) return sqrtf(3.0f * scene);
-    const float a = 0.17883277f;
-    const float b = 0.28466892f;
-    const float c = 0.55991073f;
-    return a * logf(12.0f * scene - b) + c;
-}
-
 static inline float fluxer_srgb_oetf(float e) {
     if (e <= 0.0f) return 0.0f;
     if (e >= 1.0f) return 1.0f;
@@ -2287,7 +2301,8 @@ typedef int (*bmff_box_cb)(const uint8_t *payload, size_t payload_len, void *use
 
 static int bmff_walk(const uint8_t *data, size_t start, size_t end,
                      const char *target, bmff_box_cb cb, void *user,
-                     int meta_full_box) {
+                     int meta_full_box, int depth) {
+    if (depth > 32) return 0;
     size_t off = start;
     if (meta_full_box) {
         if (off + 4 > end) return 0;
@@ -2305,9 +2320,10 @@ static int bmff_walk(const uint8_t *data, size_t start, size_t end,
         } else if (size32 == 0) {
             box_size = (uint64_t)(end - off);
         }
-        if (box_size < header_len || off + box_size > end) return 0;
+        if (box_size < header_len || box_size > (uint64_t)(end - off)) return 0;
         size_t child_start = off + header_len;
         size_t child_end   = (size_t)(off + box_size);
+        if (child_end < child_start) return 0;
 
         if (memcmp(btype, target, 4) == 0) {
             int r = cb(data + child_start, child_end - child_start, user);
@@ -2320,10 +2336,10 @@ static int bmff_walk(const uint8_t *data, size_t start, size_t end,
             memcmp(btype, "stbl", 4) == 0 ||
             memcmp(btype, "edts", 4) == 0 ||
             memcmp(btype, "dinf", 4) == 0) {
-            int r = bmff_walk(data, child_start, child_end, target, cb, user, 0);
+            int r = bmff_walk(data, child_start, child_end, target, cb, user, 0, depth + 1);
             if (r) return r;
         } else if (memcmp(btype, "meta", 4) == 0) {
-            int r = bmff_walk(data, child_start, child_end, target, cb, user, 1);
+            int r = bmff_walk(data, child_start, child_end, target, cb, user, 1, depth + 1);
             if (r) return r;
         }
 
@@ -2395,9 +2411,9 @@ static int cb_each_trak(const uint8_t *payload, size_t len, void *user) {
     }
     trak_info *t = &list->traks[list->count];
     memset(t, 0, sizeof(*t));
-    bmff_walk(payload, 0, len, "mdhd", cb_collect_mdhd, t, 0);
-    bmff_walk(payload, 0, len, "hdlr", cb_collect_hdlr, t, 0);
-    bmff_walk(payload, 0, len, "stts", cb_collect_stts, t, 0);
+    bmff_walk(payload, 0, len, "mdhd", cb_collect_mdhd, t, 0, 0);
+    bmff_walk(payload, 0, len, "hdlr", cb_collect_hdlr, t, 0, 0);
+    bmff_walk(payload, 0, len, "stts", cb_collect_stts, t, 0, 0);
     list->count++;
     return 0;
 }
@@ -2412,7 +2428,7 @@ static int parse_isobmff_track_delays(const void *buf, size_t len,
 
     const uint8_t *data = (const uint8_t *)buf;
     trak_list list = { NULL, 0, 0 };
-    if (bmff_walk(data, 0, len, "trak", cb_each_trak, &list, 0) != 0) {
+    if (bmff_walk(data, 0, len, "trak", cb_each_trak, &list, 0, 0) != 0) {
         free(list.traks);
         return -1;
     }
@@ -2504,10 +2520,11 @@ static int cb_find_iinf_tmap(const uint8_t *payload, size_t len, void *user) {
         } else if (size32 == 0) {
             box_size = (uint64_t)(len - off);
         }
-        if (box_size < header_len || off + box_size > len) return 0;
+        if (box_size < header_len || box_size > (uint64_t)(len - off)) return 0;
 
         size_t child_start = off + header_len;
         size_t child_end = (size_t)(off + box_size);
+        if (child_end < child_start) return 0;
         if (memcmp(btype, "infe", 4) == 0 && child_end > child_start) {
             const uint8_t *infe = payload + child_start;
             size_t infe_len = child_end - child_start;
@@ -2540,7 +2557,7 @@ static int parse_isobmff_has_tmap_item(const void *buf, size_t len) {
     if (buf == NULL || len < 16) return 0;
     int found = 0;
     const uint8_t *data = (const uint8_t *)buf;
-    bmff_walk(data, 0, len, "iinf", cb_find_iinf_tmap, &found, 0);
+    bmff_walk(data, 0, len, "iinf", cb_find_iinf_tmap, &found, 0, 0);
     return found;
 }
 

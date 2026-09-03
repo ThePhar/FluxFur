@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {Logger} from '@app/features/platform/utils/AppLogger';
-import AdaptiveScreenShareEngine from '@app/features/voice/engine/AdaptiveScreenShareEngine';
 import MediaEngine from '@app/features/voice/engine/MediaEngineFacade';
+import {noteDeliberateScreenShareQualityChange} from '@app/features/voice/engine/ScreenShareUnderperformance';
 import VoiceSettings, {
 	type CameraResolution,
 	type ScreenshareResolution,
@@ -17,8 +16,6 @@ import type {
 	ScreenShareSoftwareQuality,
 } from '@app/features/voice/utils/CodecCapabilityDetector';
 import {getActiveInputDeviceLabel, type VoiceProcessingMode} from '@app/features/voice/utils/VoiceProcessingProfile';
-
-const logger = new Logger('VoiceSettingsCommands');
 
 type VoiceSettingsPatch = Partial<{
 	inputDeviceId: string;
@@ -61,14 +58,13 @@ type VoiceSettingsPatch = Partial<{
 	disablePictureInPicturePopoutScreenShare: boolean;
 	preferredVideoCodec: CodecPreference;
 	preferredScreenShareCodec: CodecPreference;
-	emulatedDecodeVideoCodecCap: CodecPreference;
+	screenShareAv1OptIn: boolean;
+	screenShareHevcOptIn: boolean;
 	screenShareContentHint: ScreenShareContentHint;
 	screenShareEncoderMode: ScreenShareEncoderMode;
 	screenShareSoftwareQuality: ScreenShareSoftwareQuality;
 	screenShareScalabilityMode: ScreenShareScalabilityModePreference;
 	screenShareBackupCodecMode: ScreenShareBackupCodecMode;
-	screenShareMaxBitrateMbps: number;
-	adaptiveScreenShareQuality: boolean;
 	vadThreshold: number;
 	vadAutoSensitivity: boolean;
 	vadEnhanced: boolean;
@@ -105,16 +101,7 @@ const CAMERA_BACKGROUND_REFRESH_KEYS: Array<keyof VoiceSettingsPatch> = [
 	'backgroundBlurStrength',
 	'mirrorCamera',
 ];
-const CAMERA_CAPTURE_REFRESH_KEYS: Array<keyof VoiceSettingsPatch> = ['cameraResolution'];
-const SCREEN_SHARE_CODEC_REFRESH_KEYS: Array<keyof VoiceSettingsPatch> = [
-	'preferredScreenShareCodec',
-	'screenShareEncoderMode',
-	'screenShareSoftwareQuality',
-	'screenShareScalabilityMode',
-	'screenShareBackupCodecMode',
-	'openH264Enabled',
-];
-
+const CAMERA_CAPTURE_REFRESH_KEYS: Array<keyof VoiceSettingsPatch> = ['cameraResolution', 'videoDeviceId'];
 function refreshMicrophone(): void {
 	MediaEngine.refreshMicrophoneFromSettings();
 }
@@ -135,16 +122,46 @@ function shouldRefreshCameraBackground(settings: VoiceSettingsPatch): boolean {
 	return CAMERA_BACKGROUND_REFRESH_KEYS.some((key) => settings[key] !== undefined);
 }
 
-function shouldRefreshCameraCapture(settings: VoiceSettingsPatch): boolean {
-	return CAMERA_CAPTURE_REFRESH_KEYS.some((key) => settings[key] !== undefined);
+function readCameraCaptureRefreshValues(): VoiceSettingsPatch {
+	return {
+		cameraResolution: VoiceSettings.cameraResolution,
+		videoDeviceId: VoiceSettings.videoDeviceId,
+	};
 }
 
-function shouldRefreshScreenShareCodecNegotiation(settings: VoiceSettingsPatch): boolean {
-	return SCREEN_SHARE_CODEC_REFRESH_KEYS.some((key) => settings[key] !== undefined);
+function shouldRefreshCameraCapture(
+	settings: VoiceSettingsPatch,
+	before: VoiceSettingsPatch,
+	after: VoiceSettingsPatch,
+): boolean {
+	return CAMERA_CAPTURE_REFRESH_KEYS.some((key) => settings[key] !== undefined && before[key] !== after[key]);
 }
 
-async function refreshScreenShareCodecNegotiation(): Promise<void> {
-	await MediaEngine.refreshActiveScreenShareCodecNegotiation();
+function readScreenShareQualityValues(): VoiceSettingsPatch {
+	return {
+		screenshareResolution: VoiceSettings.getScreenshareResolution(),
+		videoFrameRate: VoiceSettings.getVideoFrameRate(),
+		streamingMode: VoiceSettings.getStreamingMode(),
+		screenShareContentHint: VoiceSettings.getScreenShareContentHint(),
+		preferredScreenShareCodec: VoiceSettings.getPreferredScreenShareCodec(),
+		screenShareAv1OptIn: VoiceSettings.getScreenShareAv1OptIn(),
+		screenShareHevcOptIn: VoiceSettings.getScreenShareHevcOptIn(),
+		screenShareEncoderMode: VoiceSettings.getScreenShareEncoderMode(),
+		screenShareSoftwareQuality: VoiceSettings.getScreenShareSoftwareQuality(),
+		screenShareScalabilityMode: VoiceSettings.getScreenShareScalabilityMode(),
+		screenShareBackupCodecMode: VoiceSettings.getScreenShareBackupCodecMode(),
+		openH264Enabled: VoiceSettings.getOpenH264Enabled(),
+	};
+}
+
+function changesScreenShareQualityDeliberately(
+	settings: VoiceSettingsPatch,
+	before: VoiceSettingsPatch,
+	after: VoiceSettingsPatch,
+): boolean {
+	return (Object.keys(before) as Array<keyof VoiceSettingsPatch>).some(
+		(key) => settings[key] !== undefined && before[key] !== after[key],
+	);
 }
 
 function applyUpdatedVoiceSettings(
@@ -152,7 +169,12 @@ function applyUpdatedVoiceSettings(
 	refreshInput: boolean,
 	options: VoiceSettingsUpdateOptions = {},
 ): void {
+	const cameraCaptureBefore = readCameraCaptureRefreshValues();
+	const screenShareQualityBefore = readScreenShareQualityValues();
 	VoiceSettings.updateSettings(settings);
+	if (changesScreenShareQualityDeliberately(settings, screenShareQualityBefore, readScreenShareQualityValues())) {
+		noteDeliberateScreenShareQualityChange();
+	}
 	if (settings.muteStreamAudio !== undefined) {
 		MediaEngine.setScreenShareAudioMuted(settings.muteStreamAudio);
 	}
@@ -164,26 +186,14 @@ function applyUpdatedVoiceSettings(
 	if (settings.inputVolume !== undefined && !refreshInput) {
 		MediaEngine.applyLocalInputVolume();
 	}
-	if (settings.adaptiveScreenShareQuality !== undefined) {
-		if (settings.adaptiveScreenShareQuality) {
-			AdaptiveScreenShareEngine.start(MediaEngine.room);
-		} else {
-			void AdaptiveScreenShareEngine.restoreConfiguredQuality();
-		}
-	}
 	if (refreshInput) {
 		refreshMicrophone();
 	}
 	if (options.refreshCameraBackground !== false && shouldRefreshCameraBackground(settings)) {
 		refreshCameraBackground();
 	}
-	if (shouldRefreshCameraCapture(settings)) {
+	if (shouldRefreshCameraCapture(settings, cameraCaptureBefore, readCameraCaptureRefreshValues())) {
 		refreshCameraCapture();
-	}
-	if (shouldRefreshScreenShareCodecNegotiation(settings)) {
-		void refreshScreenShareCodecNegotiation().catch((error) => {
-			logger.warn('Failed to refresh active screen share codec negotiation after settings update', {error});
-		});
 	}
 }
 

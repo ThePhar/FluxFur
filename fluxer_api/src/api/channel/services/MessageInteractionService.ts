@@ -17,6 +17,7 @@ import type {IUserRepository} from '../../user/IUserRepository';
 import {assertGuildMemberCanCommunicate} from '../../utils/GuildCommunicationUtils';
 import type {IChannelRepository} from '../IChannelRepository';
 import {MessageInteractionAuthService} from './interaction/MessageInteractionAuthService';
+import {MessagePinAuthService} from './interaction/MessagePinAuthService';
 import {MessagePinService} from './interaction/MessagePinService';
 import {MessageReactionService} from './interaction/MessageReactionService';
 import {MessageReadStateService} from './interaction/MessageReadStateService';
@@ -25,6 +26,7 @@ import type {MessagePersistenceService} from './message/MessagePersistenceServic
 
 export class MessageInteractionService {
 	readonly authService: MessageInteractionAuthService;
+	private pinAuthService: MessagePinAuthService;
 	private readStateService: MessageReadStateService;
 	private pinService: MessagePinService;
 	private reactionService: MessageReactionService;
@@ -45,6 +47,7 @@ export class MessageInteractionService {
 			guildRepository,
 			gatewayService,
 		);
+		this.pinAuthService = new MessagePinAuthService(channelRepository, userRepository, guildRepository, gatewayService);
 		this.readStateService = new MessageReadStateService(gatewayService);
 		this.pinService = new MessagePinService(
 			gatewayService,
@@ -85,7 +88,7 @@ export class MessageInteractionService {
 		items: Array<ChannelPinResponse>;
 		has_more: boolean;
 	}> {
-		const authChannel = await this.authService.getChannelAuthenticated({userId, channelId});
+		const authChannel = await this.pinAuthService.getChannelAuthenticated({userId, channelId});
 		return this.pinService.getChannelPins({authChannel, userId, requestCache, beforeTimestamp, limit});
 	}
 
@@ -102,7 +105,7 @@ export class MessageInteractionService {
 	}): Promise<void> {
 		const authChannel = await this.authService.getChannelAuthenticated({userId, channelId});
 		if (!authChannel.guild && authChannel.channel.type !== ChannelTypes.DM_PERSONAL_NOTES) {
-			await this.authService.validateDMSendPermissions({channelId, userId});
+			await this.authService.validateDMSendPermissions({channel: authChannel.channel, userId});
 		}
 		await this.pinService.pinMessage({authChannel, messageId, userId, requestCache});
 	}
@@ -120,7 +123,7 @@ export class MessageInteractionService {
 	}): Promise<void> {
 		const authChannel = await this.authService.getChannelAuthenticated({userId, channelId});
 		if (!authChannel.guild && authChannel.channel.type !== ChannelTypes.DM_PERSONAL_NOTES) {
-			await this.authService.validateDMSendPermissions({channelId, userId});
+			await this.authService.validateDMSendPermissions({channel: authChannel.channel, userId});
 		}
 		await this.pinService.unpinMessage({authChannel, messageId, userId, requestCache});
 	}

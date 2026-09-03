@@ -172,3 +172,33 @@ fn single_line_fence_without_space_is_content() {
         json!([{"type":"CodeBlock","content":"hello"}])
     );
 }
+
+#[test]
+fn fence_after_a_preceding_line_opens_code_block() {
+    assert_eq!(
+        parse("intro line\nlabel```rust\nfn main() {}\n```"),
+        json!([
+            {"type": "Text", "content": "intro line\nlabel"},
+            {"type": "CodeBlock", "language": "rust", "content": "fn main() {}\n"}
+        ])
+    );
+}
+
+#[test]
+fn fenced_body_with_pipes_after_a_line_is_not_a_table() {
+    assert_eq!(
+        parse("heading text\nrow```md\na | b\n---\nc | d\n```"),
+        json!([
+            {"type": "Text", "content": "heading text\nrow"},
+            {"type": "CodeBlock", "language": "md", "content": "a | b\n---\nc | d\n"}
+        ])
+    );
+}
+
+#[test]
+fn unterminated_midline_fence_after_a_line_stays_text() {
+    assert_eq!(
+        parse("hello\nfoo```bar with no closing fence"),
+        json!([{"type": "Text", "content": "hello\nfoo```bar with no closing fence"}])
+    );
+}
