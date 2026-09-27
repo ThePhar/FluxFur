@@ -1,31 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {
-	DEFERRED_PHONE_ON_COMMUNITY_JOIN,
-	PHONE_GATE_PROMOTED_FROM_DEFERRAL,
-	SuspiciousActivityFlags,
-} from '@fluxer/constants/src/UserConstants';
-import type {GuildResponse} from '@fluxer/schema/src/domains/guild/GuildResponseSchemas';
-import {afterAll, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest';
-import {setInjectedRegistrationRiskEvaluator} from '../../middleware/ServiceMiddleware';
-import {getInstanceConfigRepository} from '../../middleware/ServiceSingletons';
-import {
-	authorizeOAuth2,
-	createOAuth2Application,
-	exchangeOAuth2AuthorizationCode,
-} from '../../oauth/tests/OAuthTestUtils';
-import {PHONE_GATE_ESCAPE_MAX_GUILDS} from '../../risk/DeferredPhoneGate';
-import {
-	RecommendedAction,
-	RiskConfidence,
-	RiskDecisionMethod,
-	RiskLevel,
-	type RiskLevel as RiskLevelType,
-} from '../../risk/RiskTypes';
-import type {ApiTestHarness} from '../../test/ApiTestHarness';
-import {NoopGatewayService} from '../../test/NoopGatewayService';
-import {createBuilder, createBuilderWithoutAuth} from '../../test/TestRequestBuilder';
-import type {IRegistrationRiskEvaluator} from '../services/IRegistrationRiskEvaluator';
+import type {IRegistrationRiskEvaluator} from '@app/api/auth/services/IRegistrationRiskEvaluator';
 import {
 	createAuthHarness,
 	createTestAccount,
@@ -33,7 +8,33 @@ import {
 	createUniqueUsername,
 	loginAccount,
 	registerUser,
-} from './AuthTestUtils';
+} from '@app/api/auth/tests/AuthTestUtils';
+import {Config} from '@app/api/Config';
+import {setInjectedRegistrationRiskEvaluator} from '@app/api/middleware/ServiceMiddleware';
+import {getInstanceConfigRepository} from '@app/api/middleware/ServiceSingletons';
+import {
+	authorizeOAuth2,
+	createOAuth2Application,
+	exchangeOAuth2AuthorizationCode,
+} from '@app/api/oauth/tests/OAuthTestUtils';
+import {PHONE_GATE_ESCAPE_MAX_GUILDS} from '@app/api/risk/DeferredPhoneGate';
+import {
+	RecommendedAction,
+	RiskConfidence,
+	RiskDecisionMethod,
+	RiskLevel,
+	type RiskLevel as RiskLevelType,
+} from '@app/api/risk/RiskTypes';
+import type {ApiTestHarness} from '@app/api/test/ApiTestHarness';
+import {NoopGatewayService} from '@app/api/test/NoopGatewayService';
+import {createBuilder, createBuilderWithoutAuth} from '@app/api/test/TestRequestBuilder';
+import {
+	DEFERRED_PHONE_ON_COMMUNITY_JOIN,
+	PHONE_GATE_PROMOTED_FROM_DEFERRAL,
+	SuspiciousActivityFlags,
+} from '@fluxer/constants/src/UserConstants';
+import type {GuildResponse} from '@fluxer/schema/src/domains/guild/GuildResponseSchemas';
+import {afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi} from 'vitest';
 
 function phoneRiskEvaluator(level: RiskLevelType, riskScore: number): IRegistrationRiskEvaluator {
 	return {
@@ -79,15 +80,15 @@ async function createGuildWithInvite(harness: ApiTestHarness): Promise<{guildId:
 }
 
 async function readFlags(userId: string): Promise<number> {
-	const {UserRepository} = await import('../../user/repositories/UserRepository');
-	const {createUserID} = await import('../../BrandedTypes');
+	const {UserRepository} = await import('@app/api/user/repositories/UserRepository');
+	const {createUserID} = await import('@app/api/BrandedTypes');
 	const user = await new UserRepository().findUnique(createUserID(BigInt(userId)));
 	return user?.suspiciousActivityFlags ?? 0;
 }
 
 async function readGuildIds(userId: string): Promise<Array<string>> {
-	const {GuildRepository} = await import('../../guild/repositories/GuildRepository');
-	const {createUserID} = await import('../../BrandedTypes');
+	const {GuildRepository} = await import('@app/api/guild/repositories/GuildRepository');
+	const {createUserID} = await import('@app/api/BrandedTypes');
 	const guilds = await new GuildRepository().listUserGuilds(createUserID(BigInt(userId)));
 	return guilds.map((guild) => guild.id.toString());
 }
@@ -239,6 +240,59 @@ describe('Deferred phone verification gate', () => {
 		const flags = await readFlags(registration.user_id);
 		expect(flags & DEFERRED_PHONE_ON_COMMUNITY_JOIN).toBe(0);
 		expect(flags & SuspiciousActivityFlags.REQUIRE_VERIFIED_PHONE).not.toBe(0);
+	});
+
+	describe('with phone flagging disabled', () => {
+		const originalPhoneFlagging = {...Config.abusePolicy.phoneFlagging};
+		afterEach(() => {
+			Config.abusePolicy.phoneFlagging = originalPhoneFlagging;
+		});
+
+		it('sets no phone requirement and no deferral at registration', async () => {
+			await getInstanceConfigRepository().setInstancePolicyConfig({deferred_phone_gate_enabled: true});
+			Config.abusePolicy.phoneFlagging = {enabled: false, exemptCountryCodes: []};
+			setInjectedRegistrationRiskEvaluator(phoneRiskEvaluator(RiskLevel.High, 70));
+			const registration = await registerUser(harness, {
+				email: createUniqueEmail('flagging-off'),
+				username: createUniqueUsername('flagging_off'),
+				global_name: 'Flagging Off',
+				password: 'StrongPassword!123',
+				date_of_birth: '2000-01-01',
+				consent: true,
+			});
+			const flags = await readFlags(registration.user_id);
+			expect(flags & SuspiciousActivityFlags.REQUIRE_VERIFIED_PHONE).toBe(0);
+			expect(flags & DEFERRED_PHONE_ON_COMMUNITY_JOIN).toBe(0);
+		});
+
+		it('keeps an existing deferral dormant on a qualifying join', async () => {
+			await getInstanceConfigRepository().setInstancePolicyConfig({
+				deferred_phone_gate_enabled: true,
+				deferred_phone_gate_member_threshold: 1,
+				deferred_phone_gate_window_hours: 24,
+			});
+			const {inviteCode} = await createGuildWithInvite(harness);
+			const filler = await createTestAccount(harness);
+			await createBuilder(harness, filler.token).post(`/invites/${inviteCode}`).expect(200).execute();
+			setInjectedRegistrationRiskEvaluator(phoneRiskEvaluator(RiskLevel.High, 70));
+			const registration = await registerUser(harness, {
+				email: createUniqueEmail('flagging-off-join'),
+				username: createUniqueUsername('flagging_off_join'),
+				global_name: 'Flagging Off Join',
+				password: 'StrongPassword!123',
+				date_of_birth: '2000-01-01',
+				consent: true,
+			});
+			setInjectedRegistrationRiskEvaluator(undefined);
+			expect((await readFlags(registration.user_id)) & DEFERRED_PHONE_ON_COMMUNITY_JOIN).not.toBe(0);
+
+			Config.abusePolicy.phoneFlagging = {enabled: false, exemptCountryCodes: []};
+			await createBuilder(harness, registration.token).post(`/invites/${inviteCode}`).expect(200).execute();
+
+			const flags = await readFlags(registration.user_id);
+			expect(flags & DEFERRED_PHONE_ON_COMMUNITY_JOIN).not.toBe(0);
+			expect(flags & PHONE_GATE_PROMOTED_FROM_DEFERRAL).toBe(0);
+		});
 	});
 
 	describe('phone gate escape', () => {

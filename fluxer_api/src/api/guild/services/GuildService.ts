@@ -1,5 +1,40 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type {ApiContext} from '@app/api/ApiContext';
+import type {EmojiID, GuildID, RoleID, StickerID, UserID} from '@app/api/BrandedTypes';
+import {createWebhookID} from '@app/api/BrandedTypes';
+import type {IChannelRepository} from '@app/api/channel/IChannelRepository';
+import type {ChannelService} from '@app/api/channel/services/ChannelService';
+import {resolveExpressionSourceGuild} from '@app/api/guild/ExpressionSourceGuild';
+import {
+	collectGuildAuditLogUserIds,
+	isNoopGuildAuditLog,
+	mapGuildAuditLogEntry,
+	type StoredGuildAuditLogEntryResponse,
+} from '@app/api/guild/GuildAuditLogEntryMapper';
+import type {GuildAuditLogService} from '@app/api/guild/GuildAuditLogService';
+import type {IGuildRepositoryAggregate} from '@app/api/guild/repositories/IGuildRepositoryAggregate';
+import {GuildChannelService} from '@app/api/guild/services/GuildChannelService';
+import {GuildContentService} from '@app/api/guild/services/GuildContentService';
+import {GuildDataService} from '@app/api/guild/services/GuildDataService';
+import {GuildMemberService} from '@app/api/guild/services/GuildMemberService';
+import {createGuildMfaEnforcer} from '@app/api/guild/services/GuildMfaEnforcement';
+import {GuildModerationService} from '@app/api/guild/services/GuildModerationService';
+import {GuildRoleService} from '@app/api/guild/services/GuildRoleService';
+import {GuildSearchService} from '@app/api/guild/services/GuildSearchService';
+import type {AvatarService} from '@app/api/infrastructure/AvatarService';
+import type {EntityAssetService} from '@app/api/infrastructure/EntityAssetService';
+import type {IAssetDeletionQueue} from '@app/api/infrastructure/IAssetDeletionQueue';
+import type {IGatewayService} from '@app/api/infrastructure/IGatewayService';
+import type {UserCacheService} from '@app/api/infrastructure/UserCacheService';
+import type {InviteRepository} from '@app/api/invite/InviteRepository';
+import type {LimitConfigService} from '@app/api/limits/LimitConfigService';
+import type {RequestCache} from '@app/api/middleware/RequestCacheMiddleware';
+import type {GuildAuditLog} from '@app/api/models/GuildAuditLog';
+import type {Webhook} from '@app/api/models/Webhook';
+import type {IUserRepository} from '@app/api/user/IUserRepository';
+import {getCachedUserPartialResponses} from '@app/api/user/UserCacheHelpers';
+import type {IWebhookRepository} from '@app/api/webhook/IWebhookRepository';
 import {AuditLogActionType} from '@fluxer/constants/src/AuditLogActionType';
 import {Permissions} from '@fluxer/constants/src/ChannelConstants';
 import {GuildFeatures} from '@fluxer/constants/src/GuildConstants';
@@ -12,52 +47,18 @@ import {UnknownGuildEmojiError} from '@fluxer/errors/src/domains/guild/UnknownGu
 import {UnknownGuildError} from '@fluxer/errors/src/domains/guild/UnknownGuildError';
 import {UnknownGuildStickerError} from '@fluxer/errors/src/domains/guild/UnknownGuildStickerError';
 import type {
-	AuditLogOptions,
 	AuditLogWebhookResponse,
-	GuildAuditLogEntryResponse,
 	GuildAuditLogListResponse,
 } from '@fluxer/schema/src/domains/guild/GuildAuditLogSchemas';
 import type {
 	GuildEmojiMetadataResponse,
+	GuildExpressionSourceGuildResponse,
 	GuildStickerMetadataResponse,
 } from '@fluxer/schema/src/domains/guild/GuildEmojiSchemas';
 import type {GuildUpdateRequest} from '@fluxer/schema/src/domains/guild/GuildRequestSchemas';
 import type {GuildResponse} from '@fluxer/schema/src/domains/guild/GuildResponseSchemas';
 import type {ICacheService} from '@pkgs/cache/src/ICacheService';
 import type {IpInfoService} from '@pkgs/geoip/src/IpInfoService';
-import type {ApiContext} from '../../ApiContext';
-import type {EmojiID, GuildID, RoleID, StickerID, UserID} from '../../BrandedTypes';
-import {createUserID, createWebhookID} from '../../BrandedTypes';
-import type {IChannelRepository} from '../../channel/IChannelRepository';
-import type {ChannelService} from '../../channel/services/ChannelService';
-import type {AvatarService} from '../../infrastructure/AvatarService';
-import type {EntityAssetService} from '../../infrastructure/EntityAssetService';
-import type {IAssetDeletionQueue} from '../../infrastructure/IAssetDeletionQueue';
-import type {IGatewayService} from '../../infrastructure/IGatewayService';
-import type {UserCacheService} from '../../infrastructure/UserCacheService';
-import type {InviteRepository} from '../../invite/InviteRepository';
-import type {LimitConfigService} from '../../limits/LimitConfigService';
-import type {RequestCache} from '../../middleware/RequestCacheMiddleware';
-import type {GuildAuditLog} from '../../models/GuildAuditLog';
-import type {Webhook} from '../../models/Webhook';
-import type {IUserRepository} from '../../user/IUserRepository';
-import {getCachedUserPartialResponses} from '../../user/UserCacheHelpers';
-import type {IWebhookRepository} from '../../webhook/IWebhookRepository';
-import type {GuildAuditLogService} from '../GuildAuditLogService';
-import type {GuildAuditLogChange} from '../GuildAuditLogTypes';
-import type {IGuildRepositoryAggregate} from '../repositories/IGuildRepositoryAggregate';
-import {GuildChannelService} from './GuildChannelService';
-import {GuildContentService} from './GuildContentService';
-import {GuildDataService} from './GuildDataService';
-import {GuildMemberService} from './GuildMemberService';
-import {createGuildMfaEnforcer} from './GuildMfaEnforcement';
-import {GuildModerationService} from './GuildModerationService';
-import {GuildRoleService} from './GuildRoleService';
-import {GuildSearchService} from './GuildSearchService';
-
-interface StoredGuildAuditLogEntryResponse extends Omit<GuildAuditLogEntryResponse, 'changes'> {
-	changes?: GuildAuditLogChange;
-}
 
 interface StoredAuditLogWebhookResponse extends Omit<AuditLogWebhookResponse, 'type'> {
 	type: number;
@@ -276,6 +277,25 @@ export class GuildService {
 		};
 	}
 
+	async getEmojiSource(emojiId: EmojiID, userId: UserID): Promise<GuildExpressionSourceGuildResponse> {
+		const emoji = await this.guildRepository.getEmojiById(emojiId);
+		if (!emoji) throw new UnknownGuildEmojiError();
+		return this.resolveExpressionSourceGuild(emoji.guildId, userId);
+	}
+
+	async getStickerSource(stickerId: StickerID, userId: UserID): Promise<GuildExpressionSourceGuildResponse> {
+		const sticker = await this.guildRepository.getStickerById(stickerId);
+		if (!sticker) throw new UnknownGuildStickerError();
+		return this.resolveExpressionSourceGuild(sticker.guildId, userId);
+	}
+
+	private resolveExpressionSourceGuild(guildId: GuildID, userId: UserID): Promise<GuildExpressionSourceGuildResponse> {
+		return resolveExpressionSourceGuild({
+			loadGuild: () => this.gatewayService.getGuildData({guildId, userId, skipMembershipCheck: true}),
+			isMember: async () => (await this.gatewayService.getGuildMember({guildId, userId})).success,
+		});
+	}
+
 	async listGuildAuditLogs(params: {
 		userId: UserID;
 		guildId: GuildID;
@@ -338,13 +358,13 @@ export class GuildService {
 			if (shouldBatch) {
 				const batchResult = await this.guildAuditLogService.batchConsecutiveMessageDeleteLogs(guildId, logs);
 				for (const log of batchResult.processedLogs) {
-					if (processedLogs.length < effectiveLimit) {
+					if (processedLogs.length < effectiveLimit && !isNoopGuildAuditLog(log.actionType, log.changes)) {
 						processedLogs.push(log);
 					}
 				}
 			} else {
 				for (const log of logs) {
-					if (processedLogs.length < effectiveLimit) {
+					if (processedLogs.length < effectiveLimit && !isNoopGuildAuditLog(log.actionType, log.changes)) {
 						processedLogs.push(log);
 					}
 				}
@@ -362,10 +382,8 @@ export class GuildService {
 		processedLogs = processedLogs.slice(0, effectiveLimit);
 		const userIdSet = new Set<UserID>();
 		for (const log of processedLogs) {
-			userIdSet.add(log.userId);
-			const targetUserId = this.getAuditLogTargetUserId(log);
-			if (targetUserId) {
-				userIdSet.add(targetUserId);
+			for (const referencedUserId of collectGuildAuditLogUserIds(log)) {
+				userIdSet.add(referencedUserId);
 			}
 		}
 		const [userPartials, webhookRecords] = await Promise.all([
@@ -376,7 +394,7 @@ export class GuildService {
 			}),
 			this.loadAuditLogWebhooks(processedLogs),
 		]);
-		const entries = processedLogs.map((log) => this.mapAuditLogToEntry(log));
+		const entries = processedLogs.map((log) => mapGuildAuditLogEntry(log));
 		const users = Array.from(userPartials.values());
 		const webhooks = this.buildAuditLogWebhookResponses(webhookRecords.webhooks);
 		return {
@@ -384,102 +402,6 @@ export class GuildService {
 			users,
 			webhooks,
 		};
-	}
-
-	private mapAuditLogToEntry(log: GuildAuditLog): StoredGuildAuditLogEntryResponse {
-		return {
-			id: log.logId.toString(),
-			action_type: log.actionType,
-			user_id: log.userId.toString(),
-			target_id: log.targetId,
-			reason: log.reason ?? undefined,
-			options: this.buildAuditLogOptions(log.options),
-			changes: this.scrubSensitiveChanges(log.changes),
-		};
-	}
-
-	private scrubSensitiveChanges(changes: GuildAuditLogChange | null | undefined): GuildAuditLogChange | undefined {
-		if (!changes) {
-			return undefined;
-		}
-		const scrubbed = changes.filter((change) => change.key !== 'ip');
-		return scrubbed.length > 0 ? scrubbed : undefined;
-	}
-
-	private buildAuditLogOptions(options: Map<string, string>): AuditLogOptions | undefined {
-		if (!options.size) {
-			return undefined;
-		}
-		const mapped: AuditLogOptions = {};
-		for (const [key, value] of options) {
-			switch (key) {
-				case 'channel_id':
-					mapped.channel_id = value;
-					break;
-				case 'count':
-					this.assignNumericOption(mapped, 'count', value);
-					break;
-				case 'delete_member_days':
-					mapped.delete_member_days = value;
-					break;
-				case 'delete_message_days':
-					if (!mapped.delete_member_days) {
-						mapped.delete_member_days = value;
-					}
-					break;
-				case 'id':
-					mapped.id = value;
-					break;
-				case 'integration_type':
-					this.assignNumericOption(mapped, 'integration_type', value);
-					break;
-				case 'message_id':
-					mapped.message_id = value;
-					break;
-				case 'members_removed':
-					this.assignNumericOption(mapped, 'members_removed', value);
-					break;
-				case 'role_name':
-					mapped.role_name = value;
-					break;
-				case 'type':
-					this.assignNumericOption(mapped, 'type', value);
-					break;
-				case 'inviter_id':
-					mapped.inviter_id = value;
-					break;
-				case 'max_age':
-					this.assignNumericOption(mapped, 'max_age', value);
-					break;
-				case 'max_uses':
-					this.assignNumericOption(mapped, 'max_uses', value);
-					break;
-				case 'uses':
-					this.assignNumericOption(mapped, 'uses', value);
-					break;
-				case 'temporary':
-					mapped.temporary = this.parseBooleanOption(value);
-					break;
-				default:
-					break;
-			}
-		}
-		return Object.keys(mapped).length === 0 ? undefined : mapped;
-	}
-
-	private parseBooleanOption(value: string): boolean {
-		return value === 'true' || value === '1';
-	}
-
-	private assignNumericOption(
-		target: AuditLogOptions,
-		key: 'count' | 'integration_type' | 'members_removed' | 'type' | 'max_age' | 'max_uses' | 'uses',
-		value: string,
-	): void {
-		const parsed = Number(value);
-		if (!Number.isNaN(parsed)) {
-			target[key] = parsed;
-		}
 	}
 
 	private async loadAuditLogWebhooks(logs: Array<GuildAuditLog>): Promise<{
@@ -522,31 +444,6 @@ export class GuildService {
 			actionType === AuditLogActionType.WEBHOOK_CREATE ||
 			actionType === AuditLogActionType.WEBHOOK_UPDATE ||
 			actionType === AuditLogActionType.WEBHOOK_DELETE
-		);
-	}
-
-	private getAuditLogTargetUserId(log: GuildAuditLog): UserID | null {
-		if (!log.targetId || !this.isUserTargetAction(log.actionType)) {
-			return null;
-		}
-		try {
-			return createUserID(BigInt(log.targetId));
-		} catch {
-			return null;
-		}
-	}
-
-	private isUserTargetAction(actionType: AuditLogActionType): boolean {
-		return (
-			actionType === AuditLogActionType.MEMBER_KICK ||
-			actionType === AuditLogActionType.MEMBER_PRUNE ||
-			actionType === AuditLogActionType.MEMBER_BAN_ADD ||
-			actionType === AuditLogActionType.MEMBER_BAN_REMOVE ||
-			actionType === AuditLogActionType.MEMBER_UPDATE ||
-			actionType === AuditLogActionType.MEMBER_ROLE_UPDATE ||
-			actionType === AuditLogActionType.MEMBER_MOVE ||
-			actionType === AuditLogActionType.MEMBER_DISCONNECT ||
-			actionType === AuditLogActionType.BOT_ADD
 		);
 	}
 

@@ -55,6 +55,11 @@ pub async fn run_ci(args: CiArgs) -> Result<()> {
             run_generators(&root, false)?;
             run_app_test_artifact_generators(&root, AppWasm::ReuseIfPresent)?;
             run_workspace_tests(&root)?;
+            run_command(
+                CommandSpec::new("pnpm")
+                    .args(["--filter", "fluxer_desktop", "test:main"])
+                    .current_dir(&root),
+            )?;
             run_command(with_test_env(
                 CommandSpec::new("pnpm")
                     .args(["--filter", "fluxer_api", "test"])
@@ -118,6 +123,12 @@ fn app_wasm_artifacts(root: &Path) -> Vec<PathBuf> {
         app_dir.join("pkgs/libfluxcore/libfluxcore_bg.wasm"),
         app_dir.join("pkgs/libfluxcore/libfluxcore_bg.wasm.d.ts"),
         app_dir.join("pkgs/libfluxcore/package.json"),
+        app_dir.join("pkgs/libfluxwebp/libfluxwebp.js"),
+        app_dir.join("pkgs/libfluxwebp/libfluxwebp.d.ts"),
+        app_dir.join("pkgs/libfluxwebp/libfluxwebp_bg.wasm"),
+        app_dir.join("pkgs/libfluxwebp/libfluxwebp_bg.wasm.d.ts"),
+        app_dir.join("pkgs/libfluxwebp/libfluxwebp_simd_bg.wasm"),
+        app_dir.join("pkgs/libfluxwebp/libfluxwebp_simd_bg.wasm.d.ts"),
         app_dir.join("src/features/messaging/utils/markdown/parser/MarkdownParserWasmBytes.ts"),
     ]
 }
@@ -377,6 +388,11 @@ mod tests {
                 "fluxer_messages",
                 "fluxer-messages",
                 include_str!("../../../fluxer_messages/Dockerfile"),
+            ),
+            (
+                "fluxer_push",
+                "fluxer-push",
+                include_str!("../../../fluxer_push/Dockerfile"),
             ),
             (
                 "fluxer_snowflakes",

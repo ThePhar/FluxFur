@@ -71,14 +71,6 @@ export interface GpuInfo {
 
 export type StreamingPriorityDiagnostics = Record<string, unknown>;
 
-export interface OpenH264Status {
-	enabled: boolean;
-	downloaded: boolean;
-	downloading: boolean;
-	version: string | null;
-	error: string | null;
-}
-
 export interface CpuInfo {
 	model: string;
 	speed: number;
@@ -246,6 +238,7 @@ export type UpdaterEvent =
 export interface DownloadFileResult {
 	success: boolean;
 	canceled?: boolean;
+	checksumMismatch?: boolean;
 	path?: string;
 	error?: string;
 }
@@ -634,13 +627,16 @@ export type TrayActionPayload =
 			action: 'check-for-updates';
 	  };
 
+export interface DomainMigrationApi {
+	version: 1;
+	setAppOrigin: (origin: string) => Promise<void>;
+}
+
 export interface ElectronAPI {
 	platform: NodeJS.Platform;
 	buildChannel: 'stable' | 'canary';
 	getDesktopInfo: () => Promise<DesktopInfo>;
 	getGpuInfo: () => Promise<GpuInfo>;
-	getOpenH264Status: () => Promise<OpenH264Status>;
-	setOpenH264Enabled: (enabled: boolean) => Promise<OpenH264Status>;
 	getDesktopWindowBehaviorSettings: () => Promise<DesktopWindowBehaviorSettings>;
 	setDesktopWindowBehaviorSettings: (
 		settings: Partial<DesktopWindowBehaviorSettings>,
@@ -697,7 +693,7 @@ export interface ElectronAPI {
 	requestInputMonitoringPermission: () => Promise<InputMonitoringPermissionStatus>;
 	getScreenRecordingPermissionStatus: () => Promise<InputMonitoringPermissionStatus>;
 	requestScreenRecordingPermission: () => Promise<InputMonitoringPermissionStatus>;
-	downloadFile: (url: string, defaultPath: string) => Promise<DownloadFileResult>;
+	downloadFile: (url: string, defaultPath: string, sha256?: string | null) => Promise<DownloadFileResult>;
 	toggleDevTools: () => void;
 	showNotification: (options: NotificationOptions) => Promise<NotificationResult>;
 	shouldPlayNotificationSound: () => Promise<boolean>;
@@ -768,6 +764,8 @@ export interface ElectronAPI {
 	passkeyIsSupported: () => Promise<boolean>;
 	passkeyAuthenticate: (options: PublicKeyCredentialRequestOptionsJSON) => Promise<AuthenticationResponseJSON>;
 	passkeyRegister: (options: PublicKeyCredentialCreationOptionsJSON) => Promise<RegistrationResponseJSON>;
+	passkeyRpIds: ReadonlyArray<string>;
+	domainMigration: DomainMigrationApi;
 	virtmic: VirtmicApi;
 	nativeAudio: NativeAudioApi;
 	nativeScreenCapture: NativeScreenCaptureApi;

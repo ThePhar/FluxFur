@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {DomainMigrationDiscoveryResponse} from '@fluxer/schema/src/domains/admin/DomainMigrationSchemas';
 import {SsoStatusResponse} from '@fluxer/schema/src/domains/auth/AuthSchemas';
 import {createNamedStringLiteralUnion} from '@fluxer/schema/src/primitives/SchemaPrimitives';
 import {z} from 'zod';
@@ -33,6 +34,11 @@ export const InstanceBrandingSchema = z
 		wordmark_url: z.string().nullable().describe('Optional image URL for the application wordmark'),
 		favicon_url: z.string().nullable().describe('Optional favicon URL for browser metadata'),
 		theme_color: z.string().nullable().describe('Optional browser theme color'),
+		status_page_url: z.string().nullable().describe('Optional public status page URL'),
+		status_page_incident_history_url: z
+			.string()
+			.nullable()
+			.describe('Optional public status page incident history URL'),
 	})
 	.describe('Branding values safe to expose to clients');
 export type InstanceBranding = z.infer<typeof InstanceBrandingSchema>;
@@ -128,7 +134,6 @@ export const InstanceRegistrationModeSchema = createNamedStringLiteralUnion(
 	],
 	'Registration mode',
 );
-export type InstanceRegistrationMode = z.infer<typeof InstanceRegistrationModeSchema>;
 
 export const InstanceRegistrationSchema = z
 	.object({
@@ -183,6 +188,9 @@ export const WellKnownFluxerResponse = z.object({
 	limits: LimitConfigResponse.describe('Limit configuration with rules and trait definitions'),
 	push: InstancePushSchema,
 	app_public: InstanceAppPublicSchema.describe('Public application configuration for client-side features'),
+	domain_migration: DomainMigrationDiscoveryResponse.optional().describe(
+		'Web domain migration switch and anonymous rollout, only acted on by official instance clients',
+	),
 });
 
 export type WellKnownFluxerResponse = z.infer<typeof WellKnownFluxerResponse>;

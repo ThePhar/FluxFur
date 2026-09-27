@@ -22,7 +22,7 @@ export interface NagbarSettings {
 	guildMembershipCtaDismissed: boolean;
 	visionaryMfaDismissed: boolean;
 	claimAccountModalShownThisSession: boolean;
-	forceOffline: boolean;
+	forceConnectionNotice: boolean;
 	forceEmailVerification: boolean;
 	forceIOSInstall: boolean;
 	forcePWAInstall: boolean;
@@ -42,7 +42,8 @@ export interface NagbarSettings {
 	forceScheduledMaintenance: boolean;
 	forceVoiceSessionRestore: boolean;
 	forceGuildMfaRequirement: boolean;
-	forceHideOffline: boolean;
+	forceDomainMoved: boolean;
+	forceHideConnectionNotice: boolean;
 	forceHideEmailVerification: boolean;
 	forceHideIOSInstall: boolean;
 	forceHidePWAInstall: boolean;
@@ -62,6 +63,7 @@ export interface NagbarSettings {
 	forceHideScheduledMaintenance: boolean;
 	forceHideVoiceSessionRestore: boolean;
 	forceHideGuildMfaRequirement: boolean;
+	forceHideDomainMoved: boolean;
 }
 
 export type NagbarToggleKey = Exclude<
@@ -114,6 +116,7 @@ export class Nagbar implements NagbarSettings {
 	forceScheduledMaintenance = false;
 	forceVoiceSessionRestore = false;
 	forceGuildMfaRequirement = false;
+	forceDomainMoved = false;
 	forceConnectionNotice = false;
 	forceHideOffline = false;
 	forceHideEmailVerification = false;
@@ -135,6 +138,7 @@ export class Nagbar implements NagbarSettings {
 	forceHideScheduledMaintenance = false;
 	forceHideVoiceSessionRestore = false;
 	forceHideGuildMfaRequirement = false;
+	forceHideDomainMoved = false;
 	forceHideConnectionNotice = false;
 
 	constructor() {
@@ -215,8 +219,8 @@ export class Nagbar implements NagbarSettings {
 		return this.pushNotificationDismissed;
 	}
 
-	getForceOffline(): boolean {
-		return this.forceOffline;
+	getForceConnectionNotice(): boolean {
+		return this.forceConnectionNotice;
 	}
 
 	getForceEmailVerification(): boolean {
@@ -259,8 +263,8 @@ export class Nagbar implements NagbarSettings {
 		return this.forceInvitesDisabled;
 	}
 
-	getForceHideOffline(): boolean {
-		return this.forceHideOffline;
+	getForceHideConnectionNotice(): boolean {
+		return this.forceHideConnectionNotice;
 	}
 
 	getForceHideEmailVerification(): boolean {
@@ -430,6 +434,7 @@ export class Nagbar implements NagbarSettings {
 		this.forceScheduledMaintenance = false;
 		this.forceVoiceSessionRestore = false;
 		this.forceGuildMfaRequirement = false;
+		this.forceDomainMoved = false;
 		this.forceConnectionNotice = false;
 		this.forceHideOffline = false;
 		this.forceHideEmailVerification = false;
@@ -451,6 +456,7 @@ export class Nagbar implements NagbarSettings {
 		this.forceHideScheduledMaintenance = false;
 		this.forceHideVoiceSessionRestore = false;
 		this.forceHideGuildMfaRequirement = false;
+		this.forceHideDomainMoved = false;
 		this.forceHideConnectionNotice = false;
 	}
 

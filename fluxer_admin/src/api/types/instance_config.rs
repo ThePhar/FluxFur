@@ -23,6 +23,10 @@ pub struct InstanceConfigResponse {
     #[serde(default)]
     pub voice_noise_suppression: VoiceNoiseSuppressionConfigResponse,
     #[serde(default)]
+    pub push_service_delivery: PushServiceDeliveryConfigResponse,
+    #[serde(default)]
+    pub domain_migration: DomainMigrationConfigResponse,
+    #[serde(default)]
     pub experiment_delivery: ExperimentDeliveryConfigResponse,
 }
 
@@ -326,6 +330,8 @@ pub struct AppBrandingConfigResponse {
     pub wordmark_url: Option<String>,
     pub favicon_url: Option<String>,
     pub theme_color: Option<String>,
+    pub status_page_url: Option<String>,
+    pub status_page_incident_history_url: Option<String>,
 }
 
 impl Default for AppBrandingConfigResponse {
@@ -338,6 +344,8 @@ impl Default for AppBrandingConfigResponse {
             wordmark_url: None,
             favicon_url: None,
             theme_color: None,
+            status_page_url: None,
+            status_page_incident_history_url: None,
         }
     }
 }
@@ -442,7 +450,9 @@ impl VoiceE2eeScope {
     }
 }
 
-pub const VOICE_NS_MAX_TARGETED_USERS: usize = 1_000;
+pub const EXPERIMENT_MAX_TARGETED_USERS: usize = 1_000;
+pub const PUSH_SERVICE_DELIVERY_DEFAULT_SALT: &str = "push-service-delivery-v1";
+pub const DOMAIN_MIGRATION_DEFAULT_SALT: &str = "domain-migration-v1";
 pub const VOICE_NS_MAX_GUILD_OVERRIDES: usize = 200;
 
 impl NoiseSuppressionBackend {
@@ -488,7 +498,6 @@ pub struct VoiceNoiseSuppressionConfigResponse {
     pub included_user_ids: Vec<String>,
     pub excluded_user_ids: Vec<String>,
     pub guild_overrides: Vec<VoiceNoiseSuppressionGuildOverride>,
-    pub stereo_enabled: bool,
     pub suppression_strength: u32,
 }
 
@@ -505,7 +514,6 @@ impl Default for VoiceNoiseSuppressionConfigResponse {
             included_user_ids: Vec::new(),
             excluded_user_ids: Vec::new(),
             guild_overrides: Vec::new(),
-            stereo_enabled: false,
             suppression_strength: 80,
         }
     }
@@ -532,9 +540,91 @@ pub struct VoiceNoiseSuppressionConfigUpdateRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guild_overrides: Option<Vec<VoiceNoiseSuppressionGuildOverride>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stereo_enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub suppression_strength: Option<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PushServiceDeliveryConfigResponse {
+    pub enabled: bool,
+    pub config_version: u64,
+    pub rollout_basis_points: u32,
+    pub rollout_salt: String,
+    pub included_user_ids: Vec<String>,
+    pub excluded_user_ids: Vec<String>,
+}
+
+impl Default for PushServiceDeliveryConfigResponse {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            config_version: 0,
+            rollout_basis_points: 0,
+            rollout_salt: PUSH_SERVICE_DELIVERY_DEFAULT_SALT.to_owned(),
+            included_user_ids: Vec::new(),
+            excluded_user_ids: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PushServiceDeliveryConfigUpdateRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollout_basis_points: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollout_salt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub included_user_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded_user_ids: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct DomainMigrationConfigResponse {
+    pub enabled: bool,
+    pub config_version: u64,
+    pub rollout_basis_points: u32,
+    pub rollout_salt: String,
+    pub included_user_ids: Vec<String>,
+    pub excluded_user_ids: Vec<String>,
+    pub anonymous_rollout_basis_points: u32,
+    pub standalone_forwarding: bool,
+}
+
+impl Default for DomainMigrationConfigResponse {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            config_version: 0,
+            rollout_basis_points: 0,
+            rollout_salt: DOMAIN_MIGRATION_DEFAULT_SALT.to_owned(),
+            included_user_ids: Vec::new(),
+            excluded_user_ids: Vec::new(),
+            anonymous_rollout_basis_points: 0,
+            standalone_forwarding: false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct DomainMigrationConfigUpdateRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollout_basis_points: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rollout_salt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub included_user_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded_user_ids: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anonymous_rollout_basis_points: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standalone_forwarding: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -652,6 +742,10 @@ pub struct InstanceConfigUpdateRequest {
     pub media: Option<InstanceMediaUpdateRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub voice_noise_suppression: Option<VoiceNoiseSuppressionConfigUpdateRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_service_delivery: Option<PushServiceDeliveryConfigUpdateRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_migration: Option<DomainMigrationConfigUpdateRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experiment_delivery: Option<ExperimentDeliveryConfigUpdateRequest>,
 }
@@ -858,6 +952,10 @@ pub struct AppBrandingConfigUpdateRequest {
     pub favicon_url: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme_color: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_page_url: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_page_incident_history_url: Option<Option<String>>,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -986,17 +1084,29 @@ mod tests {
                 .expect("admin schema");
         let noise = serde_json::from_value::<VoiceNoiseSuppressionConfigResponse>(json!({}))
             .expect("default noise config");
+        let domain_migration = serde_json::from_value::<DomainMigrationConfigResponse>(json!({}))
+            .expect("default domain migration config");
         let delivery = serde_json::from_value::<ExperimentDeliveryConfigResponse>(json!({}))
             .expect("default delivery config");
         let noise = serde_json::to_value(noise).expect("serializable noise config");
+        let domain_migration =
+            serde_json::to_value(domain_migration).expect("serializable domain migration config");
         let delivery = serde_json::to_value(delivery).expect("serializable delivery config");
         let generated_noise: generated_types::VoiceNoiseSuppressionConfigResponse =
             serde_json::from_value(noise.clone()).expect("generated noise config contract");
+        let generated_domain_migration: generated_types::DomainMigrationConfigResponse =
+            serde_json::from_value(domain_migration.clone())
+                .expect("generated domain migration config contract");
         let generated_delivery: generated_types::ExperimentDeliveryConfigResponse =
             serde_json::from_value(delivery.clone()).expect("generated delivery config contract");
         assert_eq!(
             serde_json::to_value(generated_noise).expect("serializable generated noise config"),
             noise
+        );
+        assert_eq!(
+            serde_json::to_value(generated_domain_migration)
+                .expect("serializable generated domain migration config"),
+            domain_migration
         );
         assert_eq!(
             serde_json::to_value(generated_delivery)
@@ -1005,6 +1115,7 @@ mod tests {
         );
         for (name, value) in [
             ("VoiceNoiseSuppressionConfigResponse", noise),
+            ("DomainMigrationConfigResponse", domain_migration),
             ("ExperimentDeliveryConfigResponse", delivery),
         ] {
             for (field, value) in value.as_object().expect("config object") {
@@ -1036,6 +1147,29 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(VoiceNoiseSuppressionConfigUpdateRequest::default())
+                .expect("serializable update"),
+            json!({})
+        );
+    }
+
+    #[test]
+    fn domain_migration_update_preserves_empty_lists_and_omitted_fields() {
+        let update = DomainMigrationConfigUpdateRequest {
+            included_user_ids: Some(Vec::new()),
+            excluded_user_ids: Some(Vec::new()),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(update).expect("serializable update");
+        serde_json::from_value::<generated_types::DomainMigrationConfigUpdateRequest>(
+            value.clone(),
+        )
+        .expect("generated update contract");
+        assert_eq!(
+            value,
+            json!({"included_user_ids": [], "excluded_user_ids": []})
+        );
+        assert_eq!(
+            serde_json::to_value(DomainMigrationConfigUpdateRequest::default())
                 .expect("serializable update"),
             json!({})
         );

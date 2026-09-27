@@ -8,12 +8,16 @@
     build_content_preview/2,
     build_markdown_context/4,
     resolve_author_name/3,
+    resolve_author_avatar_url/1,
     extract_image_url/1,
     maybe_image_fields/1,
-    build_url/3
+    build_url/3,
+    truncate_bytes/2
 ]).
 
 -define(MAX_MENTIONS_FOR_PUSH, 50).
+-define(MAX_PREVIEW_BYTES, 100).
+-define(MAX_IMAGE_URL_BYTES, 1024).
 -define(CHANNEL_TYPE_GUILD_TEXT, 0).
 -define(CHANNEL_TYPE_GUILD_VOICE, 2).
 -define(CHANNEL_TYPE_GUILD_CATEGORY, 4).
@@ -111,6 +115,32 @@ user_nicknames_from_context_or_message(MessageData, MarkdownContext) when
     end;
 user_nicknames_from_context_or_message(MessageData, _MarkdownContext) ->
     group_dm_user_nicknames(MessageData).
+
+-spec resolve_author_avatar_url(map()) -> binary().
+resolve_author_avatar_url(AuthorData) ->
+    resolve_avatar_url(AuthorData, maps:get(<<"avatar">>, AuthorData, null)).
+
+-spec resolve_avatar_url(map(), binary() | null) -> binary().
+resolve_avatar_url(AuthorData, null) ->
+    default_avatar_url(author_id_binary(AuthorData));
+resolve_avatar_url(AuthorData, Hash) ->
+    case author_id_binary(AuthorData) of
+        undefined -> default_avatar_url(undefined);
+        UserId -> push_utils:construct_avatar_url(UserId, Hash)
+    end.
+
+-spec author_id_binary(map()) -> binary() | undefined.
+author_id_binary(AuthorData) ->
+    case snowflake_id:parse_optional(maps:get(<<"id">>, AuthorData, undefined)) of
+        undefined -> undefined;
+        UserId -> integer_to_binary(UserId)
+    end.
+
+-spec default_avatar_url(binary() | undefined) -> binary().
+default_avatar_url(undefined) ->
+    push_utils:get_default_avatar_url(<<>>);
+default_avatar_url(UserId) ->
+    push_utils:get_default_avatar_url(UserId).
 
 -spec user_nicknames(map(), non_neg_integer(), map()) -> map().
 user_nicknames(MessageData, 0, _GuildData) ->
@@ -325,9 +355,13 @@ first_nonempty_binary([Value | Rest]) ->
     end.
 
 -spec truncate_preview(binary()) -> binary().
-truncate_preview(Content) when byte_size(Content) > 100 ->
-    valid_utf8_prefix(binary:part(Content, 0, 100));
 truncate_preview(Content) ->
+    truncate_bytes(Content, ?MAX_PREVIEW_BYTES).
+
+-spec truncate_bytes(binary(), non_neg_integer()) -> binary().
+truncate_bytes(Content, MaxBytes) when byte_size(Content) > MaxBytes ->
+    valid_utf8_prefix(binary:part(Content, 0, MaxBytes));
+truncate_bytes(Content, _MaxBytes) ->
     valid_utf8_prefix(Content).
 
 -spec valid_utf8_prefix(binary()) -> binary().
@@ -454,10 +488,22 @@ format_name_list(Names) ->
 
 -spec extract_image_url(map()) -> binary() | undefined.
 extract_image_url(MessageData) ->
+    bounded_image_url(resolve_image_url(MessageData)).
+
+-spec resolve_image_url(map()) -> binary() | undefined.
+resolve_image_url(MessageData) ->
     case extract_attachment_image_url(maps:get(<<"attachments">>, MessageData, [])) of
         undefined -> extract_embed_image_url(maps:get(<<"embeds">>, MessageData, []));
         ImageUrl -> ImageUrl
     end.
+
+-spec bounded_image_url(binary() | undefined) -> binary() | undefined.
+bounded_image_url(ImageUrl) when
+    is_binary(ImageUrl), byte_size(ImageUrl) =< ?MAX_IMAGE_URL_BYTES
+->
+    ImageUrl;
+bounded_image_url(_ImageUrl) ->
+    undefined.
 
 -spec extract_attachment_image_url(term()) -> binary() | undefined.
 extract_attachment_image_url([Attachment | Rest]) when is_map(Attachment) ->
@@ -598,6 +644,30 @@ build_url_dm_test() ->
 
 build_url_guild_test() ->
     ?assertEqual(<<"/channels/123/456/789">>, build_url(123, 456, 789)).
+
+extract_image_url_keeps_a_url_within_the_size_bound_test() ->
+    Url = image_url_of_size(?MAX_IMAGE_URL_BYTES),
+    ?assertEqual(Url, extract_image_url(message_with_embed_image(Url))).
+
+extract_image_url_rejects_an_oversized_url_test() ->
+    Url = image_url_of_size(?MAX_IMAGE_URL_BYTES + 1),
+    ?assertEqual(undefined, extract_image_url(message_with_embed_image(Url))).
+
+image_url_of_size(Size) ->
+    Prefix = <<"https://media.example/">>,
+    <<Prefix/binary, (binary:copy(<<"a">>, Size - byte_size(Prefix)))/binary>>.
+
+message_with_embed_image(Url) ->
+    #{
+        <<"embeds">> => [
+            #{
+                <<"image">> => #{
+                    <<"content_type">> => <<"image/png">>,
+                    <<"proxy_url">> => Url
+                }
+            }
+        ]
+    }.
 
 extract_image_url_rejects_malformed_flags_test() ->
     MessageData = #{

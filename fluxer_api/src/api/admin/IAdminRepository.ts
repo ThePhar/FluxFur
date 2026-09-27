@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type {UserID} from '../BrandedTypes';
+import type {UserID} from '@app/api/BrandedTypes';
 import type {
 	AdminAuditLogRow,
 	BannedAvatarHashRow,
@@ -9,7 +9,7 @@ import type {
 	BannedProfileSubstringScope,
 	BannedUrlDomainRow,
 	BannedUrlRow,
-} from '../database/types/AdminArchiveTypes';
+} from '@app/api/database/types/AdminArchiveTypes';
 
 export interface AdminAuditLog {
 	logId: bigint;
@@ -108,6 +108,8 @@ export abstract class IAdminRepository {
 	abstract banFileSha(row: BannedFileShaRow): Promise<void>;
 
 	abstract unbanFileSha(sha256Hex: string): Promise<void>;
+
+	abstract unbanFeedFileSha(sha256Hex: string): Promise<boolean>;
 
 	abstract loadAllBannedFileShas(): Promise<Array<BannedFileShaRow>>;
 

@@ -212,6 +212,7 @@ export default () => {
 		devtool: 'source-map',
 		target: ['web', 'browserslist'],
 		lazyCompilation: false,
+		performance: false,
 		resolve: {
 			alias: {
 				...resolveArboriumWasmAliases(),
@@ -306,11 +307,8 @@ export default () => {
 								parser: {
 									syntax: 'typescript',
 									tsx: true,
-									decorators: true,
 								},
 								transform: {
-									legacyDecorator: true,
-									decoratorMetadata: true,
 									react: {
 										runtime: 'automatic',
 										development: isDevelopment,
@@ -330,7 +328,7 @@ export default () => {
 					test: /\.module\.css$/,
 					use: [{loader: 'postcss-loader'}],
 					type: 'css/module',
-					parser: {namedExports: false},
+					parser: {namedExports: false, dashedIdents: false, grid: false, container: false},
 				},
 				{
 					test: /\.css$/,
@@ -435,6 +433,7 @@ export default () => {
 			staticFilesPlugin({
 				staticCdnEndpoint: normalizedStaticCdnEndpoint,
 				fontsDir: path.join(MONOREPO_ROOT, 'packages', 'fonts'),
+				wasmCratesDir: path.join(ROOT_DIR, 'rust'),
 			}),
 			new DefinePlugin({
 				__FLUXER_PRECACHE_MANIFEST__: JSON.stringify([]),
@@ -618,6 +617,5 @@ export default () => {
 				watch: false,
 			},
 		},
-		experiments: {css: true},
 	};
 };

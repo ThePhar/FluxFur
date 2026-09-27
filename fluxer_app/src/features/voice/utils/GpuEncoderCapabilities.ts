@@ -1,20 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {Logger} from '@app/features/platform/utils/AppLogger';
-import {
-	getElectronAPI,
-	getNativePlatformSync,
-	isDesktop,
-	type NativePlatform,
-} from '@app/features/ui/utils/NativeUtils';
-import VoiceSettings from '@app/features/voice/state/VoiceSettings';
-import {
-	getScreenShareBitrateBps,
-	resolveEffectiveScreenShareDimensions,
-	resolveStreamingModeSettings,
-	SCREEN_SHARE_MAX_VIDEO_BITRATE_BPS,
-} from '@app/features/voice/utils/ScreenShareOptions';
-import {hasHigherVideoQuality} from '@app/features/voice/utils/VideoQualityEntitlement';
+import {getElectronAPI, isDesktop} from '@app/features/ui/utils/NativeUtils';
 import type {GpuDeviceInfo, GpuInfo} from '@app/types/electron.d';
 import type {VideoCodec} from 'livekit-client';
 
@@ -244,50 +231,39 @@ export function reportFromGpuInfo(info: GpuInfo): HardwareEncodeReport {
 	};
 }
 
-export const NEGOTIABLE_H264_PROBE_CONTENT_TYPE =
-	'video/H264;level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f';
+export const H264_PROBE_PROFILE_LEVEL_IDS: ReadonlyArray<string> = ['640028', '640c28', '4d0028', '420028', '42e028'];
 
-const WEBRTC_ENCODE_PROBE_CONTENT_TYPES: Record<VideoCodec, ReadonlyArray<string>> = {
+export const H264_ENCODE_PROBE_CONTENT_TYPES: ReadonlyArray<string> = H264_PROBE_PROFILE_LEVEL_IDS.map(
+	(profileLevelId) => `video/H264;level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=${profileLevelId}`,
+);
+
+export const WEBRTC_ENCODE_PROBE_CONTENT_TYPES: Record<VideoCodec, ReadonlyArray<string>> = {
 	av1: ['video/AV1'],
 	h265: ['video/H265'],
-	h264: [NEGOTIABLE_H264_PROBE_CONTENT_TYPE],
+	h264: H264_ENCODE_PROBE_CONTENT_TYPES,
 	vp9: ['video/VP9'],
 	vp8: ['video/VP8'],
 };
 
-interface EncodeProbeVideoConfig {
+export interface EncodeProbeVideoConfig {
 	width: number;
 	height: number;
 	bitrate: number;
 	framerate: number;
 }
 
-const DEFAULT_ENCODE_PROBE_VIDEO_CONFIG: EncodeProbeVideoConfig = {
+export const ENCODE_PROBE_VIDEO_CONFIG: EncodeProbeVideoConfig = {
 	width: 1920,
 	height: 1080,
-	bitrate: SCREEN_SHARE_MAX_VIDEO_BITRATE_BPS,
-	framerate: 60,
+	bitrate: 4_500_000,
+	framerate: 30,
 };
 
-function resolveEncodeProbeVideoConfig(): EncodeProbeVideoConfig {
-	try {
-		const settings = resolveStreamingModeSettings(
-			VoiceSettings.getStreamingMode(),
-			VoiceSettings.getScreenshareResolution(),
-			VoiceSettings.getVideoFrameRate(),
-			hasHigherVideoQuality(),
-		);
-		const {width, height} = resolveEffectiveScreenShareDimensions(settings.resolution);
-		return {
-			width,
-			height,
-			bitrate: getScreenShareBitrateBps(settings.resolution, settings.frameRate),
-			framerate: settings.frameRate,
-		};
-	} catch (error) {
-		logger.debug('Share settings were unavailable, probing at the largest share size instead', {error});
-		return DEFAULT_ENCODE_PROBE_VIDEO_CONFIG;
-	}
+export interface H264HardwareProfileProbe {
+	readonly profiles: ReadonlySet<string>;
+	readonly probedWidth: number;
+	readonly probedHeight: number;
+	readonly probedFrameRate: number;
 }
 
 interface WebRtcEncodingInfoResult {
@@ -299,40 +275,151 @@ interface MediaCapabilitiesLike {
 	encodingInfo?: (config: unknown) => Promise<WebRtcEncodingInfoResult | undefined>;
 }
 
-async function probeCodecEncodeEfficiency(
+interface EncodeProbeAnswer {
+	supported: boolean;
+	powerEfficient: boolean;
+}
+
+function getMediaCapabilities(): MediaCapabilitiesLike | null {
+	if (typeof navigator === 'undefined') return null;
+	const mediaCapabilities = (navigator as Navigator & {mediaCapabilities?: MediaCapabilitiesLike}).mediaCapabilities;
+	if (!mediaCapabilities?.encodingInfo) return null;
+	return mediaCapabilities;
+}
+
+function resolveEncodeProbeValue(value: number | undefined, fallback: number): number {
+	return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : fallback;
+}
+
+function resolveEncodeProbeVideoConfig(config: Partial<EncodeProbeVideoConfig> | undefined): EncodeProbeVideoConfig {
+	if (!config) return ENCODE_PROBE_VIDEO_CONFIG;
+	return {
+		width: resolveEncodeProbeValue(config.width, ENCODE_PROBE_VIDEO_CONFIG.width),
+		height: resolveEncodeProbeValue(config.height, ENCODE_PROBE_VIDEO_CONFIG.height),
+		bitrate: resolveEncodeProbeValue(config.bitrate, ENCODE_PROBE_VIDEO_CONFIG.bitrate),
+		framerate: resolveEncodeProbeValue(config.framerate, ENCODE_PROBE_VIDEO_CONFIG.framerate),
+	};
+}
+
+function encodeProbeCacheKey(video: EncodeProbeVideoConfig): string {
+	return `${video.width}x${video.height}@${video.framerate}/${video.bitrate}`;
+}
+
+async function probeContentTypeEncodeEfficiency(
+	mediaCapabilities: MediaCapabilitiesLike,
+	contentType: string,
+	video: EncodeProbeVideoConfig,
+): Promise<EncodeProbeAnswer | null> {
+	try {
+		const info = await mediaCapabilities.encodingInfo?.({type: 'webrtc', video: {contentType, ...video}});
+		if (!info) return null;
+		return {supported: info.supported === true, powerEfficient: info.powerEfficient === true};
+	} catch {
+		return null;
+	}
+}
+
+function probeContentTypesEncodeEfficiency(
 	mediaCapabilities: MediaCapabilitiesLike,
 	contentTypes: ReadonlyArray<string>,
 	video: EncodeProbeVideoConfig,
-): Promise<HardwareEncodeAnswer> {
+): Promise<Array<EncodeProbeAnswer | null>> {
+	return Promise.all(
+		contentTypes.map((contentType) => probeContentTypeEncodeEfficiency(mediaCapabilities, contentType, video)),
+	);
+}
+
+function collapseEncodeProbeAnswers(answers: ReadonlyArray<EncodeProbeAnswer | null>): HardwareEncodeAnswer {
 	let sawSupported = false;
-	for (const contentType of contentTypes) {
-		try {
-			const info = await mediaCapabilities.encodingInfo?.({
-				type: 'webrtc',
-				video: {contentType, ...video},
-			});
-			if (!info?.supported) continue;
-			sawSupported = true;
-			if (info.powerEfficient === true) return 'hardware';
-		} catch {}
+	for (const answer of answers) {
+		if (!answer?.supported) continue;
+		sawSupported = true;
+		if (answer.powerEfficient) return 'hardware';
 	}
 	return sawSupported ? 'software' : 'unknown';
 }
 
-export async function probeWebRtcEncodeEfficiency(): Promise<Record<VideoCodec, HardwareEncodeAnswer> | null> {
-	if (typeof navigator === 'undefined') return null;
-	const mediaCapabilities = (navigator as Navigator & {mediaCapabilities?: MediaCapabilitiesLike}).mediaCapabilities;
-	if (!mediaCapabilities?.encodingInfo) return null;
+const h264HardwareProfileProbes = new Map<string, H264HardwareProfileProbe>();
+const pendingH264HardwareProfileProbes = new Map<string, Promise<H264HardwareProfileProbe | null>>();
+let latestH264HardwareProfileProbeKey: string | null = null;
+
+function recordH264HardwareProfileProbe(
+	answers: ReadonlyArray<EncodeProbeAnswer | null>,
+	video: EncodeProbeVideoConfig,
+): H264HardwareProfileProbe | null {
+	const profiles = new Set<string>();
+	let answered = 0;
+	answers.forEach((answer, index) => {
+		if (!answer) return;
+		answered += 1;
+		if (answer.supported && answer.powerEfficient) {
+			profiles.add(H264_PROBE_PROFILE_LEVEL_IDS[index].slice(0, 4));
+		}
+	});
+	if (answered === 0) return null;
+	const probe: H264HardwareProfileProbe = {
+		profiles,
+		probedWidth: video.width,
+		probedHeight: video.height,
+		probedFrameRate: video.framerate,
+	};
+	const key = encodeProbeCacheKey(video);
+	h264HardwareProfileProbes.set(key, probe);
+	latestH264HardwareProfileProbeKey = key;
+	logger.info('Probed which H.264 profiles this host encodes in hardware', {
+		profiles: [...profiles],
+		width: video.width,
+		height: video.height,
+		framerate: video.framerate,
+	});
+	return probe;
+}
+
+export function getH264HardwareProfilesSync(): H264HardwareProfileProbe | null {
+	if (latestH264HardwareProfileProbeKey === null) return null;
+	return h264HardwareProfileProbes.get(latestH264HardwareProfileProbeKey) ?? null;
+}
+
+export async function probeH264HardwareProfiles(
+	config?: Partial<EncodeProbeVideoConfig>,
+): Promise<H264HardwareProfileProbe | null> {
+	const video = resolveEncodeProbeVideoConfig(config);
+	const key = encodeProbeCacheKey(video);
+	const cached = h264HardwareProfileProbes.get(key);
+	if (cached) {
+		latestH264HardwareProfileProbeKey = key;
+		return cached;
+	}
+	const pending = pendingH264HardwareProfileProbes.get(key);
+	if (pending) return pending;
+	const mediaCapabilities = getMediaCapabilities();
+	if (!mediaCapabilities) return null;
+	const promise = probeContentTypesEncodeEfficiency(mediaCapabilities, H264_ENCODE_PROBE_CONTENT_TYPES, video)
+		.then((answers) => recordH264HardwareProfileProbe(answers, video))
+		.finally(() => {
+			pendingH264HardwareProfileProbes.delete(key);
+		});
+	pendingH264HardwareProfileProbes.set(key, promise);
+	return promise;
+}
+
+export async function probeWebRtcEncodeEfficiency(
+	config?: Partial<EncodeProbeVideoConfig>,
+): Promise<Record<VideoCodec, HardwareEncodeAnswer> | null> {
+	const mediaCapabilities = getMediaCapabilities();
+	if (!mediaCapabilities) return null;
+	const video = resolveEncodeProbeVideoConfig(config);
 	const codecs: ReadonlyArray<VideoCodec> = ['av1', 'h265', 'h264', 'vp9', 'vp8'];
-	const video = resolveEncodeProbeVideoConfig();
 	const answers = await Promise.all(
 		codecs.map((codec) =>
-			probeCodecEncodeEfficiency(mediaCapabilities, WEBRTC_ENCODE_PROBE_CONTENT_TYPES[codec], video),
+			probeContentTypesEncodeEfficiency(mediaCapabilities, WEBRTC_ENCODE_PROBE_CONTENT_TYPES[codec], video),
 		),
 	);
 	const result = {} as Record<VideoCodec, HardwareEncodeAnswer>;
 	codecs.forEach((codec, index) => {
-		result[codec] = answers[index] ?? 'unknown';
+		const codecAnswers = answers[index] ?? [];
+		if (codec === 'h264') recordH264HardwareProfileProbe(codecAnswers, video);
+		result[codec] = collapseEncodeProbeAnswers(codecAnswers);
 	});
 	return result;
 }
@@ -340,32 +427,27 @@ export async function probeWebRtcEncodeEfficiency(): Promise<Record<VideoCodec, 
 export function reconcileHardwareEncodeReport(
 	report: HardwareEncodeReport,
 	efficiency: Record<VideoCodec, HardwareEncodeAnswer> | null,
-	platform: NativePlatform,
-	vendorId: number,
 ): HardwareEncodeReport {
-	const isNvidiaReport = vendorId === PCI_VENDOR_NVIDIA || report.gpuFamily?.startsWith('nvidia-') === true;
-	const adjust = (codec: VideoCodec): HardwareEncodeAnswer => {
-		if (report[codec] !== 'hardware') return report[codec];
-		return efficiency?.[codec] === 'hardware' ? 'hardware' : 'software';
+	if (!efficiency) return report;
+	const adjust = (codec: VideoCodec): HardwareEncodeAnswer =>
+		efficiency[codec] === 'unknown' ? report[codec] : efficiency[codec];
+	return {
+		...report,
+		av1: adjust('av1'),
+		h265: adjust('h265'),
+		h264: adjust('h264'),
+		vp9: adjust('vp9'),
+		vp8: adjust('vp8'),
 	};
-	if (platform === 'linux' && isNvidiaReport) {
-		return {
-			...report,
-			av1: adjust('av1'),
-			h265: adjust('h265'),
-			h264: adjust('h264'),
-			vp9: adjust('vp9'),
-			vp8: adjust('vp8'),
-		};
-	}
-	return {...report, h264: adjust('h264')};
 }
 
 let cachedReport: HardwareEncodeReport | null = null;
 let pendingPromise: Promise<HardwareEncodeReport | null> | null = null;
 
 function fetchReport(): Promise<HardwareEncodeReport | null> {
-	if (!isDesktop()) return Promise.resolve(null);
+	if (!isDesktop()) {
+		return probeH264HardwareProfiles().then(() => null);
+	}
 	const electron = getElectronAPI();
 	if (!electron?.getGpuInfo) return Promise.resolve(null);
 	return Promise.allSettled([electron.getGpuInfo(), probeWebRtcEncodeEfficiency()]).then(([gpuResult, probeResult]) => {
@@ -376,12 +458,15 @@ function fetchReport(): Promise<HardwareEncodeReport | null> {
 		const info = gpuResult.value;
 		const baseReport = reportFromGpuInfo(info);
 		const efficiency = probeResult.status === 'fulfilled' ? probeResult.value : null;
-		const report = reconcileHardwareEncodeReport(
-			baseReport,
-			efficiency,
-			getNativePlatformSync(),
-			pickPrimaryDevice(info.devices)?.vendorId ?? 0,
-		);
+		const report = reconcileHardwareEncodeReport(baseReport, efficiency);
+		logger.info('Reconciled hardware-encode answers against the WebRTC encode probe', {
+			probe: efficiency,
+			av1: report.av1,
+			h265: report.h265,
+			h264: report.h264,
+			vp9: report.vp9,
+			vp8: report.vp8,
+		});
 		cachedReport = report;
 		return report;
 	});
@@ -403,6 +488,9 @@ export function getGpuEncoderReportSync(): HardwareEncodeReport | null {
 export function resetGpuEncoderReport(): void {
 	cachedReport = null;
 	pendingPromise = null;
+	h264HardwareProfileProbes.clear();
+	pendingH264HardwareProfileProbes.clear();
+	latestH264HardwareProfileProbeKey = null;
 }
 
 export function hasHardwareEncodeFor(codec: VideoCodec): HardwareEncodeAnswer {

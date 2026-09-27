@@ -12,9 +12,17 @@ import {AdminArchiveResponseSchema} from '@fluxer/schema/src/domains/admin/Admin
 import {GuildAdminResponse} from '@fluxer/schema/src/domains/admin/AdminGuildSchemas';
 import {UserAdminResponseSchema} from '@fluxer/schema/src/domains/admin/AdminUserSchemas';
 import {
+	DomainMigrationConfigResponse,
+	DomainMigrationConfigUpdateRequest,
+} from '@fluxer/schema/src/domains/admin/DomainMigrationSchemas';
+import {
 	GatewayRolloutConfigResponse,
 	GatewayRolloutConfigUpdateRequest,
 } from '@fluxer/schema/src/domains/admin/GatewayRolloutSchemas';
+import {
+	PushServiceDeliveryConfigResponse,
+	PushServiceDeliveryConfigUpdateRequest,
+} from '@fluxer/schema/src/domains/admin/PushServiceDeliverySchemas';
 import {
 	VoiceNoiseSuppressionConfigResponse,
 	VoiceNoiseSuppressionConfigUpdateRequest,
@@ -93,6 +101,14 @@ const AuditLogSortByEnum = createNamedStringLiteralUnion(
 	],
 	'Field to sort audit logs by',
 );
+const AdminAuditAccessEnum = createNamedStringLiteralUnion(
+	[
+		['read', 'read', 'An entry recorded by an operation that only reads data'],
+		['write', 'write', 'An entry recorded by an operation that changes data or triggers work'],
+	],
+	'Whether the recorded operation read data or changed it',
+);
+export type AdminAuditAccess = z.infer<typeof AdminAuditAccessEnum>;
 const ReportSortByEnum = createNamedStringLiteralUnion(
 	[
 		['createdAt', 'createdAt', 'Sort by creation timestamp'],
@@ -133,6 +149,9 @@ export const ListAdminAuditLogsQuery = z.object({
 	admin_user_id: SnowflakeType.optional().describe('Filter by admin user who performed the action'),
 	target_type: createStringType(1, 64).optional().describe('Filter by target entity type'),
 	target_id: z.string().optional().describe('Filter by target entity ID (user, channel, role, invite code, etc.)'),
+	access: AdminAuditAccessEnum.optional().describe(
+		'Only return entries recorded by reads or only entries recorded by writes',
+	),
 	sort_by: AuditLogSortByEnum.default('createdAt'),
 	sort_order: SortOrderEnum.default('desc'),
 	limit: createQueryIntegerType({defaultValue: 50, minValue: 1, maxValue: 200}).describe(
@@ -413,6 +432,8 @@ export const GenerateGiftCodesRequest = z.object({
 
 export type GenerateGiftCodesRequest = z.infer<typeof GenerateGiftCodesRequest>;
 
+const SsoAllowedDomainsSchema = z.array(z.string()).max(100);
+
 const SsoConfigResponse = z.object({
 	enabled: z.boolean(),
 	enforced: z.boolean(),
@@ -425,7 +446,7 @@ const SsoConfigResponse = z.object({
 	client_id: z.string().nullable(),
 	client_secret_set: z.boolean(),
 	scope: z.string().nullable(),
-	allowed_domains: z.array(z.string()).max(100),
+	allowed_domains: SsoAllowedDomainsSchema,
 	auto_provision: z.boolean(),
 	redirect_uri: z.string().nullable(),
 });
@@ -448,6 +469,7 @@ const RegistrationUrlResponse = z.object({
 	last_used_at: z.iso.datetime().nullable(),
 	last_used_by_user_id: SnowflakeStringType.nullable(),
 });
+export type RegistrationUrlResponse = z.infer<typeof RegistrationUrlResponse>;
 
 const PendingRegistrationResponse = z.object({
 	user_id: SnowflakeStringType,
@@ -459,6 +481,7 @@ const PendingRegistrationResponse = z.object({
 	registration_url_id: createStringType(1, 128).nullable(),
 	client_ip: z.string().nullable(),
 });
+export type PendingRegistrationResponse = z.infer<typeof PendingRegistrationResponse>;
 
 const InstanceRegistrationResponse = InstanceRegistrationConfigResponse.extend({
 	urls: z.array(RegistrationUrlResponse),
@@ -474,6 +497,8 @@ const AppPublicConfigResponse = z.object({
 		wordmark_url: z.string().nullable(),
 		favicon_url: z.string().nullable(),
 		theme_color: z.string().nullable(),
+		status_page_url: z.string().nullable(),
+		status_page_incident_history_url: z.string().nullable(),
 	}),
 	setup: z.object({
 		configured: z.boolean(),
@@ -497,6 +522,8 @@ const AppPublicConfigUpdateRequest = z.object({
 			wordmark_url: z.string().trim().max(2048).nullish(),
 			favicon_url: z.string().trim().max(2048).nullish(),
 			theme_color: z.string().trim().max(64).nullish(),
+			status_page_url: z.string().trim().max(2048).nullish(),
+			status_page_incident_history_url: z.string().trim().max(2048).nullish(),
 		})
 		.nullish(),
 	setup: z
@@ -625,6 +652,8 @@ export const InstanceConfigResponse = z.object({
 	sso: SsoConfigResponse,
 	gateway_rollout: GatewayRolloutConfigResponse,
 	voice_noise_suppression: VoiceNoiseSuppressionConfigResponse,
+	push_service_delivery: PushServiceDeliveryConfigResponse,
+	domain_migration: DomainMigrationConfigResponse,
 	experiment_delivery: ExperimentDeliveryConfigResponse,
 	registration: InstanceRegistrationResponse,
 	self_hosted: z.boolean(),
@@ -636,9 +665,33 @@ export const InstanceConfigResponse = z.object({
 
 export type InstanceConfigResponse = z.infer<typeof InstanceConfigResponse>;
 
+const InstancePolicyUpdateSchema = z.object({
+	single_community_enabled: z.boolean().optional(),
+	single_community_name: z.string().trim().min(1).max(100).optional(),
+	direct_messages_disabled: z.boolean().optional(),
+	direct_messages_locked: z.literal(false).optional(),
+	premium_mode: z.enum(['mirror', 'everyone']).optional(),
+	services: z
+		.object({
+			gif_enabled: z.boolean().nullish(),
+			youtube_enabled: z.boolean().nullish(),
+			bluesky_enabled: z.boolean().nullish(),
+		})
+		.nullish(),
+	deferred_phone_gate: z
+		.object({
+			enabled: z.boolean().optional(),
+			window_hours: z.number().positive().max(8760).optional(),
+			member_threshold: z.number().int().positive().max(1_000_000).optional(),
+		})
+		.nullish(),
+});
+
 export const InstanceConfigUpdateRequest = z.object({
 	gateway_rollout: GatewayRolloutConfigUpdateRequest.nullish(),
 	voice_noise_suppression: VoiceNoiseSuppressionConfigUpdateRequest.nullish(),
+	push_service_delivery: PushServiceDeliveryConfigUpdateRequest.nullish(),
+	domain_migration: DomainMigrationConfigUpdateRequest.nullish(),
 	experiment_delivery: ExperimentDeliveryConfigUpdateRequest.nullish(),
 	registration: z
 		.object({
@@ -659,7 +712,7 @@ export const InstanceConfigUpdateRequest = z.object({
 			client_id: z.string().nullish(),
 			client_secret: z.string().nullish(),
 			scope: z.string().nullish(),
-			allowed_domains: z.array(z.string()).max(100).optional(),
+			allowed_domains: SsoAllowedDomainsSchema.optional(),
 			auto_provision: z.boolean().optional(),
 		})
 		.nullish(),
@@ -741,29 +794,7 @@ export const InstanceConfigUpdateRequest = z.object({
 				.nullish(),
 		})
 		.nullish(),
-	policy: z
-		.object({
-			single_community_enabled: z.boolean().optional(),
-			single_community_name: z.string().trim().min(1).max(100).optional(),
-			direct_messages_disabled: z.boolean().optional(),
-			direct_messages_locked: z.literal(false).optional(),
-			premium_mode: z.enum(['mirror', 'everyone']).optional(),
-			services: z
-				.object({
-					gif_enabled: z.boolean().nullish(),
-					youtube_enabled: z.boolean().nullish(),
-					bluesky_enabled: z.boolean().nullish(),
-				})
-				.nullish(),
-			deferred_phone_gate: z
-				.object({
-					enabled: z.boolean().optional(),
-					window_hours: z.number().positive().max(8760).optional(),
-					member_threshold: z.number().int().positive().max(1_000_000).optional(),
-				})
-				.nullish(),
-		})
-		.nullish(),
+	policy: InstancePolicyUpdateSchema.nullish(),
 });
 
 export type InstanceConfigUpdateRequest = z.infer<typeof InstanceConfigUpdateRequest>;
@@ -1036,6 +1067,7 @@ export const AdminAuditLogResponseSchema = z.object({
 	related_guilds: z.record(SnowflakeStringType, AdminAuditLogGuildSummarySchema),
 	related_channels: z.record(SnowflakeStringType, AdminAuditLogChannelSummarySchema),
 	action: createStringType(1, 256),
+	access: AdminAuditAccessEnum,
 	audit_log_reason: createStringType(1, 4000).nullable(),
 	metadata: z.record(createStringType(1, 256), createStringType(0, 4000)),
 	created_at: z.string(),
@@ -1140,6 +1172,20 @@ export const NodeStatsResponse = z.object({
 				process_count: Int32Type,
 				process_limit: Int32Type,
 				uptime_seconds: Int32Type,
+				cluster_metrics: z
+					.object({
+						gateway_cluster_member_count: Int32Type,
+						gateway_cluster_discovery_resolve_failures_total: Int32Type,
+						gateway_cluster_membership_transitions_total: z.object({
+							up: Int32Type,
+							down: Int32Type,
+						}),
+						gateway_node_router_owner_resolutions_total: z.object({
+							self: Int32Type,
+							peer: Int32Type,
+						}),
+					})
+					.optional(),
 			}),
 		)
 		.max(1000),
@@ -1455,6 +1501,5 @@ export const LimitConfigGetResponse = z.object({
 export const DeleteApiKeyResponse = z.object({
 	success: z.literal(true),
 });
-export const HeapSnapshotResponse = z.file().describe('V8 heap snapshot file');
 
 export const AdminApiKeyListResponse = z.array(ListAdminApiKeyResponse);

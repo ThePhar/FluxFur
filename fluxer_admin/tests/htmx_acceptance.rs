@@ -169,6 +169,39 @@ async fn detail_tab_routes_return_layout_or_fragments_by_route_shape() {
 }
 
 #[tokio::test]
+async fn target_audit_log_tabs_request_write_entries_only() {
+    let app = setup().await;
+    for path in [
+        "/users/1500000000000000001/tabs/audit_logs",
+        "/guilds/1600000000000000001/tabs/audit_logs",
+    ] {
+        let fragment = get(&app, path, &[]).await;
+        assert!(fragment.contains("Temp ban"), "{path}\n{fragment}");
+        assert!(!fragment.contains("Get user"), "{path}\n{fragment}");
+    }
+}
+
+#[tokio::test]
+async fn audit_log_page_forwards_the_access_filter() {
+    let app = setup().await;
+    let all = get(&app, "/audit-logs", &[]).await;
+    assert!(all.contains("Temp ban"), "{all}");
+    assert!(all.contains("Get user"), "{all}");
+    assert!(
+        all.contains(r#"<option value="" selected>All entries</option>"#),
+        "{all}"
+    );
+
+    let reads = get(&app, "/audit-logs?access=read", &[]).await;
+    assert!(reads.contains("Get user"), "{reads}");
+    assert!(!reads.contains("Temp ban"), "{reads}");
+    assert!(
+        reads.contains(r#"<option value="read" selected>Reads only</option>"#),
+        "{reads}"
+    );
+}
+
+#[tokio::test]
 async fn report_routes_keep_layout_and_fragment_contract() {
     let app = setup().await;
     let reports = get(&app, "/reports?q=mock", &[]).await;
@@ -432,6 +465,7 @@ async fn mutating_admin_pages_render_usable_csrf_tokens() {
                 "/instance-config?action=update_gateway_rollout",
                 "/instance-config?action=update_sso",
                 "/instance-config?action=update_voice_noise_suppression",
+                "/instance-config?action=update_domain_migration",
                 "/instance-config?action=update_experiment_delivery",
             ][..],
         ),
@@ -783,6 +817,9 @@ async fn spawn_mock_api() -> String {
 
 async fn mock_api(method: Method, uri: Uri) -> Response {
     let path = uri.path().to_owned();
+    if method == Method::PATCH && path == "/admin/instance/config" {
+        return json_response(instance_config());
+    }
     match (method, path.as_str()) {
         (Method::GET, "/admin/users/@me") => json_response(json!({ "user": admin_user() })),
         (Method::GET, "/admin/api-keys") => json_response(json!([])),
@@ -844,6 +881,25 @@ async fn mock_api(method: Method, uri: Uri) -> Response {
             json_response(instance_config_without_pending_registrations())
         }
         (Method::GET, "/admin/limit-config") => json_response(limit_config()),
+        (Method::GET, "/admin/audit-logs") => {
+            let access = uri.query().and_then(|query| {
+                url::form_urlencoded::parse(query.as_bytes())
+                    .find(|(key, _)| key == "access")
+                    .map(|(_, value)| value.into_owned())
+            });
+            let logs = [
+                audit_log_entry("1900000000000000101", "get_user", "read"),
+                audit_log_entry("1900000000000000102", "temp_ban", "write"),
+            ]
+            .into_iter()
+            .filter(|entry| {
+                access
+                    .as_deref()
+                    .is_none_or(|access| entry.access.to_string() == access)
+            })
+            .collect::<Vec<_>>();
+            json_response(json!({ "total": logs.len(), "logs": logs }))
+        }
         _ => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
     }
 }
@@ -973,6 +1029,32 @@ fn guild_fixtures_match_generated_response_contracts() {
     assert_eq!(detail.name, "Searched Guild");
     assert_eq!(detail.id, "1600000000000000001");
     assert_eq!(detail.member_count, 12);
+}
+
+fn audit_log_entry(
+    log_id: &str,
+    action: &str,
+    access: &str,
+) -> generated_types::AdminAuditLogResponseSchema {
+    serde_json::from_value(json!({
+        "log_id": log_id,
+        "admin_user_id": "1500000000000000000",
+        "admin_user": null,
+        "target_type": "user",
+        "target_id": "1500000000000000001",
+        "target_user": null,
+        "target_guild": null,
+        "target_channel": null,
+        "related_users": {},
+        "related_guilds": {},
+        "related_channels": {},
+        "action": action,
+        "access": access,
+        "audit_log_reason": null,
+        "metadata": {},
+        "created_at": "2026-09-16T12:00:00.000Z"
+    }))
+    .expect("audit log fixture must match the generated response contract")
 }
 
 fn searched_application() -> Value {
@@ -1116,8 +1198,17 @@ fn instance_config() -> Value {
             "included_user_ids": [],
             "excluded_user_ids": [],
             "guild_overrides": [],
-            "stereo_enabled": false,
             "suppression_strength": 80
+        },
+        "domain_migration": {
+            "enabled": false,
+            "config_version": 0,
+            "rollout_basis_points": 0,
+            "rollout_salt": "domain-migration-v1",
+            "included_user_ids": [],
+            "excluded_user_ids": [],
+            "anonymous_rollout_basis_points": 0,
+            "standalone_forwarding": false
         },
         "experiment_delivery": {
             "poll_interval_seconds": 300,

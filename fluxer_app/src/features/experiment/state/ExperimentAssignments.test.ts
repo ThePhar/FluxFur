@@ -37,7 +37,6 @@ const CANARY_ASSIGNMENT: VoiceNoiseSuppressionAssignmentResponse = {
 	guild_overrides: [{guild_id: GUILD_ID, backend: 'speex'}],
 	enabled_backends: ['none', 'speex', 'rnnoise', 'gtcrn'],
 	allow_user_override: true,
-	stereo_enabled: false,
 	suppression_strength: 80,
 };
 
@@ -332,31 +331,31 @@ describe('ExperimentAssignments visibility', () => {
 });
 
 describe('ExperimentAssignments lifecycle', () => {
-	it.each([
-		'stop',
-		'reset',
-	] as const)('aborts an active request on %s and starts a fresh request immediately', async (method) => {
-		const stale = deferredReply();
-		ExperimentAssignments.start();
-		await settle();
-		const signal = vi.mocked(http.get).mock.calls[0]?.[1]?.signal;
-		expect(signal).toBeDefined();
-		expect(signal!.aborted).toBe(false);
+	it.each(['stop', 'reset'] as const)(
+		'aborts an active request on %s and starts a fresh request immediately',
+		async (method) => {
+			const stale = deferredReply();
+			ExperimentAssignments.start();
+			await settle();
+			const signal = vi.mocked(http.get).mock.calls[0]?.[1]?.signal;
+			expect(signal).toBeDefined();
+			expect(signal!.aborted).toBe(false);
 
-		ExperimentAssignments[method]();
-		expect(signal!.aborted).toBe(true);
-		vi.mocked(http.get).mockResolvedValue(reply(200, CANARY_ENVELOPE, {etag: 'W/"fresh"'}));
-		ExperimentAssignments.start();
-		await settle();
-		expect(http.get).toHaveBeenCalledTimes(2);
-		expect(ExperimentAssignments.response).toEqual(CANARY_ENVELOPE);
-		expect(vi.getTimerCount()).toBe(1);
+			ExperimentAssignments[method]();
+			expect(signal!.aborted).toBe(true);
+			vi.mocked(http.get).mockResolvedValue(reply(200, CANARY_ENVELOPE, {etag: 'W/"fresh"'}));
+			ExperimentAssignments.start();
+			await settle();
+			expect(http.get).toHaveBeenCalledTimes(2);
+			expect(ExperimentAssignments.response).toEqual(CANARY_ENVELOPE);
+			expect(vi.getTimerCount()).toBe(1);
 
-		stale.resolve(reply(200, INERT_EXPERIMENT_ASSIGNMENTS_RESPONSE, {etag: 'W/"stale"'}));
-		await settle();
-		expect(ExperimentAssignments.response).toEqual(CANARY_ENVELOPE);
-		expect(vi.getTimerCount()).toBe(1);
-	});
+			stale.resolve(reply(200, INERT_EXPERIMENT_ASSIGNMENTS_RESPONSE, {etag: 'W/"stale"'}));
+			await settle();
+			expect(ExperimentAssignments.response).toEqual(CANARY_ENVELOPE);
+			expect(vi.getTimerCount()).toBe(1);
+		},
+	);
 
 	it('keeps ownership of the replacement request when the stale request finishes first', async () => {
 		const stale = deferredReply();

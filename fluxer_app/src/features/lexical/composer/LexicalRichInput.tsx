@@ -12,7 +12,6 @@ import type {MentionSegment} from '@app/features/messaging/utils/TextareaSegment
 import {resolveTypedEmojiToken} from '@app/features/messaging/utils/TypedEmojiShortcodeUtils';
 import {flxElementClassName} from '@app/lib/react';
 import type {I18n} from '@lingui/core';
-
 import type React from 'react';
 import {useCallback, useId, useImperativeHandle, useRef, useState} from 'react';
 
@@ -40,6 +39,7 @@ export interface LexicalRichInputProps {
 	singleLine?: boolean;
 	size?: 'chat' | 'form';
 	maxLength?: number;
+	maxWireLength?: number;
 	onExceedMaxLength?: () => void;
 	autocompleteAnchor?: HTMLElement | null;
 	className?: string;
@@ -59,7 +59,7 @@ export interface LexicalRichInputProps {
 	i18n: I18n;
 }
 
-const NOOP = (): void => {};
+const ARROW_UP_UNHANDLED = (): boolean => false;
 const SAFE_CHANNEL_TRIGGERS: Array<TriggerType> = ['emoji', 'mention', 'channel'];
 const SAFE_CONTEXT_FREE_TRIGGERS: Array<TriggerType> = ['emoji'];
 
@@ -76,6 +76,7 @@ export const LexicalRichInput = ({
 	singleLine = false,
 	size = 'chat',
 	maxLength,
+	maxWireLength = maxLength,
 	onExceedMaxLength,
 	autocompleteAnchor,
 	className,
@@ -230,6 +231,7 @@ export const LexicalRichInput = ({
 				initialSegments={initialSegments}
 				markdown={markdown}
 				markdownParserFlags={markdownParserFlags}
+				maxWireLength={maxWireLength}
 				emojiShortcodeResolver={emojiShortcodeResolver}
 				specialMentionsAllowed={specialMentionsAllowed}
 				channelId={channel == null ? undefined : channel.id}
@@ -246,7 +248,7 @@ export const LexicalRichInput = ({
 				onChange={emitChange}
 				onCursorMove={onCursorMove}
 				onEnter={onSubmit == null ? undefined : handleEnter}
-				onArrowUp={NOOP}
+				onArrowUp={ARROW_UP_UNHANDLED}
 				onKeyDown={onKeyDown}
 				onFocus={onFocus}
 				onBlur={onBlur}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type {ResolvedDownloadsProvider} from '@fluxer/config/src/S3DownloadsProvider';
-import type {WorkerTaskName} from '../worker/WorkerLaneConfig';
+import type {WorkerTaskName} from '@app/api/worker/WorkerLaneConfig';
+import type {CachePurgeAdapterName} from '@fluxer/config/src/MasterConfig';
 
 export type APIWorkerMode = 'all_lanes' | 'single_lane' | 'single_task';
 export type APIWorkerLaneName = 'realtime' | 'unfurl' | 'lifecycle' | 'batch';
@@ -12,6 +12,15 @@ export interface PushProviderAppConfig {
 	topic?: string;
 	environment?: PushProviderEnvironment;
 	projectId?: string;
+}
+
+export interface APICachePurgeConfig {
+	adapter: CachePurgeAdapterName;
+	http: {
+		endpoint: string;
+		token: string;
+		timeoutMs: number;
+	};
 }
 
 interface APIGeoipFilesystemConfig {
@@ -38,7 +47,6 @@ export interface APIConfig {
 	requestTimeoutMs: number;
 	maxInflightRequests: number;
 	ipBanExemptIps: Array<string>;
-	desktopGitHubRedirectCountries: ReadonlySet<string>;
 	cassandra: {
 		hosts: string;
 		port: number;
@@ -84,6 +92,11 @@ export interface APIConfig {
 		jetStreamUrl: string;
 		authToken: string;
 	};
+	storageChangeFeed: {
+		enabled: boolean;
+		stream: string;
+		skipBuckets: Array<string>;
+	};
 	search: {
 		engine: 'elasticsearch' | 'meilisearch';
 		url: string;
@@ -103,6 +116,9 @@ export interface APIConfig {
 			tokenTtlSecs: number;
 			keepDirectCountries: Array<string>;
 		};
+		attachmentUrls: {
+			secretsBase64: Array<string>;
+		};
 	};
 	geoip: APIGeoipConfig;
 	proxy: {
@@ -113,6 +129,7 @@ export interface APIConfig {
 		apiPublic: string;
 		apiClient: string;
 		webApp: string;
+		webAppOrigins: Array<string>;
 		gateway: string;
 		media: string;
 		staticCdn: string;
@@ -124,10 +141,9 @@ export interface APIConfig {
 	internal: {
 		gateway: string;
 		gatewayRpcAuthToken: string;
+		donationProxyKey: string;
 	};
 	hosts: {
-		invite: string;
-		gift: string;
 		marketing: string;
 		unfurlIgnored: Array<string>;
 	};
@@ -152,10 +168,8 @@ export interface APIConfig {
 			uploads: string;
 			reports: string;
 			harvests: string;
-			downloads: string;
 		};
 	};
-	s3Downloads: ResolvedDownloadsProvider;
 	email: {
 		enabled: boolean;
 		provider: 'smtp' | 'none';
@@ -186,6 +200,12 @@ export interface APIConfig {
 		accountPolicyDsl?: unknown;
 	};
 	blocklistFeeds: {
+		enabled: boolean;
+	};
+	torExitList: {
+		enabled: boolean;
+	};
+	breachedPasswordCheck: {
 		enabled: boolean;
 	};
 	captcha: {
@@ -262,11 +282,7 @@ export interface APIConfig {
 		};
 		legacyPrices?: Record<string, Array<string> | undefined>;
 	};
-	bunny: {
-		purgeEnabled: boolean;
-		apiKey?: string;
-		pullZoneId?: number;
-	};
+	cachePurge: APICachePurgeConfig;
 	clamav: {
 		enabled: boolean;
 		host: string;
@@ -312,6 +328,8 @@ export interface APIConfig {
 			wordmarkUrl?: string;
 			faviconUrl?: string;
 			themeColor?: string;
+			statusPageUrl?: string;
+			statusPageIncidentHistoryUrl?: string;
 		};
 		setup: {
 			configured: boolean;
@@ -319,6 +337,10 @@ export interface APIConfig {
 	};
 	abusePolicy: {
 		inboundPhoneCountryCodes: Array<string>;
+		phoneFlagging: {
+			enabled: boolean;
+			exemptCountryCodes: Array<string>;
+		};
 		phoneVerification: {
 			inboundRequiredPrefixes: Array<string>;
 		};
@@ -345,7 +367,6 @@ export interface APIConfig {
 		validateResponses: boolean;
 	};
 	presignedAttachmentUploadsEnabled: boolean;
-	presignedDownloadsEnabled: boolean;
 	presignedHarvestDownloadsEnabled: boolean;
 	attachmentDecayEnabled: boolean;
 	deletionGracePeriodHours: number;
@@ -377,15 +398,6 @@ export interface APIConfig {
 		laneName?: APIWorkerLaneName;
 		taskName?: WorkerTaskName;
 		enableCronScheduler?: boolean;
-		enableVoiceReconciliation: boolean;
-		voiceReconciliation: {
-			intervalMs: number | undefined;
-			staggerDelayMs: number | undefined;
-			lockTtlSeconds: number | undefined;
-			cadenceTtlSeconds: number | undefined;
-			gatewayOnlyGraceMs: number | undefined;
-			liveKitOnlyGraceMs: number | undefined;
-		};
 		laneConcurrencyOverrides: {
 			realtime?: number;
 			unfurl?: number;

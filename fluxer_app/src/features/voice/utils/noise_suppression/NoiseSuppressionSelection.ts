@@ -21,7 +21,7 @@ export interface EffectiveNoiseSuppression {
 	requestedBackend: VoiceNoiseSuppressionBackend | null;
 	source: VoiceNoiseSuppressionResolutionSource | null;
 	suppressionStrength: number;
-	stereoEnabled: boolean;
+	stereoPreferred: boolean;
 	configVersion: number;
 }
 
@@ -31,7 +31,7 @@ export const INERT_EFFECTIVE_NOISE_SUPPRESSION: EffectiveNoiseSuppression = {
 	requestedBackend: null,
 	source: null,
 	suppressionStrength: 80,
-	stereoEnabled: false,
+	stereoPreferred: false,
 	configVersion: 0,
 };
 
@@ -44,7 +44,8 @@ export function resolveEffectiveNoiseSuppression(
 ): EffectiveNoiseSuppression {
 	const preference = isVoiceNoiseSuppressionBackend(userPreference) ? userPreference : null;
 	const resolution = resolveVoiceNoiseSuppressionForCall(assignment, guildId, preference);
-	if (resolution == null) return INERT_EFFECTIVE_NOISE_SUPPRESSION;
+	const stereoAllowed = stereoPreference === true;
+	if (resolution == null) return {...INERT_EFFECTIVE_NOISE_SUPPRESSION, stereoPreferred: stereoAllowed};
 	const backend = selectUsableNoiseSuppressionBackend(resolution.backend, capabilities);
 	return {
 		rolloutApplied: true,
@@ -52,10 +53,7 @@ export function resolveEffectiveNoiseSuppression(
 		requestedBackend: resolution.backend,
 		source: resolution.source,
 		suppressionStrength: resolution.suppressionStrength,
-		stereoEnabled:
-			resolution.stereoEnabled &&
-			stereoPreference !== false &&
-			getNoiseSuppressionBackendDescriptor(backend).preservesInputChannels,
+		stereoPreferred: stereoAllowed,
 		configVersion: resolution.configVersion,
 	};
 }
@@ -78,20 +76,34 @@ export function getNoiseSuppressionScopeGuildId(): string | null {
 	return activeScopeGuildId;
 }
 
+export function supportsStereoCapture(profile: ResolvedVoiceProcessing): boolean {
+	if (profile.echoCancellation || profile.autoGainControl) return false;
+	if (profile.browserNoiseSuppression || profile.deepFilter) return false;
+	return getNoiseSuppressionBackendDescriptor(profile.noiseSuppressionBackend).preservesInputChannels;
+}
+
+export function resolveStereoCapture(effective: EffectiveNoiseSuppression, profile: ResolvedVoiceProcessing): boolean {
+	if (!supportsStereoCapture(profile)) return false;
+	if (profile.mode === 'voice') return false;
+	return effective.stereoPreferred;
+}
+
 export function applyNoiseSuppressionOverride(
 	profile: ResolvedVoiceProcessing,
 	effective: EffectiveNoiseSuppression,
 ): ResolvedVoiceProcessing {
-	if (!effective.rolloutApplied || effective.backend == null) return profile;
-	if (profile.mode === 'studio') return profile;
+	if (!effective.rolloutApplied || effective.backend == null || profile.mode === 'studio') {
+		return {...profile, stereoCapture: resolveStereoCapture(effective, profile)};
+	}
 	const backend = effective.backend;
 	const descriptor = getNoiseSuppressionBackendDescriptor(backend);
-	return {
+	const next: ResolvedVoiceProcessing = {
 		...profile,
 		browserNoiseSuppression: descriptor.browserNoiseSuppression,
 		deepFilter: backend === 'deep_filter',
 		deepFilterNoiseReductionLevel: backend === 'deep_filter' ? effective.suppressionStrength : 0,
 		noiseSuppressionBackend: backend,
-		stereoCapture: effective.stereoEnabled,
+		stereoCapture: false,
 	};
+	return {...next, stereoCapture: resolveStereoCapture(effective, next)};
 }

@@ -16,11 +16,12 @@ Security-sensitive fields and destructive lifecycle operations on this page requ
 
 | Account state | Accepted proof |
 | --- | --- |
-| No authenticator configured | The current `password` |
-| An authenticator configured | `mfa_method` of `totp` with `mfa_code`, or `mfa_method` of `webauthn` with `webauthn_response` and `webauthn_challenge` |
-| No password credential and no authenticator | None, the requirement is already satisfied |
+| No TOTP secret and no registered WebAuthn credential | The current `password` |
+| A TOTP secret or a registered WebAuthn credential | `mfa_method` of `totp` with `mfa_code`, or `mfa_method` of `webauthn` with `webauthn_response` and `webauthn_challenge` |
+| A registered WebAuthn credential and no TOTP secret | `mfa_method` of `webauthn` as above, or `mfa_method` of `totp` with `mfa_code` holding an unconsumed backup code |
+| No password credential and neither of those | None, the requirement is already satisfied |
 
-Once an account configures an authenticator, its `password` stops working here.
+Once an account holds a TOTP secret or a registered WebAuthn credential, its `password` stops working here. A passkey counts whether or not the account enabled passkeys as a second factor. The `methods` object on a 403 `SUDO_MODE_REQUIRED` reports `backup_codes` so a client knows whether the code input is worth offering.
 
 ## Get current user
 
@@ -31,9 +32,9 @@ Returns the current [user](/http-api/users/#user-object) object.
 ### Limitations
 
 - An OAuth2 bearer credential must hold the `identify` [scope](/http-api/oauth2/#oauth2-scopes), and one without it is rejected with 403 [`MISSING_OAUTH_SCOPE`](/http-api/errors/), whose body has `required_scope`.
-- A bearer receives the neutralised representation, and `email` only when it also holds the `email` scope.
+- A bearer receives the [user object](/http-api/users/#user-object) with the zero values that page lists for a bearer read, and `email` only when it also holds the `email` scope.
 
-This route alone admits an account with an outstanding [required action](/http-api/users/#required-actions), so a client can read and poll the actions it has to complete.
+An account with an outstanding [required action](/http-api/users/#required-actions) can call this route, so a client can read and poll the actions it has to complete.
 
 ### Response
 
@@ -97,7 +98,7 @@ Modifies the current account and returns the resulting [user](/http-api/users/#u
 
 <sup>4</sup> Any string value returns [`EMAIL_MUST_BE_CHANGED_VIA_TOKEN`](/http-api/errors/) on the `email` path, joined by `INVALID_EMAIL_FORMAT` when the string is not an address
 
-<sup>5</sup> A claimed account also supplies `password`, and a body that omits it is rejected with `PASSWORD_NOT_SET`. A breached password is rejected with [`PASSWORD_IS_TOO_COMMON`](/http-api/errors/)
+<sup>5</sup> A claimed account also supplies `password`, and a body that omits it is rejected with `PASSWORD_NOT_SET`. When the instance checks for breached passwords, a breached one is rejected with [`PASSWORD_IS_TOO_COMMON`](/http-api/errors/)
 
 <sup>6</sup> The value may have a `data:...;base64,` prefix. The remaining payload runs 1 to 13981016 characters
 
@@ -123,7 +124,7 @@ An omitted field leaves its stored value untouched, and an explicit `null` clear
 
 To skip the body proof fields, send the sudo token in the `X-Fluxer-Sudo-Mode-JWT` request header.
 
-A body that has no `email_token` and nothing beyond `mfa_method`, `mfa_code`, `webauthn_response`, and `webauthn_challenge` returns the current account unchanged. That check runs before the required action barrier, so it succeeds even while an action is outstanding. Supplying `password` alone is an update with nothing to change, and it still emits [User Update](/gateway/events/#user-update).
+A body that has no `email_token` and nothing beyond `mfa_method`, `mfa_code`, `webauthn_response`, and `webauthn_challenge` returns the current account unchanged. That check runs before Fluxer checks required actions, so it succeeds even while an action is outstanding. Supplying `password` alone is an update with nothing to change, and it still emits [User Update](/gateway/events/#user-update).
 
 Fluxer rejects an account with an outstanding required action. The one exemption is a body that has `email_token` and nothing beyond the sudo verification fields. Any other defined field removes the exemption.
 
@@ -141,7 +142,7 @@ An animated avatar requires the animated avatar entitlement and is otherwise rej
 
 The username, display name, biography, and pronouns are matched against the instance profile substring blocklist, and a match returns 403 [`CONTENT_BLOCKED`](/http-api/errors/). An account with the `STAFF` flag is exempt. The biography and pronouns are also scanned against the phrase and URL blocklists.
 
-The global content filter applied to every POST, PUT, and PATCH JSON body runs the same pair of blocklists over the whole body before the handler. It reads `username`, `global_name`, `email`, `timezone`, and `discriminator` when supplied as a string, alongside the biography and pronouns. It skips `avatar`, `banner`, `password`, `new_password`, `email_token`, `mfa_code`, `webauthn_response`, `webauthn_challenge`, and every field whose name ends in `_flags`, and it ignores any value shorter than 3 characters. A match returns the same 403 `CONTENT_BLOCKED`, and no flag exempts an account from it.
+The global content filter applied to every POST, PUT, and PATCH JSON body runs the phrase and URL blocklists over the whole body before the handler. It reads `username`, `global_name`, `email`, `timezone`, and `discriminator` when supplied as a string, alongside the biography and pronouns. It skips `avatar`, `banner`, `password`, `new_password`, `email_token`, `mfa_code`, `webauthn_response`, `webauthn_challenge`, and every field whose name ends in `_flags`, and it ignores any value shorter than 3 characters. A match returns the same 403 `CONTENT_BLOCKED`, and no flag exempts an account from it.
 
 ### Secondary controls
 
@@ -172,7 +173,7 @@ Supplying `new_password` on a claimed account deletes every other authentication
 
 ### Side effects
 
-A successful change emits [User Update](/gateway/events/#user-update) to the account. When a [partial user object](/http-api/users/#partial-user-object) field changes, other accounts observe the new value. Changing the username, discriminator, or display name also reindexes the account's guild member records in every guild whose member index exists. A body that takes the early return changes nothing and emits no Dispatch. Any other accepted body emits the Dispatch even when no stored value changed.
+A successful change emits [User Update](/gateway/events/#user-update) to the account. When a [partial user object](/http-api/users/#partial-user-object) field changes, other accounts observe the new value. Changing the username, discriminator, or display name also updates the account in guild member search for every guild whose members are indexed. A body with no `email_token` and no field beyond the sudo verification fields changes nothing and emits no Dispatch. Any other accepted body emits the Dispatch even when no stored value changed.
 
 ### Rate limit
 
@@ -248,7 +249,7 @@ Schedules deletion of the current account and deletes every authentication sessi
 The body is the [sudo verification object](/http-api/users/mfa/#sudo-verification-object). It may be an empty object when the request presents an accepted sudo token.
 
 :::caution[Signing in before the deadline cancels the deletion]
-The request records a deletion deadline set 336 hours ahead by default and marks the account self-deleted with the reason `USER_REQUESTED`. Erasure after the deadline is irreversible.
+The deletion deadline is 14 days ahead by default. Once erasure starts, signing in cannot cancel it.
 :::
 
 :::note[Transfer guild ownership first]
@@ -261,6 +262,7 @@ Fluxer checks guild ownership before it accepts the deletion, so an owner of any
 | --- | --- | --- |
 | 204 | empty | Account deletion was scheduled |
 | 400 | [error response](/http-api/#error-response) | The caller owns at least one guild and the request returns `USER_OWNS_GUILDS` |
+| 409 | [error response](/http-api/#error-response) | `CONFLICT`, because erasure has started or the deletion state changed during the request |
 
 ### Side effects
 

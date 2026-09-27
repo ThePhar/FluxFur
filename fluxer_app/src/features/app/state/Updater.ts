@@ -54,7 +54,12 @@ const MIN_CHECK_INTERVAL_MS = 60 * 1000;
 const MANUAL_DOWNLOAD_REFRESH_TIMEOUT_MS = 5 * 1000;
 const VERSION_ENDPOINT = '/version.json';
 const CURRENT_BUILD_VERSION = Config.PUBLIC_BUILD_VERSION ?? null;
-const ALLOWED_WEB_UPDATE_HOSTS = new Set(['web.fluxer.app', 'web.canary.fluxer.app']);
+const ALLOWED_WEB_UPDATE_HOSTS = new Set([
+	'web.fluxer.app',
+	'web.canary.fluxer.app',
+	'fluxer.com',
+	'canary.fluxer.com',
+]);
 
 function normalizeUpdaterContext(context: NativeUpdaterEvent['context']): UpdaterContext {
 	switch (context) {
@@ -414,7 +419,6 @@ class Updater {
 			channel: this.channel ?? Config.PUBLIC_RELEASE_CHANNEL,
 			arch: this.desktopArch,
 			version: event.version ?? null,
-			apiEndpoint: Config.PUBLIC_BOOTSTRAP_API_PUBLIC_ENDPOINT,
 			knownOptions: options,
 		});
 	}
@@ -696,10 +700,14 @@ class Updater {
 		} finally {
 			this.transition({type: 'manualDownload.finished'});
 		}
-		await this.downloadManualNativeUpdateOrOpen(currentOption.url, currentOption.suggestedName);
+		await this.downloadManualNativeUpdateOrOpen(currentOption.url, currentOption.suggestedName, currentOption.sha256);
 	}
 
-	private async downloadManualNativeUpdateOrOpen(url: string, suggestedName?: string): Promise<void> {
+	private async downloadManualNativeUpdateOrOpen(
+		url: string,
+		suggestedName?: string,
+		sha256?: string | null,
+	): Promise<void> {
 		if (this.manualNativeDownloadInFlight) {
 			return;
 		}
@@ -708,8 +716,14 @@ class Updater {
 			const outcome = await downloadWithNative({
 				url,
 				suggestedName: suggestedName ?? this.getManualUpdateSuggestedName(url),
+				sha256,
 			});
 			if (outcome === 'success' || outcome === 'canceled') {
+				return;
+			}
+			if (outcome === 'checksum-mismatch') {
+				logger.error('Native manual update download did not match its published checksum', {url});
+				pushDesktopUpdateDownloadFailedModal();
 				return;
 			}
 			logger.warn('Native manual update download unavailable; opening update URL externally', {outcome});

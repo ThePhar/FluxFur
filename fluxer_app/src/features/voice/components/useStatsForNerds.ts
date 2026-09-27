@@ -74,7 +74,7 @@ function formatTransportSummary(transport: VoiceEngineV2TransportInfo | null): s
 }
 
 export function formatResolution(track: VoiceEngineV2PerTrackStats | null): string {
-	if (!track || !track.frameWidth || !track.frameHeight) return 'n/a';
+	if (!track?.frameWidth || !track.frameHeight) return 'n/a';
 	return `${track.frameWidth}x${track.frameHeight}`;
 }
 
@@ -200,9 +200,7 @@ export function useStatsForNerds({enabled = true}: UseStatsForNerdsOptions = {})
 			codecPreferenceOrder: [...getScreenShareCodecPreferenceOrder()],
 			contentHint: VoiceSettings.getScreenShareContentHint(),
 			encoderMode: VoiceSettings.getScreenShareEncoderMode(),
-			softwareQuality: VoiceSettings.getScreenShareSoftwareQuality(),
 			scalabilityMode: VoiceSettings.getScreenShareScalabilityMode(),
-			backupCodecMode: VoiceSettings.getScreenShareBackupCodecMode(),
 			maxBitrateMbps:
 				(getPublishedScreenShareMaxBitrateBps(localParticipant) ??
 					getScreenShareBitrateBps(effectiveScreenShareSettings.resolution, effectiveScreenShareSettings.frameRate)) /
@@ -213,7 +211,6 @@ export function useStatsForNerds({enabled = true}: UseStatsForNerdsOptions = {})
 			shareDesktopAudio: VoiceSettings.getShareDesktopAudio(),
 			shareAppAudio: VoiceSettings.getShareAppAudio(),
 			muteStreamAudio: VoiceSettings.getMuteStreamAudio(),
-			openH264Enabled: VoiceSettings.getOpenH264Enabled(),
 		},
 		screenShareAudioCapture: {
 			nativeCapture: getNativeAudioCaptureDiagnosticState(),

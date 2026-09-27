@@ -1,5 +1,5 @@
+import {mapWithConcurrency} from '@app/api/utils/ConcurrencyUtils';
 import {describe, expect, it} from 'vitest';
-import {mapWithConcurrency} from '../ConcurrencyUtils';
 
 describe('mapWithConcurrency', () => {
 	it('limits in-flight work and preserves input order when later items finish first', async () => {
@@ -69,38 +69,38 @@ describe('mapWithConcurrency', () => {
 		).resolves.toEqual([]);
 	});
 
-	it.each([
-		0,
-		-1,
-		1.5,
-		Number.NaN,
-		Number.POSITIVE_INFINITY,
-		Number.MAX_SAFE_INTEGER + 1,
-	])('rejects invalid concurrency %j before scheduling work', async (concurrency) => {
-		let calls = 0;
-		const mapper = async () => {
-			calls++;
-			return 1;
-		};
-		await expect(mapWithConcurrency([1], concurrency, mapper)).rejects.toThrow(
-			'Concurrency must be a positive safe integer',
-		);
-		await expect(mapWithConcurrency([], concurrency, mapper)).rejects.toThrow(
-			'Concurrency must be a positive safe integer',
-		);
-		expect(calls).toBe(0);
-	});
+	it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+		'rejects invalid concurrency %j before scheduling work',
+		async (concurrency) => {
+			let calls = 0;
+			const mapper = async () => {
+				calls++;
+				return 1;
+			};
+			await expect(mapWithConcurrency([1], concurrency, mapper)).rejects.toThrow(
+				'Concurrency must be a positive safe integer',
+			);
+			await expect(mapWithConcurrency([], concurrency, mapper)).rejects.toThrow(
+				'Concurrency must be a positive safe integer',
+			);
+			expect(calls).toBe(0);
+		},
+	);
 
-	it('propagates a mapper rejection without waiting for another in-flight item', async () => {
+	it('waits for in-flight work before propagating a mapper rejection', async () => {
 		const first = Promise.withResolvers<number>();
 		const second = Promise.withResolvers<number>();
 		const failure = new Error('Mapper failed');
+		const completed: Array<unknown> = [];
+		const secondCompleted = second.promise.then((value) => completed.push(value));
 		const result = mapWithConcurrency([first.promise, second.promise], 2, (promise) => promise);
-		const rejected = expect(result).rejects.toBe(failure);
+		const rejected = result.catch((error) => completed.push(error));
 		first.reject(failure);
-		await rejected;
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		second.resolve(2);
-		await second.promise;
+		await Promise.all([rejected, secondCompleted]);
+		expect(completed).toEqual([2, failure]);
+		expect(completed[1]).toBe(failure);
 	});
 
 	it('rejects synchronous mapper failures without starting queued serial work', async () => {

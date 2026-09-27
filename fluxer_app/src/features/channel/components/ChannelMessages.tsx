@@ -29,8 +29,6 @@ import {
 	resolveChannelMessagesWindowStatus,
 	selectChannelMessagesFillerVisible,
 	selectChannelMessagesSpacerHeight,
-	selectChannelMessagesTailGapId,
-	selectChannelMessagesTailProbeId,
 	selectChannelMessagesWindowBar,
 } from '@app/features/messaging/state/ChannelMessagesLoadStateMachine';
 import MessageEdit from '@app/features/messaging/state/MessageEdit';
@@ -41,6 +39,7 @@ import {
 	createChannelStream,
 	getCollapsedMessageGroupKey,
 } from '@app/features/messaging/utils/MessageGroupingUtils';
+import {getMessageSelector} from '@app/features/messaging/utils/MessageNodeSelectors';
 import LocalUserSpamOverride from '@app/features/moderation/state/LocalUserSpamOverride';
 import SelectedChannel from '@app/features/navigation/state/SelectedChannel';
 import Permission from '@app/features/permissions/state/Permission';
@@ -52,6 +51,7 @@ import {shouldAutoAck} from '@app/features/read_state/utils/AutoAckPredicate';
 import {remFromPx} from '@app/features/theme/layout/RemFromPx';
 import {Button} from '@app/features/ui/button/Button';
 import {Scroller} from '@app/features/ui/components/Scroller';
+import FocusRingScope from '@app/features/ui/focus_ring/FocusRingScope';
 import KeyboardMode from '@app/features/ui/state/KeyboardMode';
 import MediaViewer from '@app/features/ui/state/MediaViewer';
 import Modal from '@app/features/ui/state/Modal';
@@ -68,11 +68,7 @@ import {clsx} from 'clsx';
 import {runInAction} from 'mobx';
 import {observer, useLocalObservable} from 'mobx-react-lite';
 import type React from 'react';
-import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-
-const TAIL_PROBE_MAX_ATTEMPTS = 2;
-const TAIL_PROBE_MIN_INTERVAL_MS = 10_000;
-const tailProbeAttemptedAt = new Map<string, number>();
+import {useCallback, useEffect, useMemo, useRef} from 'react';
 
 const MESSAGE_LIST_FOR_DESCRIPTOR = msg({
 	message: 'Message list for {channelName}',
@@ -173,9 +169,6 @@ export const Messages = observer(function Messages({
 	const scrollerContainerRef = useRef<HTMLDivElement | null>(null);
 	const lastStateSnapshotRef = useRef<MessagesStateSnapshot | null>(null);
 	const recoveryFetchChannelIdRef = useRef<string | null>(null);
-	const tailProbeKeyRef = useRef<string | null>(null);
-	const tailProbeAttemptsRef = useRef<{key: string; attempts: number} | null>(null);
-	const [settledTailProbeKey, setSettledTailProbeKey] = useState<string | null>(null);
 	interface MessageState extends MessagesStateSnapshot {
 		highlightedMessageId: string | null;
 		isAtBottom: boolean;
@@ -211,17 +204,6 @@ export const Messages = observer(function Messages({
 	});
 	const windowBar = selectChannelMessagesWindowBar(windowStatus);
 	const windowNeedsPage = windowStatus.needsPage;
-	const tailInput = {
-		status: windowStatus,
-		loading: safeMessages.loadingMore || safeMessages.probeLoading,
-		newestLoadedMessageId: safeMessages.last()?.id ?? null,
-		knownLatestMessageId: state.lastReadStateMessageId,
-	};
-	const tailWatermarkMessageId = state.lastReadStateMessageId;
-	const tailGapMessageId = selectChannelMessagesTailGapId(tailInput);
-	const tailProbeMessageId = selectChannelMessagesTailProbeId(tailInput);
-	const tailGapKey = tailGapMessageId == null ? null : `${tailGapMessageId}:${tailWatermarkMessageId}`;
-	const tailProbeKey = tailProbeMessageId == null ? null : `${tailProbeMessageId}:${tailWatermarkMessageId}`;
 	const canAutoAck = shouldAutoAck({
 		channelActive: allowAutoAck,
 		windowFocused: isWindowFocused,
@@ -418,7 +400,7 @@ export const Messages = observer(function Messages({
 			const scroller = scrollManager.ref.current?.getViewportElement();
 			const innerElement = scrollerInnerRef.current;
 			if (!scroller || !innerElement) return;
-			const messageElements = innerElement.querySelectorAll<HTMLElement>('[data-message-id]');
+			const messageElements = innerElement.querySelectorAll<HTMLElement>(getMessageSelector(channel.id));
 			if (!messageElements.length) return;
 			const scrollerRect = scroller.getBoundingClientRect();
 			const candidates: Array<MessageFocusCandidate> = [];
@@ -474,47 +456,6 @@ export const Messages = observer(function Messages({
 			}
 		});
 	}, [channel.id, isGatewayConnected, selectedChannelId, windowNeedsPage, state.messageVersion]);
-	useEffect(() => {
-		if (!isGatewayConnected) {
-			tailProbeKeyRef.current = null;
-			return;
-		}
-		if (tailProbeMessageId == null || tailProbeKey == null || tailWatermarkMessageId == null) {
-			return;
-		}
-		if (selectedChannelId !== channel.id || tailProbeKeyRef.current === tailProbeKey) {
-			return;
-		}
-		const lastAttemptAt = tailProbeAttemptedAt.get(tailProbeKey);
-		if (lastAttemptAt != null && Date.now() - lastAttemptAt < TAIL_PROBE_MIN_INTERVAL_MS) {
-			return;
-		}
-		tailProbeKeyRef.current = tailProbeKey;
-		tailProbeAttemptedAt.set(tailProbeKey, Date.now());
-		void MessageCommands.fetchMessages(channel.id, null, tailProbeMessageId, MAX_MESSAGES_PER_CHANNEL, undefined, {
-			tailProbe: {
-				watermarkMessageId: tailWatermarkMessageId,
-				onSettled: (settlement) => {
-					if (settlement === 'applied') {
-						setSettledTailProbeKey(tailProbeKey);
-						return;
-					}
-					if (settlement === 'failed') {
-						const attempts =
-							tailProbeAttemptsRef.current?.key === tailProbeKey ? tailProbeAttemptsRef.current.attempts : 0;
-						if (attempts >= TAIL_PROBE_MAX_ATTEMPTS) {
-							setSettledTailProbeKey(tailProbeKey);
-							return;
-						}
-						tailProbeAttemptsRef.current = {key: tailProbeKey, attempts: attempts + 1};
-					}
-					if (tailProbeKeyRef.current === tailProbeKey) {
-						tailProbeKeyRef.current = null;
-					}
-				},
-			},
-		});
-	}, [channel.id, isGatewayConnected, selectedChannelId, tailProbeKey, tailProbeMessageId, tailWatermarkMessageId]);
 	useMessageListKeyboardNavigation({
 		containerRef: scrollManager.ref,
 		channelId: channel.id,
@@ -537,6 +478,9 @@ export const Messages = observer(function Messages({
 			scrollManager.jumpCancel();
 			ComponentBus.dispatch('FOCUS_TEXTAREA', {channelId: channel.id});
 		},
+		onNavigatePastNewest: () => {
+			ComponentBus.dispatch('FOCUS_TEXTAREA', {channelId: channel.id, enterKeyboardMode: true});
+		},
 		allowWhenInactive: true,
 	});
 	useEffect(() => {
@@ -548,12 +492,11 @@ export const Messages = observer(function Messages({
 		};
 	}, []);
 	useEffect(() => {
-		if (!canAutoAck || !state.isAtBottom || !state.messages?.ready) return;
-		if (tailGapKey != null && settledTailProbeKey !== tailGapKey) return;
+		if (!canAutoAck || !state.isAtBottom || !state.messages?.ready || state.messages.loadingMore) return;
 		if (ReadStates.hasUnread(channel.id)) {
 			ReadStateCommands.ackWithStickyUnread(channel.id);
 		}
-	}, [canAutoAck, state.isAtBottom, state.messages?.ready, tailGapKey, settledTailProbeKey, channel.id]);
+	}, [canAutoAck, state.isAtBottom, state.messages?.ready, state.messages?.loadingMore, channel.id]);
 	useEffect(() => {
 		return () => {
 			const readState = ReadStates.getIfExists(channel.id);
@@ -763,14 +706,16 @@ export const Messages = observer(function Messages({
 							aria-busy={safeMessages.loadingMore ? true : undefined}
 							data-flx="channel.messages.scroller-inner"
 						>
-							<NearViewportSurfaceContext.Provider value={resolveMessageScrollSurface}>
-								<CollapsedMessageVisibilityProvider
-									value={collapsedMessageVisibility}
-									data-flx="channel.messages.collapsed-message-visibility-provider"
-								>
-									{scrollerInner}
-								</CollapsedMessageVisibilityProvider>
-							</NearViewportSurfaceContext.Provider>
+							<FocusRingScope containerRef={scrollerInnerRef} data-flx="channel.messages.focus-ring-scope">
+								<NearViewportSurfaceContext.Provider value={resolveMessageScrollSurface}>
+									<CollapsedMessageVisibilityProvider
+										value={collapsedMessageVisibility}
+										data-flx="channel.messages.collapsed-message-visibility-provider"
+									>
+										{scrollerInner}
+									</CollapsedMessageVisibilityProvider>
+								</NearViewportSurfaceContext.Provider>
+							</FocusRingScope>
 						</div>
 					</div>
 				</Scroller>

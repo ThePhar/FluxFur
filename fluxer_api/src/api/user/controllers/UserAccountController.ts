@@ -1,5 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import * as AuthSession from '@app/api/auth/AuthSession';
+import {requireSudoMode} from '@app/api/auth/services/SudoVerificationService';
+import {createGuildID, createUserID} from '@app/api/BrandedTypes';
+import {Config} from '@app/api/Config';
+import {DefaultUserOnly, LoginRequired, LoginRequiredAllowSuspicious} from '@app/api/middleware/AuthMiddleware';
+import {requireOAuth2ScopeForBearer} from '@app/api/middleware/OAuth2ScopeMiddleware';
+import {RateLimitMiddleware} from '@app/api/middleware/RateLimitMiddleware';
+import {OpenAPI} from '@app/api/middleware/ResponseTypeMiddleware';
+import {SudoModeMiddleware} from '@app/api/middleware/SudoModeMiddleware';
+import {RateLimitConfigs} from '@app/api/RateLimitConfig';
+import type {HonoApp} from '@app/api/types/HonoEnv';
+import {classifyWebPushOrigin} from '@app/api/user/services/WebPushOriginReplacement';
+import {getCachedUserPartialResponse} from '@app/api/user/UserCacheHelpers';
+import {
+	mapUserGuildSettingsToResponse,
+	mapUserSettingsToResponse,
+	mapUserToPrivateResponse,
+} from '@app/api/user/UserMappers';
+import {Validator} from '@app/api/Validator';
 import {UserFlags} from '@fluxer/constants/src/UserConstants';
 import {MissingAccessError} from '@fluxer/errors/src/domains/core/MissingAccessError';
 import {UnknownUserError} from '@fluxer/errors/src/domains/user/UnknownUserError';
@@ -62,19 +81,6 @@ import {
 	UserTagCheckResponse,
 } from '@fluxer/schema/src/domains/user/UserResponseSchemas';
 import {uint8ArrayToBase64} from 'uint8array-extras';
-import * as AuthSession from '../../auth/AuthSession';
-import {requireSudoMode} from '../../auth/services/SudoVerificationService';
-import {createGuildID, createUserID} from '../../BrandedTypes';
-import {DefaultUserOnly, LoginRequired, LoginRequiredAllowSuspicious} from '../../middleware/AuthMiddleware';
-import {requireOAuth2ScopeForBearer} from '../../middleware/OAuth2ScopeMiddleware';
-import {RateLimitMiddleware} from '../../middleware/RateLimitMiddleware';
-import {OpenAPI} from '../../middleware/ResponseTypeMiddleware';
-import {SudoModeMiddleware} from '../../middleware/SudoModeMiddleware';
-import {RateLimitConfigs} from '../../RateLimitConfig';
-import type {HonoApp} from '../../types/HonoEnv';
-import {Validator} from '../../Validator';
-import {getCachedUserPartialResponse} from '../UserCacheHelpers';
-import {mapUserGuildSettingsToResponse, mapUserSettingsToResponse, mapUserToPrivateResponse} from '../UserMappers';
 
 export function UserAccountController(app: HonoApp) {
 	app.get(
@@ -850,7 +856,7 @@ export function UserAccountController(app: HonoApp) {
 				'Registers a new push notification subscription for the current user. Takes push endpoint and encryption keys from a Web Push API subscription. Returns subscription ID for future reference.',
 		}),
 		async (ctx) => {
-			const {endpoint, keys, user_agent} = ctx.req.valid('json');
+			const {endpoint, keys, user_agent, installed_app} = ctx.req.valid('json');
 			const authSession = ctx.get('authSession');
 			const subscription = await ctx.get('userService').contentService.registerPushSubscription({
 				userId: ctx.get('user').id,
@@ -858,6 +864,8 @@ export function UserAccountController(app: HonoApp) {
 				endpoint,
 				keys,
 				userAgent: user_agent,
+				originKind: classifyWebPushOrigin(ctx.req.header('origin'), Config.instance.selfHosted),
+				installedApp: installed_app,
 			});
 			return ctx.json({subscription_id: subscription.subscriptionId});
 		},
@@ -879,7 +887,7 @@ export function UserAccountController(app: HonoApp) {
 				'Replaces an existing push subscription whose endpoint has been rotated by the browser (pushsubscriptionchange). Deletes the row keyed by the old endpoint and inserts a new one for the new endpoint.',
 		}),
 		async (ctx) => {
-			const {old_endpoint, endpoint, keys, user_agent} = ctx.req.valid('json');
+			const {old_endpoint, endpoint, keys, user_agent, installed_app} = ctx.req.valid('json');
 			const authSession = ctx.get('authSession');
 			const subscription = await ctx.get('userService').contentService.rotatePushSubscription({
 				userId: ctx.get('user').id,
@@ -888,6 +896,8 @@ export function UserAccountController(app: HonoApp) {
 				endpoint,
 				keys,
 				userAgent: user_agent,
+				originKind: classifyWebPushOrigin(ctx.req.header('origin'), Config.instance.selfHosted),
+				installedApp: installed_app,
 			});
 			return ctx.json({subscription_id: subscription.subscriptionId});
 		},
@@ -953,7 +963,7 @@ export function UserAccountController(app: HonoApp) {
 			security: ['bearerToken', 'sessionToken'],
 			tags: ['Users'],
 			description:
-				'Registers a mobile push device token for APNs, Firebase Cloud Messaging, or UnifiedPush. UnifiedPush registrations include the endpoint URL plus Web Push encryption keys.',
+				'Registers a mobile push device for APNs, Firebase Cloud Messaging, or UnifiedPush. A Web Push registration sends the endpoint URL with encryption_key and auth_secret. A raw registration sends the platform push token with no keys.',
 		}),
 		async (ctx) => {
 			const authSession = ctx.get('authSession');

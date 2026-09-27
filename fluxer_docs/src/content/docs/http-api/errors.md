@@ -34,9 +34,7 @@ The error code determines which supplementary members a failure has, and most co
 
 Fluxer answers a field-level failure with 400 and a top-level `errors` array. Each element identifies one failed input field. The [validation error object](/http-api/#validation-error-object) documents the element shape.
 
-A boundary schema validates one of four request targets: the JSON body, the form body, the query string, and the path parameters. A failure on any of them returns the top-level code `INVALID_FORM_BODY`, and each element has a `code` drawn from the [validation error code registry](#validation-error-code-registry) together with a localised `message`.
-
-An operation can also report against a named field without the boundary schema. That failure returns `INVALID_FORM_BODY` as well. Its element has an enumerated `code` and localised `message` when the failure declares a registry code. Otherwise it has a fixed English `message` written at the failure site and no `code`. Every element `code` a client observes is a registry value.
+Invalid JSON bodies, form bodies, query strings and path parameters return `INVALID_FORM_BODY`. Each entry in `errors` identifies a field and its message. An entry can also include a stable `code` from the [validation error code registry](#validation-error-code-registry). Entries without a code have an English message.
 
 [Modify current user settings](/http-api/users/settings/#modify-current-user-settings) is the one operation that answers such a failure with the top-level code `VALIDATION_ERROR` instead of `INVALID_FORM_BODY`. Its trusted domain, age restriction, and synced preferences decisions each report one element with a registry `code` and a fixed English `message`.
 
@@ -62,7 +60,7 @@ The `path` of an element is the dot-joined position of the failed value, so a ne
 An empty or whitespace-only body becomes `{}`, so the response reports the fields the schema then finds missing. A body that does not parse as JSON returns 400 `INVALID_FORM_BODY` with one element at path `body` and code `INVALID_FORMAT`.
 :::
 
-Fluxer normalises empty values on all four targets before validation runs. An empty string becomes `null` wherever it appears, including inside an array element. A nested object becomes `null` when it holds no members. It also becomes `null` when every one of its members is `null` after Fluxer has applied the same rule to each of them. The top-level object itself is never replaced, so a request that sends nothing still reaches the schema as an object and fails on the fields the schema requires.
+Fluxer normalises empty values on all targets before validation runs. An empty string becomes `null` wherever it appears, including inside an array element. A nested object becomes `null` when it holds no members. It also becomes `null` when every one of its members is `null` after Fluxer has applied the same rule to each of them. The top-level object itself is never replaced, so a request that sends nothing still reaches the schema as an object and fails on the fields the schema requires.
 
 :::caution[An enumerated validation failure answers 400 alone]
 A validation failure whose elements have enumerated codes answers 400 with its elements in `errors`. Its top-level code is `INVALID_FORM_BODY` everywhere except [Modify current user settings](/http-api/users/settings/#modify-current-user-settings). Any other status, retry guidance, or response header from the original failure is dropped.
@@ -70,7 +68,7 @@ A validation failure whose elements have enumerated codes answers 400 with its e
 
 ### Default schema failure codes
 
-A boundary schema constraint can name its own [validation code](#validation-error-code-registry). When it names none, Fluxer maps the failure to one of the codes below by the kind of constraint that failed.
+A constraint in a route's request schema can name its own [validation code](#validation-error-code-registry). When it names none, Fluxer maps the failure to one of the codes below by the kind of constraint that failed.
 
 | Constraint | Code | Description |
 | --- | --- | --- |
@@ -112,14 +110,10 @@ Fluxer answers an unrecognised failure with 500 `INTERNAL_SERVER_ERROR` and a ge
 
 ## Client errors as an abuse signal
 
-Every `4xx` response to a request that resolved no authenticated user contributes a weighted abuse signal keyed by the client IP identity. A 429 weighs 3, a 401 weighs 0.75, a 403 weighs 0.5, and every other 4xx weighs 0.25. Fluxer records a signal only when the client address is public and not exempt. An IPv4 client is keyed by its exact address and an IPv6 client by its `/64`. One request records at most one client error signal. A denial produced by an existing IP ban records no signal.
-
-Fluxer records a second signal of weight 1 for a credential that fails to resolve. A request that presents an unrecognised token and is answered 401 contributes both. That signal also records a hash of the credential presented, and Fluxer tracks the number of distinct hashes seen for one IP identity beside the score.
-
-The score and the credential hashes accumulate inside a fixed window, and the window restarts once it elapses. Two triggers fire an automatic ban. The credential trigger fires the first time the count of distinct rejected credentials reaches its threshold. The score trigger fires only after the score has crossed its threshold in three separate windows, which is the default. Both thresholds depend on the address classification, which is datacentre, anonymising, mobile, or residential. An unclassified address takes the residential thresholds. Fluxer never bans a mobile address automatically.
+Repeated invalid requests or credentials can trigger a temporary IP ban. A `4xx` answer to a request with no authenticated user adds to that signal, weighted by status. A 429 weighs 3, a 401 weighs 0.75, a 403 weighs 0.5, and every other 4xx weighs 0.25. One request adds at most one signal, and a request from a private or exempt address adds none. Stop using a rejected credential. Change a rejected request before sending it again, and after a 429 wait `retry_after` before the next attempt.
 
 :::caution[An automatic ban answers every request for 24 hours]
-The window length, both thresholds, and the number of windows the score trigger requires are instance configuration. A tripped ban lasts 24 hours by default. While it holds, Fluxer answers every request from that identity with 403 and the code `GLOBAL_IP_TEMPORARILY_BANNED`.
+A temporary ban lasts 24 hours by default. Requests from the banned address return 403 `GLOBAL_IP_TEMPORARILY_BANNED`. Use `expires_at` from the response when available.
 :::
 
 ## API error code registry
@@ -186,17 +180,9 @@ Bad request
 
 We couldn't resolve that Bluesky handle
 
-### `BLUESKY_OAUTH_CALLBACK_FAILED`
-
-We couldn't complete the Bluesky connection
-
 ### `BLUESKY_OAUTH_NOT_ENABLED`
 
 Bluesky connections are not enabled on this instance
-
-### `BLUESKY_OAUTH_STATE_INVALID`
-
-The authorization request has expired or is invalid
 
 ### `BOTS_CANNOT_CREATE_GUILDS`
 
@@ -553,6 +539,14 @@ Invalid form body
 ### `INVALID_HANDOFF_CODE`
 
 Invalid handoff code
+
+### `INVALID_ORIGIN_HANDOFF_NONCE`
+
+This sign-in transfer doesn't match the one you started
+
+### `INVALID_PASSKEY_BRIDGE_NONCE`
+
+This passkey request could not be confirmed
 
 ### `INVALID_PERMISSIONS_INTEGER`
 
@@ -1114,6 +1108,18 @@ Member wasn't found in this community
 
 Message wasn't found
 
+### `UNKNOWN_ORIGIN_HANDOFF`
+
+This sign-in transfer has expired or was already used
+
+### `UNKNOWN_PASSKEY_BRIDGE`
+
+This passkey request has expired
+
+### `UNKNOWN_PASSKEY_MIGRATION`
+
+There is no passkey to update right now
+
 ### `UNKNOWN_REPORT`
 
 Unknown report
@@ -1405,7 +1411,7 @@ Discoverable communities must have a verification level of at least Low
 
 ### `DISCRIMINATOR_INVALID_FORMAT`
 
-Discriminator must be {min}–{max} digits
+`Discriminator must be {min}–{max} digits`
 
 ### `DISCRIMINATOR_OUT_OF_RANGE`
 
@@ -2130,10 +2136,6 @@ Webhook name must be between {min} and {max} characters
 
 ## Localisation
 
-An error `message` is rendered in one resolved locale. Fluxer uses the configured locale of the authenticated account when the request is authenticated and the account has one. Otherwise it negotiates the request `Accept-Language` value against the canonical [supported locale registry](/topics/locales/#supported-locales). [Locales](/topics/locales/#negotiation) defines the resolution algorithm, including weights, language subtag reduction, and the `en-US` result.
+Messages use the account's locale or the request's `Accept-Language` header, with an English fallback. Early rejections such as IP bans can use the header rather than the account locale. See [Locales](/topics/locales/).
 
-A failure raised before the request locale is resolved, such as an IP ban denial, cannot see the account locale and negotiates `Accept-Language` on its own. That negotiation reads the header entries in order, ignores quality weights, and falls back to `en-US`.
-
-Fluxer localises the `message` of a validation element that has a `code` the same way. A validation element with no `code` has the fixed English string written at the failure site. The `code` field is never localised, either in the envelope or in a validation element.
-
-A code whose catalogue entry is missing for the resolved locale falls back to its English source template. Where no template is registered at all, the `message` falls back to the one the failure supplied, or to the code itself.
+The `code` field is never translated. Validation entries without a code have an English message.

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {buildAPIConfigFromMaster, buildAPIServerOptions} from '@app/api/Config';
 import {loadConfig, resetConfig} from '@fluxer/config/src/ConfigLoader';
 import type {MasterConfig} from '@fluxer/config/src/MasterConfig';
 import {createServer} from '@fluxer/hono/src/Server';
 import {Hono} from 'hono';
 import {afterAll, afterEach, beforeAll, describe, expect, it, test, vi} from 'vitest';
-import {buildAPIConfigFromMaster, buildAPIServerOptions} from './Config';
 
 interface ListeningServer {
 	close: (callback: () => void) => void;
@@ -164,5 +164,59 @@ describe('buildAPIConfigFromMaster stripe legacy prices', () => {
 
 	it('leaves the retired price map undefined when master config does not set one', () => {
 		expect(buildAPIConfigFromMaster(withStripeLegacyPrices(master, undefined)).stripe.legacyPrices).toBeUndefined();
+	});
+});
+
+function withOptionalOutboundLookups(
+	master: MasterConfig,
+	selfHosted: boolean,
+	overrides: {torExitList?: boolean; breachedPasswordCheck?: boolean} = {},
+): MasterConfig {
+	return {
+		...master,
+		integrations: {
+			...master.integrations,
+			tor_exit_list: {enabled: overrides.torExitList},
+			breached_password_check: {enabled: overrides.breachedPasswordCheck},
+		},
+		instance: {
+			...master.instance,
+			self_hosted: selfHosted,
+		},
+	};
+}
+
+describe('buildAPIConfigFromMaster optional outbound lookups', () => {
+	let master: MasterConfig;
+	beforeAll(async () => {
+		master = await loadConfig();
+	});
+
+	it('keeps both lookups on when the instance is not self-hosted', () => {
+		const config = buildAPIConfigFromMaster(withOptionalOutboundLookups(master, false));
+		expect(config.torExitList.enabled).toBe(true);
+		expect(config.breachedPasswordCheck.enabled).toBe(true);
+	});
+
+	it('leaves both lookups off on a self-hosted instance', () => {
+		const config = buildAPIConfigFromMaster(withOptionalOutboundLookups(master, true));
+		expect(config.torExitList.enabled).toBe(false);
+		expect(config.breachedPasswordCheck.enabled).toBe(false);
+	});
+
+	it('lets a self-hosted operator switch each lookup on', () => {
+		const config = buildAPIConfigFromMaster(
+			withOptionalOutboundLookups(master, true, {torExitList: true, breachedPasswordCheck: true}),
+		);
+		expect(config.torExitList.enabled).toBe(true);
+		expect(config.breachedPasswordCheck.enabled).toBe(true);
+	});
+
+	it('lets an operator switch each lookup off when the instance is not self-hosted', () => {
+		const config = buildAPIConfigFromMaster(
+			withOptionalOutboundLookups(master, false, {torExitList: false, breachedPasswordCheck: false}),
+		);
+		expect(config.torExitList.enabled).toBe(false);
+		expect(config.breachedPasswordCheck.enabled).toBe(false);
 	});
 });

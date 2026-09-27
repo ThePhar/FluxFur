@@ -1,6 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import crypto from 'node:crypto';
+import {createTestAccount, type TestAccount} from '@app/api/auth/tests/AuthTestUtils';
+import {createUserID} from '@app/api/BrandedTypes';
+import {Config} from '@app/api/Config';
+import {setupSyncStripeWebhookWorker} from '@app/api/stripe/tests/StripeWebhookTestUtils';
+import {type ApiTestHarness, createApiTestHarness} from '@app/api/test/ApiTestHarness';
+import {
+	createMockWebhookPayload,
+	createStripeApiHandlers,
+	type StripeWebhookEventData,
+} from '@app/api/test/msw/handlers/StripeApiHandlers';
+import {server} from '@app/api/test/msw/server';
+import {createBuilder} from '@app/api/test/TestRequestBuilder';
+import {UserRepository} from '@app/api/user/repositories/UserRepository';
 import {APIErrorCodes} from '@fluxer/constants/src/ApiErrorCodes';
 import {PremiumFlags} from '@fluxer/constants/src/UserConstants';
 import type {
@@ -9,19 +22,6 @@ import type {
 } from '@fluxer/schema/src/domains/premium/PremiumSchemas';
 import {HttpResponse, http} from 'msw';
 import {afterAll, afterEach, beforeAll, beforeEach, describe, expect, test} from 'vitest';
-import {createTestAccount, type TestAccount} from '../../auth/tests/AuthTestUtils';
-import {createUserID} from '../../BrandedTypes';
-import {Config} from '../../Config';
-import {type ApiTestHarness, createApiTestHarness} from '../../test/ApiTestHarness';
-import {
-	createMockWebhookPayload,
-	createStripeApiHandlers,
-	type StripeWebhookEventData,
-} from '../../test/msw/handlers/StripeApiHandlers';
-import {server} from '../../test/msw/server';
-import {createBuilder} from '../../test/TestRequestBuilder';
-import {UserRepository} from '../../user/repositories/UserRepository';
-import {setupSyncStripeWebhookWorker} from './StripeWebhookTestUtils';
 
 const MOCK_CUSTOMER_ID = 'cus_self_serve_refund';
 const MOCK_SUBSCRIPTION_ID = 'sub_self_serve_refund';
@@ -350,7 +350,7 @@ describe('StripeRefundService self-serve refund', () => {
 			expect(response.status).toBe('pending');
 			expect(response.refunded_amount_cents).toBe(0);
 			expect(response.subscription_id).toBeNull();
-			const {UserRepository} = await import('../../user/repositories/UserRepository');
+			const {UserRepository} = await import('@app/api/user/repositories/UserRepository');
 			const updatedUser = await new UserRepository().findUnique(createUserID(BigInt(account.userId)));
 			expect(updatedUser!.firstRefundAt).toBeNull();
 		});
@@ -371,7 +371,7 @@ describe('StripeRefundService self-serve refund', () => {
 			expect(response.status).toBe('failed');
 			expect(response.refunded_amount_cents).toBe(0);
 			expect(response.subscription_id).toBeNull();
-			const {UserRepository} = await import('../../user/repositories/UserRepository');
+			const {UserRepository} = await import('@app/api/user/repositories/UserRepository');
 			const updatedUser = await new UserRepository().findUnique(createUserID(BigInt(account.userId)));
 			expect(updatedUser!.firstRefundAt).toBeNull();
 		});
@@ -485,6 +485,92 @@ describe('StripeRefundService self-serve refund', () => {
 			expect(idempotencyKeys[1]).not.toBeNull();
 			expect(idempotencyKeys[1]).not.toBe(idempotencyKeys[0]);
 			expect(idempotencyKeys[1]).toContain('retry-1');
+		});
+	});
+	describe('self-serve refund teardown targeting', () => {
+		function trackingSubscriptionDeleteHandler(deleted: Array<string>) {
+			return http.delete(`${STRIPE_API_BASE}/v1/subscriptions/:id`, ({params}) => {
+				deleted.push(String(params.id));
+				return HttpResponse.json({id: params.id, object: 'subscription', status: 'canceled'});
+			});
+		}
+
+		function buildRefundUpdatedEvent(opts: {
+			eventId: string;
+			refundId: string;
+			userId: string;
+			invoiceId: string;
+			subscriptionId: string;
+		}): StripeWebhookEventData {
+			return {
+				id: opts.eventId,
+				type: 'refund.updated',
+				data: {
+					object: {
+						id: opts.refundId,
+						object: 'refund',
+						status: 'succeeded',
+						amount: 2500,
+						currency: 'usd',
+						metadata: {
+							refund_kind: 'self_serve',
+							user_id: opts.userId,
+							invoice_id: opts.invoiceId,
+							subscription_id: opts.subscriptionId,
+						},
+					},
+				},
+			};
+		}
+
+		test('leaves a newer subscription alone when the refunded one is no longer current', async () => {
+			server.use(...createStripeApiHandlers().handlers);
+			const deleted: Array<string> = [];
+			server.use(trackingSubscriptionDeleteHandler(deleted));
+			const account = await createTestAccount(harness);
+			const userId = createUserID(BigInt(account.userId));
+			await setStripeIds(harness, account, {
+				stripe_customer_id: MOCK_CUSTOMER_ID,
+				stripe_subscription_id: 'sub_bought_after_the_refund',
+			});
+			await sendWebhook(
+				buildRefundUpdatedEvent({
+					eventId: 'evt_stale_teardown',
+					refundId: 're_stale_teardown',
+					userId: account.userId,
+					invoiceId: 'in_stale_teardown',
+					subscriptionId: 'sub_refunded_and_already_gone',
+				}),
+			);
+			expect(deleted).toEqual([]);
+			const userRepository = new UserRepository();
+			const user = await userRepository.findUnique(userId);
+			expect(user!.stripeSubscriptionId).toBe('sub_bought_after_the_refund');
+		});
+
+		test('cancels the subscription when the refunded one is still current', async () => {
+			server.use(...createStripeApiHandlers().handlers);
+			const deleted: Array<string> = [];
+			server.use(trackingSubscriptionDeleteHandler(deleted));
+			const account = await createTestAccount(harness);
+			const userId = createUserID(BigInt(account.userId));
+			await setStripeIds(harness, account, {
+				stripe_customer_id: MOCK_CUSTOMER_ID,
+				stripe_subscription_id: MOCK_SUBSCRIPTION_ID,
+			});
+			await sendWebhook(
+				buildRefundUpdatedEvent({
+					eventId: 'evt_current_teardown',
+					refundId: 're_current_teardown',
+					userId: account.userId,
+					invoiceId: 'in_current_teardown',
+					subscriptionId: MOCK_SUBSCRIPTION_ID,
+				}),
+			);
+			expect(deleted).toEqual([MOCK_SUBSCRIPTION_ID]);
+			const userRepository = new UserRepository();
+			const user = await userRepository.findUnique(userId);
+			expect(user!.stripeSubscriptionId).toBeNull();
 		});
 	});
 });

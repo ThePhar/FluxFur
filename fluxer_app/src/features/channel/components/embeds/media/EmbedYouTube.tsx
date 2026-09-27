@@ -24,6 +24,8 @@ import {AnimatePresence, motion} from 'framer-motion';
 import {observer} from 'mobx-react-lite';
 import {type FC, useCallback, useEffect, useId, useMemo, useState} from 'react';
 
+const VIDEO_THUMBNAIL_DESCRIPTOR = msg({message: 'Video thumbnail'});
+
 const PLAY_VIDEO_DESCRIPTOR = msg({
 	message: 'Play video',
 	comment: 'Short label in the channel and chat embed you tube. Keep it concise.',
@@ -96,7 +98,7 @@ const Thumbnail: FC<ThumbnailProps> = observer(
 				{posterSrc && (
 					<motion.img
 						src={posterSrc}
-						alt={title || 'Video thumbnail'}
+						alt={title || i18n._(VIDEO_THUMBNAIL_DESCRIPTOR)}
 						className={styles.posterImage}
 						initial={{opacity: posterCachedOnMount ? 1 : 0}}
 						animate={{opacity: posterLoaded ? 1 : 0}}
@@ -194,7 +196,7 @@ export const EmbedYouTube: FC<EmbedYouTubeProps> = observer(({embed, width = YOU
 		() => decodeThumbHashDataURL(embed.thumbnail?.placeholder),
 		[embed.thumbnail?.placeholder],
 	);
-	if (!(embed.video && embed.thumbnail && embed.thumbnail.proxy_url)) {
+	if (!(embed.video && embed.thumbnail?.proxy_url)) {
 		return null;
 	}
 	const videoWidth = embed.video.width ?? YOUTUBE_CONFIG.DEFAULT_WIDTH;

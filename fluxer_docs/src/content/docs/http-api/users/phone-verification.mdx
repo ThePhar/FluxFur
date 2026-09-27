@@ -23,8 +23,8 @@ An account satisfying none of them is refused with 403 `PHONE_ADD_NOT_ELIGIBLE`.
 
 Both operations run the check before they examine the submitted number. A refused account receives no message and consumes no challenge. [Start inbound phone challenge](#start-inbound-phone-challenge) skips the check entirely and issues a challenge for any non-bot session.
 
-:::note[Eligibility reads the stored bitfield]
-The [required actions](/http-api/users/#required-actions) array is filtered: empty for an account with no email address, empty for a contact address holding the required-actions exemption, and stripped of requirements the account already satisfies. An account with no visible required actions can still be eligible.
+:::note[Visible required actions do not determine eligibility]
+An account can qualify even when its [required actions](/http-api/users/#required-actions) array is empty.
 :::
 
 ## Deferred phone requirement
@@ -69,7 +69,7 @@ Keep phone numbers, verification codes, and challenge codes out of logs, analyti
 
 ## Provider lookup verdicts
 
-[Verify phone code](#verify-phone-code) resolves the destination through the configured lookup provider before it checks the code. [Send phone verification](#send-phone-verification) does the same before it sends a code, except on an attempt that policy routes inbound before the lookup, where no lookup runs. A lookup result is cached for 7 days and reused for later attempts against the same number. The rules below run in order, and the first match decides.
+Outbound SMS requires the number to pass the following checks. Fluxer evaluates the rows in order and uses the verdict of the first row whose condition matches. A number routed directly to an inbound challenge does not need this lookup.
 
 | Order | Condition | Verdict |
 | --- | --- | --- |
@@ -89,7 +89,7 @@ Keep phone numbers, verification codes, and challenge codes out of logs, analyti
 
 <sup>3</sup> The threshold is 100 for `US` and `CA`, 70 for `GB`, `DE`, `FR`, `IT`, `ES`, `NL`, `SE`, `NO`, `DK`, `FI`, `AU`, `NZ`, `JP`, `KR`, `CH`, `AT`, `BE`, `IE`, and `PT`, and 35 for every other country and for a lookup reporting no country
 
-Only [Send phone verification](#send-phone-verification) converts an inbound verdict into a challenge. [Verify phone code](#verify-phone-code) refuses the same three verdicts with 400 `INVALID_PHONE_NUMBER`.
+Only [Send phone verification](#send-phone-verification) converts an inbound verdict into a challenge. [Verify phone code](#verify-phone-code) refuses the same verdicts with 400 `INVALID_PHONE_NUMBER`.
 
 ## Inbound challenge reason values
 
@@ -112,7 +112,7 @@ A reason explains why the attempt could not complete over outbound SMS.
 
 ## SMS delivery object
 
-Confirmation that the SMS provider accepted a one-time code for delivery. [Send phone verification](#send-phone-verification) returns it on an outbound result, and [Verify phone code](#verify-phone-code) then takes the number itself.
+Confirmation that the SMS provider accepted a one-time code for delivery. [Send phone verification](#send-phone-verification) returns it on an outbound result. The client then sends the same number and the delivered code to [Verify phone code](#verify-phone-code).
 
 ### Structure
 
@@ -122,7 +122,7 @@ Confirmation that the SMS provider accepted a one-time code for delivery. [Send 
 
 ## Inbound challenge object
 
-The instructions for texting a code to Fluxer, returned by [Send phone verification](#send-phone-verification) when policy routed the attempt inbound. `channel` tells the two response shapes apart.
+The instructions for texting a code to Fluxer, returned by [Send phone verification](#send-phone-verification) when policy routed the attempt inbound. `channel` tells the response shapes apart.
 
 ### Structure
 
@@ -213,7 +213,7 @@ Several independent policies can force the inbound channel, and each one overrid
 
 An attempt that survives that step passes through phone attempt risk controls keyed by account, by client IP address, and by /24 network. A hard block returns 429 `PHONE_RATE_LIMIT_EXCEEDED` with a `Retry-After` of 86400. A captcha decision returns 400 `CAPTCHA_REQUIRED`, and this route reads no [CAPTCHA](/topics/captcha/) solution header, so the attempt cannot be retried with a solution. An inbound decision returns a challenge with the `behavioural_risk` reason.
 
-An earlier attempt against the same account or number can record a provider cooldown, and a later request under that cooldown returns 429 `PHONE_RATE_LIMIT_EXCEEDED`. The destination is then resolved through [provider lookup](#provider-lookup-verdicts). A number that has already completed verification twice is refused with 400 `PHONE_ALREADY_USED`.
+When the SMS provider throttles an earlier send or code check for the same account or number, Fluxer records a cooldown. A request during that cooldown returns 429 `PHONE_RATE_LIMIT_EXCEEDED`. The destination is then resolved through [provider lookup](#provider-lookup-verdicts). A number that has already completed verification twice is refused with 400 `PHONE_ALREADY_USED`.
 
 Further controls bound outbound delivery to 3 sends per 6 hours for each account and 3 sends per 5 days for each number. Either denial returns 429 `PHONE_RATE_LIMIT_EXCEEDED`. The provider can also refuse the send. An invalid destination returns 400 `INVALID_PHONE_NUMBER`, and a throttle returns 429 `PHONE_RATE_LIMIT_EXCEEDED`. Every other refusal, an unreachable provider included, returns 400 `SMS_VERIFICATION_UNAVAILABLE`. On an instance where the inbound flow or its receiving number is unconfigured, an attempt routed inbound returns the same code.
 
@@ -242,8 +242,6 @@ On the 429, `X-RateLimit-Scope` reports `shared` when the per-number control or 
 ### Side effects
 
 On an outbound result, Fluxer asks the configured SMS provider to deliver a one-time code. On an inbound result, it creates a one-use challenge for the current account.
-
-Fluxer records an attempt against the phone attempt risk counters only once it reaches [provider lookup](#provider-lookup-verdicts).
 
 ### Rate limit
 
@@ -292,7 +290,7 @@ The configured SMS provider checks the number and the code together, so the prov
 <sup>1</sup> Stripped of control and formatting characters and trimmed before the length check, and the normalised value is what the provider checks
 
 :::caution[A third verification consumes the code before refusing]
-A number can complete verification twice, and each success refreshes that record for a further 31 days. A third attempt is refused with 400 `PHONE_ALREADY_USED`, but only after the provider has accepted the code.
+A number can complete verification twice, and each success restarts a 31-day window in which Fluxer counts successes for that number. A third attempt is refused with 400 `PHONE_ALREADY_USED`, but only after the provider has accepted the code.
 :::
 
 ### Response
@@ -310,7 +308,7 @@ On the 429, `X-RateLimit-Scope` reports `shared` when a number-scoped provider t
 
 ### Side effects
 
-Fluxer marks the account as holding a verified phone. It then clears every phone requirement from the stored suspicious activity bitfield: `REQUIRE_VERIFIED_PHONE`, `REQUIRE_REVERIFIED_PHONE`, the four combined email-or-phone requirements, `REQUIRE_INBOUND_PHONE_VERIFICATION`, and the marker deferring a phone requirement until the account joins a qualifying community guild. Email-only requirements remain, so an account that also owes email verification stays restricted.
+Fluxer marks the account as holding a verified phone. It then clears every phone requirement from the stored suspicious activity bitfield: `REQUIRE_VERIFIED_PHONE`, `REQUIRE_REVERIFIED_PHONE`, the combined email-or-phone requirements, `REQUIRE_INBOUND_PHONE_VERIFICATION`, and the marker deferring a phone requirement until the account joins a qualifying community guild. Email-only requirements remain, so an account that also owes email verification stays restricted.
 
 Fluxer clears the spammer flag when present and dispatches [User Update](/gateway/events/#user-update). When the spammer flag was cleared, Fluxer also dispatches [Guild Member Update](/gateway/events/#guild-member-update) for the account in every guild it belongs to, before the HTTP response returns.
 

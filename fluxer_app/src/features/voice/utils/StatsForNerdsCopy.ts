@@ -301,12 +301,9 @@ async function collectVoiceSettingsMetadata(): Promise<Record<string, unknown>> 
 		preferredScreenShareCodec: VoiceSettings.getPreferredScreenShareCodec(),
 		screenShareContentHint: VoiceSettings.getScreenShareContentHint(),
 		screenShareEncoderMode: VoiceSettings.getScreenShareEncoderMode(),
-		screenShareSoftwareQuality: VoiceSettings.getScreenShareSoftwareQuality(),
 		screenShareScalabilityMode: VoiceSettings.getScreenShareScalabilityMode(),
-		screenShareBackupCodecMode: VoiceSettings.getScreenShareBackupCodecMode(),
 		screenShareMaxBitrateMbps:
 			getScreenShareBitrateBps(configuredScreenShare.resolution, configuredScreenShare.frameRate) / 1000000,
-		openH264Enabled: VoiceSettings.getOpenH264Enabled(),
 		linuxAudioCapture: {
 			workaround: VoiceSettings.getLinuxAudioCaptureWorkaround(),
 			onlySpeakers: VoiceSettings.getLinuxAudioCaptureOnlySpeakers(),
@@ -515,9 +512,7 @@ export function collectStatsForNerdsSnapshot(): StatsForNerdsData {
 			codecPreferenceOrder: [...getScreenShareCodecPreferenceOrder()],
 			contentHint: VoiceSettings.getScreenShareContentHint(),
 			encoderMode: VoiceSettings.getScreenShareEncoderMode(),
-			softwareQuality: VoiceSettings.getScreenShareSoftwareQuality(),
 			scalabilityMode: VoiceSettings.getScreenShareScalabilityMode(),
-			backupCodecMode: VoiceSettings.getScreenShareBackupCodecMode(),
 			maxBitrateMbps:
 				(getPublishedScreenShareMaxBitrateBps(localParticipant) ??
 					getScreenShareBitrateBps(effectiveScreenShareSettings.resolution, effectiveScreenShareSettings.frameRate)) /
@@ -528,7 +523,6 @@ export function collectStatsForNerdsSnapshot(): StatsForNerdsData {
 			shareDesktopAudio: VoiceSettings.getShareDesktopAudio(),
 			shareAppAudio: VoiceSettings.getShareAppAudio(),
 			muteStreamAudio: VoiceSettings.getMuteStreamAudio(),
-			openH264Enabled: VoiceSettings.getOpenH264Enabled(),
 		},
 		screenShareAudioCapture: {
 			nativeCapture: getNativeAudioCaptureDiagnosticState(),

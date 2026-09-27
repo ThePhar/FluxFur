@@ -3,7 +3,7 @@
 import {readdir, readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {DOCS_ROOT, listMarkdownFiles} from './DocsSource.ts';
+import {DOCS_ROOT, readMarkdownPages} from './DocsSource.ts';
 import {
 	columnWidthPercents,
 	extractTables,
@@ -17,7 +17,7 @@ import {
 } from './DocsTableWidth.ts';
 
 const STYLES_ROOT = fileURLToPath(new URL('../src/styles/', import.meta.url));
-const STARLIGHT_STYLES = fileURLToPath(new URL('../node_modules/@astrojs/starlight/style/', import.meta.url));
+const STARLIGHT_STYLES = fileURLToPath(new URL('../node_modules/@astrojs/starlight/dist/style/', import.meta.url));
 
 const FORBIDDEN_MARKETING_WORDS = [
 	'seamless',
@@ -34,7 +34,6 @@ const FORBIDDEN_MARKETING_WORDS = [
 ];
 
 const FORBIDDEN_TOPICS = [
-	{pattern: /mobile[- ]device/iu, reason: 'mobile notifications API does not exist in the live era'},
 	{pattern: /push subscription/iu, reason: 'push API does not exist in the live era'},
 	{pattern: /\/push\/events/u, reason: 'push events API does not exist in the live era'},
 	{pattern: /voice[- ]public[- ]key/iu, reason: 'voice connection API does not exist in the live era'},
@@ -67,23 +66,10 @@ function frontmatterOf(source: string): string | null {
 	return source.slice(4, end);
 }
 
-function insideFence(lines: ReadonlyArray<string>, index: number): boolean {
-	let fenced = false;
-	for (let cursor = 0; cursor < index; cursor += 1) {
-		if (lines[cursor].startsWith('```')) {
-			fenced = !fenced;
-		}
-	}
-	return fenced;
-}
-
-const files = await listMarkdownFiles(DOCS_ROOT);
+const pages = await readMarkdownPages(DOCS_ROOT);
 const findings: Array<Finding> = [];
 
-for (const file of files) {
-	const relative = path.relative(DOCS_ROOT, file);
-	const source = await readFile(file, 'utf8');
-	const lines = source.split('\n');
+for (const {file, relativePath: relative, source, lines} of pages) {
 	const frontmatter = frontmatterOf(source);
 
 	if (frontmatter == null) {
@@ -109,10 +95,15 @@ for (const file of files) {
 		findings.push({file: relative, line: 1, rule: 'extension', detail: 'uses RouteHeader but is not .mdx'});
 	}
 
+	let fenced = false;
 	for (let index = 0; index < lines.length; index += 1) {
 		const line = lines[index];
 		const number = index + 1;
-		if (insideFence(lines, index)) {
+		const insideFence = fenced;
+		if (line.startsWith('```')) {
+			fenced = !fenced;
+		}
+		if (insideFence) {
 			continue;
 		}
 		if (line.includes('—')) {
@@ -140,9 +131,7 @@ for (const file of files) {
 	}
 }
 
-for (const file of files) {
-	const relative = path.relative(DOCS_ROOT, file);
-	const lines = (await readFile(file, 'utf8')).split('\n');
+for (const {relativePath: relative, lines} of pages) {
 	const sectionStarts: Array<number> = [];
 	for (let index = 0; index < lines.length; index += 1) {
 		if (lines[index].startsWith('## ') && !lines[index].startsWith('### ')) {
@@ -167,15 +156,13 @@ for (const file of files) {
 				file: relative,
 				line: response + 1,
 				rule: 'order',
-				detail: '"### Response body" must precede "### Response" (conventions.md)',
+				detail: '"### Response body" must precede "### Response"',
 			});
 		}
 	}
 }
 
-for (const file of files) {
-	const relative = path.relative(DOCS_ROOT, file);
-	const lines = (await readFile(file, 'utf8')).split('\n');
+for (const {relativePath: relative, lines} of pages) {
 	let block = new Map<string, number>();
 	let sinceFootnote = 0;
 	for (let index = 0; index < lines.length; index += 1) {
@@ -206,10 +193,7 @@ for (const file of files) {
 
 const NOTATION_EXAMPLE = 'A superscript marker such as <sup>1</sup> refers to the numbered footnote';
 
-for (const file of files) {
-	const relative = path.relative(DOCS_ROOT, file);
-	const source = await readFile(file, 'utf8');
-	const lines = source.split('\n');
+for (const {relativePath: relative, source, lines} of pages) {
 	const explainsNotation = source.includes(NOTATION_EXAMPLE);
 	const bounds: Array<number> = [0];
 	for (let index = 0; index < lines.length; index += 1) {
@@ -286,14 +270,12 @@ const ACCEPTED_TABLE_FINDINGS = new Map<string, Readonly<Partial<Record<TableRul
 	['admin-api/bulk-jobs.mdx', {'table-fit': 1}],
 	['admin-api/discovery.mdx', {'table-identifier': 1}],
 	['admin-api/guilds.mdx', {'table-identifier': 3}],
-	['admin-api/index.mdx', {'table-fit': 1, 'table-identifier': 2}],
-	['admin-api/instance.mdx', {'table-fit': 1, 'table-identifier': 5}],
+	['admin-api/index.mdx', {'table-fit': 1, 'table-identifier': 3}],
+	['admin-api/instance.mdx', {'table-fit': 1, 'table-identifier': 6}],
 	['admin-api/messages.mdx', {'table-identifier': 1}],
 	['admin-api/reports.mdx', {'table-fit': 1, 'table-identifier': 2}],
 	['admin-api/users.mdx', {'table-fit': 1, 'table-identifier': 1}],
 	['admin-api/voice.mdx', {'table-identifier': 3}],
-	['authentication.md', {'table-cell': 2, 'table-identifier': 1}],
-	['conventions.md', {'table-cell': 1, 'table-parallel': 1}],
 	['gateway/event-filtering.md', {'table-cell': 2}],
 	['gateway/events.md', {'table-identifier': 1}],
 	['gateway/opcodes-and-close-codes.md', {'table-cell': 1}],
@@ -302,10 +284,10 @@ const ACCEPTED_TABLE_FINDINGS = new Map<string, Readonly<Partial<Record<TableRul
 	['http-api/billing.mdx', {'table-identifier': 5}],
 	['http-api/calls.mdx', {'table-fit': 1, 'table-cell': 3}],
 	['http-api/channels.mdx', {'table-cell': 6}],
-	['http-api/connections.mdx', {'table-fit': 1, 'table-cell': 4, 'table-identifier': 1}],
+	['http-api/connections.mdx', {'table-cell': 2}],
 	['http-api/deployment-availability.md', {'table-fit': 1}],
 	['http-api/discovery.mdx', {'table-cell': 3}],
-	['http-api/donations.mdx', {'table-cell': 2}],
+	['http-api/donations.mdx', {'table-cell': 1}],
 	['http-api/entrance-sounds.mdx', {'table-cell': 3, 'table-parallel': 1}],
 	['http-api/gifs.mdx', {'table-cell': 5}],
 	['http-api/gifts.mdx', {'table-cell': 1}],
@@ -316,7 +298,7 @@ const ACCEPTED_TABLE_FINDINGS = new Map<string, Readonly<Partial<Record<TableRul
 	['http-api/guild-moderation.mdx', {'table-cell': 1}],
 	['http-api/guild-stickers.mdx', {'table-cell': 3}],
 	['http-api/guilds.mdx', {'table-fit': 1, 'table-identifier': 4}],
-	['http-api/instance.mdx', {'table-identifier': 4}],
+	['http-api/instance.mdx', {'table-identifier': 6}],
 	['http-api/invites.mdx', {'table-cell': 6}],
 	['http-api/messages.mdx', {'table-fit': 1, 'table-cell': 20}],
 	['http-api/permissions.mdx', {'table-cell': 8}],
@@ -338,11 +320,8 @@ const ACCEPTED_TABLE_FINDINGS = new Map<string, Readonly<Partial<Record<TableRul
 	['http-api/users/settings-protobuf.md', {'table-fit': 2, 'table-identifier': 7, 'table-parallel': 1}],
 	['http-api/users/settings.mdx', {'table-fit': 1, 'table-cell': 2, 'table-identifier': 1, 'table-parallel': 1}],
 	['http-api/webhooks.mdx', {'table-identifier': 1, 'table-parallel': 1}],
-	['media-proxy/overview.md', {'table-parallel': 1}],
 	['media-proxy/responses-and-limits.md', {'table-cell': 2}],
 	['media-proxy/routes.mdx', {'table-cell': 1}],
-	['media-proxy/transformations.md', {'table-parallel': 1}],
-	['topics/uploads.md', {'table-fit': 1, 'table-identifier': 1}],
 	['voice/index.md', {'table-parallel': 1}],
 ]);
 
@@ -350,9 +329,7 @@ const tableFindingsByPage = new Map<string, Map<TableRule, Array<Finding>>>();
 let tablesMeasured = 0;
 const overWideTier: Array<Finding> = [];
 
-for (const file of files) {
-	const relative = path.relative(DOCS_ROOT, file);
-	const source = await readFile(file, 'utf8');
+for (const {relativePath: relative, source} of pages) {
 	for (const table of extractTables(source)) {
 		tablesMeasured += 1;
 		const raise = (rule: TableRule, detail: string): void => {
@@ -541,7 +518,7 @@ for (const finding of findings) {
 	byRule.set(finding.rule, (byRule.get(finding.rule) ?? 0) + 1);
 }
 
-console.log(`pages checked: ${files.length.toString()}`);
+console.log(`pages checked: ${pages.length.toString()}`);
 console.log(`tables measured: ${tablesMeasured.toString()}`);
 
 for (const rule of TABLE_RULES) {

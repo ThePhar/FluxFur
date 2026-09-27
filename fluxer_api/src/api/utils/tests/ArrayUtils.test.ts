@@ -1,5 +1,5 @@
+import {chunkArray} from '@app/api/utils/ArrayUtils';
 import {describe, expect, it} from 'vitest';
-import {chunkArray} from '../ArrayUtils';
 
 describe('chunkArray', () => {
 	it.each([
@@ -23,15 +23,11 @@ describe('chunkArray', () => {
 		expect(chunkArray([], 2)).toEqual([]);
 	});
 
-	it.each([
-		0,
-		-1,
-		1.5,
-		Number.NaN,
-		Number.POSITIVE_INFINITY,
-		Number.MAX_SAFE_INTEGER + 1,
-	])('rejects invalid chunk size %j even for empty input', (size) => {
-		expect(() => chunkArray([1], size)).toThrow('Chunk size must be a positive safe integer');
-		expect(() => chunkArray([], size)).toThrow('Chunk size must be a positive safe integer');
-	});
+	it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+		'rejects invalid chunk size %j even for empty input',
+		(size) => {
+			expect(() => chunkArray([1], size)).toThrow('Chunk size must be a positive safe integer');
+			expect(() => chunkArray([], size)).toThrow('Chunk size must be a positive safe integer');
+		},
+	);
 });

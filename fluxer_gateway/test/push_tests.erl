@@ -9,6 +9,63 @@ clear_channel_notifications_disabled_by_default_test() ->
     erase_persistent_term(push_clear_notifications_enabled),
     ?assertEqual(ok, push:clear_channel_notifications(1, 2, 3)).
 
+a_saturated_dispatcher_retries_the_clear_before_dropping_it_test() ->
+    ok = meck:new(push_dispatcher, [passthrough, no_link]),
+    try
+        ok = meck:expect(
+            push_dispatcher, enqueue_clear_notifications, fun(_U, _C, _M, _T) -> dropped end
+        ),
+        State = #{badge_counts_ttl_seconds => 0},
+        ?assertEqual(
+            {noreply, State},
+            push:handle_info({retry_clear_notifications, 1, 2, 3, 0}, State)
+        ),
+        receive
+            {retry_clear_notifications, 1, 2, 3, 1} -> ok
+        after 2000 -> erlang:error(no_retry_scheduled)
+        end
+    after
+        meck:unload(push_dispatcher)
+    end.
+
+a_clear_is_dropped_only_after_the_retry_budget_is_spent_test() ->
+    ok = meck:new(push_dispatcher, [passthrough, no_link]),
+    try
+        ok = meck:expect(
+            push_dispatcher, enqueue_clear_notifications, fun(_U, _C, _M, _T) -> dropped end
+        ),
+        State = #{badge_counts_ttl_seconds => 0},
+        ?assertEqual(
+            {noreply, State},
+            push:handle_info({retry_clear_notifications, 1, 2, 3, 3}, State)
+        ),
+        receive
+            {retry_clear_notifications, _, _, _, _} -> erlang:error(retried_past_budget)
+        after 700 -> ok
+        end
+    after
+        meck:unload(push_dispatcher)
+    end.
+
+an_enrolled_user_gets_clears_while_the_fleet_switch_is_off_test() ->
+    erase_persistent_term(push_noop),
+    erase_persistent_term(push_enrolled_clear_notifications_enabled),
+    persistent_term:put(push_clear_notifications_enabled, false),
+    try
+        ?assertEqual(ok, push:clear_channel_notifications(1, 2, 3))
+    after
+        erase_persistent_term(push_clear_notifications_enabled)
+    end.
+
+the_cohort_switch_can_be_turned_off_on_its_own_test() ->
+    erase_persistent_term(push_noop),
+    persistent_term:put(push_enrolled_clear_notifications_enabled, false),
+    try
+        ?assertEqual(ok, push:clear_channel_notifications(1, 2, 3))
+    after
+        erase_persistent_term(push_enrolled_clear_notifications_enabled)
+    end.
+
 push_owner_key_prefers_first_recipient_test() ->
     ?assertEqual(
         42,

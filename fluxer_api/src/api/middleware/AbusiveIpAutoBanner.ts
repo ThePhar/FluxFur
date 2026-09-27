@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {createHash, randomUUID} from 'node:crypto';
+import {AdminRepository} from '@app/api/admin/AdminRepository';
+import {Config} from '@app/api/Config';
+import {IP_BAN_REFRESH_CHANNEL} from '@app/api/constants/IpBan';
+import {Logger} from '@app/api/Logger';
+import {ipBanCache} from '@app/api/middleware/IpBanMiddleware';
+import {getIpInfoService} from '@app/api/middleware/ServiceMiddleware';
+import {getKVClient} from '@app/api/middleware/ServiceRegistry';
+import {getCacheService} from '@app/api/middleware/ServiceSingletons';
+import {isAutoBanExemptAsn} from '@app/api/risk/AutoBanAsnExemptions';
+import {isIpBanExempt} from '@app/api/risk/IpBanExemptions';
+import type {HonoEnv} from '@app/api/types/HonoEnv';
+import {parseJsonRecord} from '@app/api/utils/JsonBoundaryUtils';
 import {extractClientIp} from '@fluxer/ip_utils/src/ClientIp';
 import {getSameIpDecisionKey, isPublicIpAddress, parseIpAddress} from '@fluxer/ip_utils/src/IpAddress';
 import type {IpInfoLookupResult} from '@pkgs/geoip/src/IpInfoService';
 import type {IKVProvider, IKVSubscription} from '@pkgs/kv_client/src/IKVProvider';
 import {createMiddleware} from 'hono/factory';
-import {AdminRepository} from '../admin/AdminRepository';
-import {Config} from '../Config';
-import {IP_BAN_REFRESH_CHANNEL} from '../constants/IpBan';
-import {Logger} from '../Logger';
-import {isIpBanExempt} from '../risk/IpBanExemptions';
-import type {HonoEnv} from '../types/HonoEnv';
-import {parseJsonRecord} from '../utils/JsonBoundaryUtils';
-import {ipBanCache} from './IpBanMiddleware';
-import {getIpInfoService} from './ServiceMiddleware';
-import {getKVClient} from './ServiceRegistry';
-import {getCacheService} from './ServiceSingletons';
 
-type IpClass = 'datacenter' | 'anonymous' | 'mobile' | 'residential' | 'unknown';
+type IpClass = 'datacenter' | 'anonymous' | 'mobile' | 'residential' | 'unknown' | 'exempt';
 type TriggerKind = 'score' | 'token_diversity' | 'score_and_token_diversity';
 
 interface AbuseRecord {
@@ -34,6 +35,13 @@ interface OutboundEntry {
 	scoreDelta: number;
 	lookupIp: string;
 	newTokenHashes: Set<string>;
+}
+
+interface OutboundDeltaBatchEntry {
+	key: string;
+	pending: OutboundEntry;
+	scoreDelta: number;
+	tokenHashes: Set<string>;
 }
 
 interface PersistentScoreState {
@@ -97,7 +105,7 @@ const IP_CLASS_CLAIM_TTL_SECONDS = positiveNumberFromEnv('FLUXER_ABUSE_IP_CLASS_
 const DEFAULT_IP_CLASS_PENDING_TTL_MS = positiveNumberFromEnv('FLUXER_ABUSE_IP_CLASS_PENDING_TTL_MS', 20_000);
 const DEFAULT_IP_CLASS_NEGATIVE_TTL_MS = positiveNumberFromEnv('FLUXER_ABUSE_IP_CLASS_NEGATIVE_TTL_MS', 300_000);
 const DEFAULT_IP_CLASS_HINT_TTL_MS = positiveNumberFromEnv('FLUXER_ABUSE_IP_CLASS_HINT_TTL_MS', 600_000);
-const IP_CLASSES = ['datacenter', 'anonymous', 'mobile', 'residential', 'unknown'] as const;
+const IP_CLASSES = ['datacenter', 'anonymous', 'mobile', 'residential', 'unknown', 'exempt'] as const;
 const POD_ID = process.env.HOSTNAME ?? randomUUID();
 
 type ReplicatedTick = [banKey: string, scoreDelta: number, tokenHashes: Array<string>, lookupIp: string];
@@ -129,11 +137,7 @@ const recordedClientErrorRequests = new WeakSet<Request>();
 const pendingAutoBanTasks = new Set<Promise<void>>();
 const adminRepository = new AdminRepository();
 
-let kvPublisher: IKVProvider | null = null;
-let flushTimer: NodeJS.Timeout | null = null;
-let kvSubscription: IKVSubscription | null = null;
-let messageHandler: ((channel: string, message: string) => void) | null = null;
-let errorHandler: ((error: Error) => void) | null = null;
+let abuseReplication: AbuseReplicationSubscriber | null = null;
 let ipClassPendingTtlMs = DEFAULT_IP_CLASS_PENDING_TTL_MS;
 let ipClassNegativeTtlMs = DEFAULT_IP_CLASS_NEGATIVE_TTL_MS;
 let ipClassHintTtlMs = DEFAULT_IP_CLASS_HINT_TTL_MS;
@@ -182,6 +186,7 @@ function scoreThresholdFor(ipClass: IpClass): number {
 			return THRESHOLD_MOBILE;
 		case 'residential':
 		case 'unknown':
+		case 'exempt':
 			return THRESHOLD_RESIDENTIAL;
 	}
 }
@@ -196,6 +201,7 @@ function tokenDiversityThresholdFor(ipClass: IpClass): number {
 			return TOKEN_DIVERSITY_MOBILE;
 		case 'residential':
 		case 'unknown':
+		case 'exempt':
 			return TOKEN_DIVERSITY_RESIDENTIAL;
 	}
 }
@@ -339,7 +345,7 @@ function queueOutboundDelta(
 	tokenHash: string | undefined,
 	hadToken: boolean,
 ): void {
-	if (!kvPublisher) return;
+	if (!abuseReplication?.isActive) return;
 	if (!outboundDeltas.has(signalIp.banKey) && outboundDeltas.size >= MAX_TRACKED_IPS) return;
 	const outbound = getOrInitOutbound(signalIp);
 	outbound.scoreDelta += weight;
@@ -377,7 +383,7 @@ function markScoreThresholdWindow(key: string, rec: AbuseRecord, now: number): n
 
 async function claimIpClassLookup(key: string): Promise<boolean> {
 	if (!IP_CLASS_CLAIM_ENABLED) return true;
-	if (!kvPublisher) return true;
+	if (!abuseReplication?.isActive) return true;
 	try {
 		return await getKVClient().setnx(`${IP_CLASS_CLAIM_PREFIX}${key}`, POD_ID, IP_CLASS_CLAIM_TTL_SECONDS);
 	} catch {
@@ -387,6 +393,10 @@ async function claimIpClassLookup(key: string): Promise<boolean> {
 
 async function runIpClassLookup(key: string, lookupIp: string): Promise<void> {
 	try {
+		if (await isAutoBanExemptAsn(lookupIp)) {
+			setOwnIpClass(key, lookupIp, 'exempt', false);
+			return;
+		}
 		if (!(await claimIpClassLookup(key))) return;
 		const result = await getIpInfoService().lookup(lookupIp, {source: 'AbusiveIpAutoBanner', reason: 'classify'});
 		setOwnIpClass(key, lookupIp, classifyIpInfo(result), !result.available);
@@ -422,6 +432,14 @@ function maybeFireAutoBan(key: string, rec: AbuseRecord): void {
 	const overTokenDiversity = rec.distinctTokenHashes.size >= tokenThreshold;
 	if (!overScore && !overTokenDiversity) return;
 	if (resolved.blocked) {
+		return;
+	}
+	if (ipClass === 'exempt') {
+		rec.autoBanFired = true;
+		Logger.warn(
+			{ip: key, ipClass, score: rec.score, distinctTokens: rec.distinctTokenHashes.size},
+			'[abuse-auto-ban] Skipping automatic IP ban because the ASN is exempt',
+		);
 		return;
 	}
 	if (shouldSkipAutoBanForIpClass(ipClass)) {
@@ -558,10 +576,10 @@ function applyReplicatedTick(tick: ReplicatedTick): void {
 	maybeFireAutoBan(banKey, rec);
 }
 
-async function flushOutbound(): Promise<void> {
-	if (!kvPublisher || outboundDeltas.size === 0) return;
+async function flushOutbound(publisher: IKVProvider): Promise<void> {
+	if (outboundDeltas.size === 0) return;
 	const ticks: Array<ReplicatedTick> = [];
-	const selectedKeys: Array<string> = [];
+	const batch: Array<OutboundDeltaBatchEntry> = [];
 	for (const [key, entry] of outboundDeltas) {
 		const tokenHashes: Array<string> = [];
 		for (const tokenHash of entry.newTokenHashes) {
@@ -569,40 +587,54 @@ async function flushOutbound(): Promise<void> {
 			if (tokenHashes.length >= MAX_NEW_TOKENS_PER_TICK) break;
 		}
 		ticks.push([key, entry.scoreDelta, tokenHashes, entry.lookupIp]);
-		selectedKeys.push(key);
+		batch.push({key, pending: entry, scoreDelta: entry.scoreDelta, tokenHashes: entry.newTokenHashes});
+		entry.scoreDelta = 0;
+		entry.newTokenHashes = new Set();
 		if (ticks.length >= MAX_BATCH_TICKS) break;
 	}
 	const message: ReplicationMessage = {sender: POD_ID, ticks, ts: Date.now()};
 	try {
-		await kvPublisher.publish(REPLICATION_CHANNEL, JSON.stringify(message));
-		for (const key of selectedKeys) {
-			outboundDeltas.delete(key);
+		await publisher.publish(REPLICATION_CHANNEL, JSON.stringify(message));
+		for (const {key, pending} of batch) {
+			if (outboundDeltas.get(key) === pending && pending.scoreDelta === 0) {
+				outboundDeltas.delete(key);
+			}
 		}
 	} catch (err) {
+		for (const {key, pending, scoreDelta, tokenHashes} of batch) {
+			if (outboundDeltas.get(key) !== pending) continue;
+			pending.scoreDelta += scoreDelta;
+			for (const tokenHash of pending.newTokenHashes) {
+				tokenHashes.add(tokenHash);
+			}
+			pending.newTokenHashes = tokenHashes;
+		}
 		Logger.warn({err, tickCount: ticks.length}, '[abuse-auto-ban] Failed to publish abuse replication batch');
 	}
 }
 
 function queueOutboundIpClass(key: string, lookupIp: string, ipClass: IpClass): void {
-	if (!kvPublisher) return;
+	if (!abuseReplication?.isActive) return;
 	if (!outboundIpClasses.has(key) && outboundIpClasses.size >= MAX_TRACKED_IPS) return;
 	outboundIpClasses.set(key, {lookupIp, ipClass});
 }
 
-async function flushOutboundIpClasses(): Promise<void> {
-	if (!kvPublisher || outboundIpClasses.size === 0) return;
+async function flushOutboundIpClasses(publisher: IKVProvider): Promise<void> {
+	if (outboundIpClasses.size === 0) return;
 	const entries: Array<IpClassEntry> = [];
-	const selectedKeys: Array<string> = [];
+	const batch: Array<[string, OutboundIpClass]> = [];
 	for (const [key, entry] of outboundIpClasses) {
 		entries.push([key, entry.lookupIp, entry.ipClass]);
-		selectedKeys.push(key);
+		batch.push([key, entry]);
 		if (entries.length >= MAX_BATCH_TICKS) break;
 	}
 	const message: IpClassMessage = {sender: POD_ID, entries, ts: Date.now()};
 	try {
-		await kvPublisher.publish(IP_CLASS_CHANNEL, JSON.stringify(message));
-		for (const key of selectedKeys) {
-			outboundIpClasses.delete(key);
+		await publisher.publish(IP_CLASS_CHANNEL, JSON.stringify(message));
+		for (const [key, entry] of batch) {
+			if (outboundIpClasses.get(key) === entry) {
+				outboundIpClasses.delete(key);
+			}
 		}
 	} catch (err) {
 		Logger.warn({err, entryCount: entries.length}, '[abuse-auto-ban] Failed to publish abuse IP class batch');
@@ -655,57 +687,118 @@ function handleReplicationMessage(channel: string, message: string): void {
 	}
 }
 
-export async function startAbuseReplicationSubscriber(kvClient: IKVProvider | null): Promise<void> {
-	if (!kvClient || kvSubscription) return;
-	kvPublisher = kvClient;
-	const subscription = kvClient.duplicate();
-	kvSubscription = subscription;
-	messageHandler = handleReplicationMessage;
-	errorHandler = (error: Error) => {
-		Logger.warn({error}, '[abuse-auto-ban] Abuse replication subscription error');
+class AbuseReplicationSubscriber {
+	private readonly subscription: IKVSubscription;
+	private readonly flushes = new Map<string, Promise<void>>();
+	private phase: 'starting' | 'running' | 'stopping' | 'stopped' = 'starting';
+	private startCompletion: Promise<void> | null = null;
+	private stopCompletion: Promise<void> | null = null;
+	private flushTimer: NodeJS.Timeout | null = null;
+	private readonly messageHandler = (channel: string, message: string): void => {
+		if (this.isActive) handleReplicationMessage(channel, message);
 	};
-	try {
-		await subscription.connect();
-		await subscription.subscribe(REPLICATION_CHANNEL, IP_CLASS_CHANNEL);
-		subscription.on('message', messageHandler);
-		subscription.on('error', errorHandler);
-		flushTimer = setInterval(() => {
-			void flushOutbound();
-			void flushOutboundIpClasses();
+	private readonly errorHandler = (error: Error): void => {
+		if (this.isActive) Logger.warn({error}, '[abuse-auto-ban] Abuse replication subscription error');
+	};
+
+	constructor(private readonly publisher: IKVProvider) {
+		this.subscription = publisher.duplicate();
+	}
+
+	get isActive(): boolean {
+		return this.phase === 'starting' || this.phase === 'running';
+	}
+
+	start(): Promise<void> {
+		this.assertActive();
+		this.startCompletion ??= this.connect();
+		return this.startCompletion;
+	}
+
+	private async connect(): Promise<void> {
+		this.subscription.on('message', this.messageHandler);
+		this.subscription.on('error', this.errorHandler);
+		await this.subscription.connect();
+		this.assertActive();
+		await this.subscription.subscribe(REPLICATION_CHANNEL, IP_CLASS_CHANNEL);
+		this.assertActive();
+		this.phase = 'running';
+		this.flushTimer = setInterval(() => {
+			this.flush(REPLICATION_CHANNEL, flushOutbound);
+			this.flush(IP_CLASS_CHANNEL, flushOutboundIpClasses);
 		}, BATCH_FLUSH_MS);
-		if (typeof flushTimer === 'object' && flushTimer && 'unref' in flushTimer) {
-			(flushTimer as {unref(): void}).unref();
+		this.flushTimer.unref();
+	}
+
+	private assertActive(): void {
+		if (!this.isActive) {
+			throw new Error('Abuse replication subscriber is stopping or stopped');
 		}
+	}
+
+	private flush(channel: string, publish: (publisher: IKVProvider) => Promise<void>): void {
+		if (!this.isActive || this.flushes.has(channel)) return;
+		const task = publish(this.publisher)
+			.catch((err) => {
+				Logger.error({err, channel}, '[abuse-auto-ban] Abuse replication flush failed');
+			})
+			.finally(() => {
+				this.flushes.delete(channel);
+			});
+		this.flushes.set(channel, task);
+	}
+
+	stop(): Promise<void> {
+		if (this.stopCompletion) return this.stopCompletion;
+		this.phase = 'stopping';
+		if (this.flushTimer) clearInterval(this.flushTimer);
+		this.flushTimer = null;
+		this.subscription.off('message', this.messageHandler);
+		this.subscription.off('error', this.errorHandler);
+		this.stopCompletion = this.close();
+		return this.stopCompletion;
+	}
+
+	private async close(): Promise<void> {
+		try {
+			const [disconnected] = await Promise.allSettled([
+				Promise.resolve().then(() => this.subscription.disconnect()),
+				this.startCompletion,
+				...this.flushes.values(),
+			]);
+			if (disconnected.status === 'rejected') throw disconnected.reason;
+		} finally {
+			this.phase = 'stopped';
+		}
+	}
+}
+
+export async function startAbuseReplicationSubscriber(kvClient: IKVProvider | null): Promise<void> {
+	if (!kvClient) return;
+	const subscriber = (abuseReplication ??= new AbuseReplicationSubscriber(kvClient));
+	try {
+		await subscriber.start();
 	} catch (err) {
 		Logger.error({err}, '[abuse-auto-ban] Failed to start abuse replication subscriber');
-		kvSubscription = null;
-		messageHandler = null;
-		errorHandler = null;
-		kvPublisher = null;
+		try {
+			await subscriber.stop();
+		} catch (cleanupError) {
+			Logger.error({err: cleanupError}, '[abuse-auto-ban] Failed to close abuse replication subscriber');
+		} finally {
+			if (abuseReplication === subscriber) abuseReplication = null;
+		}
 		throw err;
 	}
 }
 
 export async function stopAbuseReplicationSubscriber(): Promise<void> {
-	if (flushTimer) {
-		clearInterval(flushTimer);
-		flushTimer = null;
+	const subscriber = abuseReplication;
+	if (!subscriber) return;
+	try {
+		await subscriber.stop();
+	} finally {
+		if (abuseReplication === subscriber) abuseReplication = null;
 	}
-	if (kvSubscription && messageHandler) {
-		kvSubscription.off('message', messageHandler);
-	}
-	if (kvSubscription && errorHandler) {
-		kvSubscription.off('error', errorHandler);
-	}
-	if (kvSubscription) {
-		try {
-			await kvSubscription.disconnect();
-		} catch {}
-	}
-	kvSubscription = null;
-	messageHandler = null;
-	errorHandler = null;
-	kvPublisher = null;
 }
 
 export async function drainAbuseAutoBanTasksForTests(): Promise<void> {

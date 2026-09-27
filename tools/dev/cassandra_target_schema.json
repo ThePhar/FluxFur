@@ -789,6 +789,10 @@
 					"type": "timestamp"
 				},
 				{
+					"name": "attempt_id",
+					"type": "text"
+				},
+				{
 					"name": "started_at",
 					"type": "timestamp"
 				},
@@ -798,6 +802,10 @@
 				},
 				{
 					"name": "failed_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "terminal_failed_at",
 					"type": "timestamp"
 				},
 				{
@@ -3735,6 +3743,10 @@
 				{
 					"name": "subscription_cancel_at",
 					"type": "timestamp"
+				},
+				{
+					"name": "subscription_status",
+					"type": "text"
 				},
 				{
 					"name": "created_at",
@@ -7894,6 +7906,10 @@
 					"type": "text"
 				},
 				{
+					"name": "oauth_grant_id",
+					"type": "text"
+				},
+				{
 					"name": "verified_at",
 					"type": "timestamp"
 				},
@@ -7906,8 +7922,24 @@
 					"type": "timestamp"
 				},
 				{
+					"name": "revision",
+					"type": "text"
+				},
+				{
 					"name": "version",
 					"type": "int"
+				},
+				{
+					"name": "membership",
+					"type": "text"
+				},
+				{
+					"name": "credential_payload",
+					"type": "text"
+				},
+				{
+					"name": "credential_expires_at",
+					"type": "timestamp"
 				}
 			],
 			"primary_key": "((user_id), connection_type, connection_id)",
@@ -8173,6 +8205,10 @@
 					"type": "timestamp"
 				},
 				{
+					"name": "attempt_id",
+					"type": "text"
+				},
+				{
 					"name": "started_at",
 					"type": "timestamp"
 				},
@@ -8182,6 +8218,10 @@
 				},
 				{
 					"name": "failed_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "terminal_failed_at",
 					"type": "timestamp"
 				},
 				{
@@ -8560,6 +8600,10 @@
 				},
 				{
 					"name": "pending_deletion_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "deletion_started_at",
 					"type": "timestamp"
 				},
 				{
@@ -8945,6 +8989,14 @@
 				{
 					"name": "version",
 					"type": "int"
+				},
+				{
+					"name": "rp_id",
+					"type": "text"
+				},
+				{
+					"name": "superseded_by",
+					"type": "text"
 				}
 			],
 			"primary_key": "((user_id), credential_id)",

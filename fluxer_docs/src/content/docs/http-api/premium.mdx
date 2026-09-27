@@ -1,7 +1,7 @@
 ---
 # SPDX-License-Identifier: AGPL-3.0-or-later
 title: Premium
-description: Premium pricing, entitlement state, mirrored billing data, and subscription self-service.
+description: Premium pricing, entitlement state, billing data, and subscription self-service.
 ---
 
 import RouteHeader from '@/components/RouteHeader.astro';
@@ -24,8 +24,8 @@ Every route except [get price IDs](#get-price-ids) is user-only. A [self-hosted 
 | [Billing payment method](#billing-payment-method-object) | One mirrored payment method |
 | [Premium pricing state](#premium-pricing-state-object) | The resolved checkout catalogue |
 
-:::note[Billing history is mirrored from the payment provider]
-[Get premium state](#get-premium-state) returns the mirrored invoices, payment methods and subscription fields. [Create customer portal](#create-customer-portal) is the externally hosted interface for changing any of them.
+:::note[Manage billing through the customer portal]
+[Get premium state](#get-premium-state) returns invoices, payment methods and subscription details. Use [Create customer portal](#create-customer-portal) to open the billing interface.
 :::
 
 ## Premium types
@@ -61,7 +61,7 @@ Every amount field is in the minor unit of the currency field its description na
 
 ## Price IDs object
 
-The four checkout prices resolved for one country: monthly and yearly recurring, and one-month and one-year gift.
+The checkout prices resolved for one country: monthly and yearly recurring, and one-month and one-year gift.
 
 ### Structure
 
@@ -78,9 +78,9 @@ The four checkout prices resolved for one country: monthly and yearly recurring,
 | currency | string | [Display currency](#display-currencies) of the recurring prices |
 | gift_currency | string | [Display currency](#display-currencies) of the gift prices |
 
-<sup>1</sup> Fluxer resolves the recurring pair and the gift pair separately. Each pair takes the first currency for which both of its prices are configured, so the two pairs can resolve to different currencies
+<sup>1</sup> Fluxer resolves the recurring pair and the gift pair separately. Each pair takes the first currency for which both of its prices are configured, so the pairs can resolve to different currencies
 
-<sup>2</sup> Null when the amount cannot be resolved. [Get price IDs](#get-price-ids) reads it from the payment provider through a one-hour cache, while the copies inside [get premium state](#get-premium-state) read the mirrored price rows
+<sup>2</sup> Null when the amount is unavailable. Price changes can take up to one hour to appear
 
 ### Example
 
@@ -103,7 +103,7 @@ The four checkout prices resolved for one country: monthly and yearly recurring,
 
 The price the account is billed against, and the current list price for the same billing cycle and currency.
 
-[Get current subscription price](#get-current-subscription-price) reads the payment provider, and the `billing.current_subscription_price` copy inside [get premium state](#get-premium-state) reads the local mirror. The complete value is null when no subscription, no billing cycle, or no amount resolves for the account.
+The complete value is null when the account's subscription, billing cycle, or amount is unavailable.
 
 ### Structure
 
@@ -117,9 +117,9 @@ The price the account is billed against, and the current list price for the same
 | list_amount_minor<sup>4</sup> | ?integer | The current list amount, in the minor unit of `currency` |
 | list_price_id<sup>4</sup> | ?string | The current list price ID for the same billing cycle and currency |
 
-<sup>1</sup> The mirror-backed copy reports an empty string when neither the mirrored price row nor the mirrored subscription records a price identifier
+<sup>1</sup> The copy in [Get premium state](#get-premium-state) reports an empty string when the price identifier is unavailable
 
-<sup>2</sup> The subscription's own currency uppercased, so an unlisted currency is reported verbatim. The mirror-backed copy falls back to `USD` when neither source records a currency
+<sup>2</sup> The subscription's currency in upper case, including unlisted currencies. The copy in [Get premium state](#get-premium-state) defaults to `USD` when unavailable
 
 <sup>3</sup> True only when a list price is configured for the same billing cycle and currency and its identifier differs from `price_id`, so an unconfigured currency reports false
 
@@ -141,7 +141,7 @@ The price the account is billed against, and the current list price for the same
 
 ## Pending subscription change object
 
-A billing cycle change that [change subscription billing cycle](#change-subscription-billing-cycle) scheduled for the end of the current period. [Premium billing state](#premium-billing-state-object) has it as its only live member, read from the payment provider on every request. No route returns it on its own.
+A billing cycle change scheduled for the end of the current period. It is returned in [Premium billing state](#premium-billing-state-object), not through a separate route.
 
 ### Structure
 
@@ -174,7 +174,7 @@ The complete value is null in each of these cases.
 | No future phase | The schedule has no phase starting after now |
 | No target cycle | Neither the future phase price nor the schedule metadata resolves it |
 | No change | The resolved target billing cycle equals the current one |
-| Read failed | The payment provider read failed, which is logged and absorbed |
+| Read failed | The payment provider read failed, and the request still succeeds |
 
 ### Example
 
@@ -195,7 +195,7 @@ The complete value is null in each of these cases.
 
 ## Premium state object
 
-The account's entitlement, the premium checks that apply to it, and the billing and pricing data behind both. [Get premium state](#get-premium-state) and [set premium perks disabled](#set-premium-perks-disabled) both return it.
+The account's entitlement, the effective entitlement that premium feature checks read, and the billing and pricing data behind both. [Get premium state](#get-premium-state) and [set premium perks disabled](#set-premium-perks-disabled) both return it.
 
 A client gates a premium feature on `effective.is_premium`.
 
@@ -260,7 +260,7 @@ The effective state decides whether premium features are available. It differs f
 
 | Field | Type | Description |
 | --- | --- | --- |
-| is_premium<sup>1</sup> | boolean | Whether premium access checks are active |
+| is_premium<sup>1</sup> | boolean | Whether premium features are available to the account |
 | premium_type<sup>2</sup> | ?integer | The effective [premium type](#premium-types) |
 | premium_since<sup>2</sup> | ?ISO8601 timestamp | The effective time premium access started |
 | premium_until<sup>3</sup> | ?ISO8601 timestamp | The time premium access ends, including any stacked gift extension, or null for a lifetime entitlement |
@@ -276,7 +276,7 @@ The effective state decides whether premium features are available. It differs f
 
 <sup>1</sup> Decided in a fixed order. A self-hosted deployment in the `everyone` [premium mode](/admin-api/instance/#premium-modes) reports true, then a bot account reports true, then `premium_perks_disabled` reports false, then `premium_enabled_override` reports true, and otherwise the value follows `actual.has_active_paid_premium`
 
-<sup>2</sup> The only two fields the effective state gates. They report the account value while `is_premium` is true, and `0` and null respectively while it is false
+<sup>2</sup> The only fields the effective state gates. They report the account value while `is_premium` is true, and `0` and null respectively while it is false
 
 <sup>3</sup> Copied from the [actual premium state](#actual-premium-state-object) unchanged, so the value does not react to `is_premium`
 
@@ -290,7 +290,7 @@ The effective state decides whether premium features are available. It differs f
 
 The account's billing data behind a premium screen.
 
-`stripe_customer_id`, `current_subscription_price`, `subscription`, `invoices` and `payment_methods` are read from the local mirror of the payment provider. Fluxer repairs the payment method mirror while building the response. `refund_eligibility` is computed from the mirrored invoices. `pending_subscription_change` is read live from the payment provider on every request.
+Billing details can lag behind changes made through the payment provider.
 
 ### Structure
 
@@ -299,13 +299,13 @@ The account's billing data behind a premium screen.
 | stripe_customer_id | ?string | The payment provider customer ID, or null when none was ever created |
 | current_subscription_price | ?[current subscription price](#current-subscription-price-object) object | The price the account is billed against |
 | pending_subscription_change | ?[pending subscription change](#pending-subscription-change-object) object | The scheduled billing cycle change |
-| subscription | ?[billing subscription](#billing-subscription-object) object | The most relevant mirrored subscription |
+| subscription | ?[billing subscription](#billing-subscription-object) object | The mirrored subscription Fluxer selects by the rule below this table |
 | invoices<sup>1</sup> | array[[billing invoice](#billing-invoice-object)] | The most recent invoices, newest first |
 | invoices_has_more<sup>2</sup> | boolean | Whether the account has invoices beyond the returned page |
 | payment_methods<sup>3</sup> | array[[billing payment method](#billing-payment-method-object)] | The stored payment methods |
 | refund_eligibility<sup>4</sup> | [refund eligibility](/http-api/billing/#refund-eligibility-object) object | The self-service refund state for the account |
 
-<sup>1</sup> At most 12 entries, ordered by provider creation time descending. Fluxer collects invoices across every payment provider customer the account owns and deduplicates them by provider identifier before the cut
+<sup>1</sup> At most 12 distinct invoices across the account's billing history, newest first
 
 <sup>2</sup> True when the account has more invoices than the 12 returned. No route pages past the first 12, so use [create customer portal](#create-customer-portal) for the rest
 
@@ -415,7 +415,7 @@ One mirrored stored payment method. A non-card method reports every card member 
 | card_exp_year | ?integer | The expiry year of the card, or null when the method is not a card |
 | is_default<sup>1</sup> | boolean | Whether the method is the customer's default |
 
-<sup>1</sup> Recomputed against the default of the owning payment provider customer during the repair, so an account owning more than one customer can report more than one default
+<sup>1</sup> An account with more than one billing customer can report more than one default
 
 ### Example
 
@@ -444,7 +444,7 @@ The checkout catalogue resolved for the request. A client can render prices with
 
 <sup>1</sup> The request-time geolocation country, falling back to the `country_code` query value uppercased, or null when neither resolves
 
-<sup>2</sup> Null unless the deployment configures a complete recurring pair and a complete gift pair for the currency preferences that apply, so one missing gift price nulls the whole catalogue. The amounts come from the mirrored price rows
+<sup>2</sup> Null unless the deployment configures a complete recurring pair and a complete gift pair for a currency in the currency preference order of `country_code`, which is the default order when `country_code` is null, so one missing gift price nulls the whole catalogue. The amounts come from the mirrored price rows
 
 Fluxer reports an unresolvable catalogue as null here, and the request still succeeds. [Get price IDs](#get-price-ids) answers 400 `STRIPE_ERROR` for the same condition.
 
@@ -452,7 +452,7 @@ Fluxer reports an unresolvable catalogue as null here, and the request still suc
 
 <RouteHeader method="GET" path="/v1/premium/price-ids" unauthenticated />
 
-Returns the [price IDs](#price-ids-object) object for a country. A supplied credential only keys the rate limit, so an unrecognised credential falls back to the client IP address.
+Returns the [price IDs](#price-ids-object) object for a country. Fluxer uses a supplied credential only to count the request against that user's rate limit, so an unrecognised credential falls back to the client IP address.
 
 The deployment must configure a complete recurring pair and a complete gift pair for at least one currency that the requested country prefers. Fluxer answers 400 `STRIPE_ERROR` when it does not.
 
@@ -481,14 +481,14 @@ The deployment must configure a complete recurring pair and a complete gift pair
 
 Returns the [premium state](#premium-state-object) object for the authenticated account.
 
-The route answers from mirrored billing data, so it works when the payment provider is unconfigured. With a configured provider it also repairs missing payment method mirror rows for the account's customers before building the response. A repair failure is logged and absorbed.
+The route is available even when no payment provider is configured.
 
 :::note[One read serves the whole billing screen]
-`billing.current_subscription_price` and `billing.refund_eligibility` cover the same ground as [get current subscription price](#get-current-subscription-price) and [get refund eligibility](/http-api/billing/#get-refund-eligibility), and `billing.pending_subscription_change` has no route of its own.
+`billing.current_subscription_price` and `billing.refund_eligibility` are the same objects returned by [get current subscription price](#get-current-subscription-price) and [get refund eligibility](/http-api/billing/#get-refund-eligibility), and `billing.pending_subscription_change` has no route of its own.
 :::
 
-:::note[The paired values are computed differently]
-This route derives `current_subscription_price` from the mirrored subscription and `refund_eligibility` from the mirrored invoices, while the two dedicated routes read the payment provider. The values can disagree while the mirror is behind.
+:::note[Billing details may take time to update]
+`current_subscription_price` and `refund_eligibility` can temporarily differ from the dedicated routes after a billing change.
 :::
 
 ### Query parameters
@@ -508,7 +508,7 @@ This route derives `current_subscription_price` from the mirrored subscription a
 
 ### Side effects
 
-The read can write to the payment provider and to the local billing mirror while repairing payment method state, including aligning the customer default payment method with the subscription default payment method. It does not change entitlement.
+The read can change a default payment method. When the customer has a default that differs from the subscription's, Fluxer sets the subscription's default to the customer's. When only the subscription has a default, Fluxer sets it as the customer's default. It does not change entitlement.
 
 ### Rate limit
 
@@ -520,9 +520,9 @@ The read can write to the payment provider and to the local billing mirror while
 
 Returns the [current subscription price](#current-subscription-price-object) object for the authenticated account, or null when no price can be resolved.
 
-The route reads the subscription from the payment provider, so it returns null when the deployment configures no payment provider and when the account has no stored subscription identifier. A provider read that fails is logged and reported as null.
+Returns null when no payment provider or subscription is configured, or when the price lookup fails.
 
-Fluxer caches the resolved value for 5 minutes for each subscription. It reads `list_amount_minor` through a second cache that holds each list price amount for 1 hour, so a list price change made in the payment provider can take an hour to appear. `is_grandfathered` compares price identifiers and does not read that cache.
+Subscription price changes can take 5 minutes to appear. List price amount changes can take one hour.
 
 ### Response
 
@@ -558,7 +558,7 @@ The response is built exactly as [get premium state](#get-premium-state) builds 
 
 ### Side effects
 
-When the requested value differs from the current one, the operation updates the account and sends [User Update](/gateway/events/#user-update) to every session the account owns. Repeating the current value leaves the flag untouched. The returned `actual` state never changes. Building the response runs the same payment method repair as [get premium state](#get-premium-state), and either call can write to the payment provider and to the local billing mirror.
+When the requested value changes, every account session receives [User Update](/gateway/events/#user-update). Repeating the current value leaves the flag untouched. The returned `actual` state never changes. The response has the same billing side effects as [Get premium state](#get-premium-state).
 
 ### Rate limit
 
@@ -568,7 +568,7 @@ When the requested value differs from the current one, the operation updates the
 
 <RouteHeader method="POST" path="/v1/premium/customer-portal" />
 
-Creates a billing portal session for the authenticated account and returns a [redirect URL](/http-api/billing/#redirect-url-object) object. The returned URL is the only handle on the session.
+Creates a billing portal session for the authenticated account and returns a [redirect URL](/http-api/billing/#redirect-url-object) object. The object has no session identifier, so the returned URL is the only way to open the session.
 
 An account that never had a payment provider customer receives 400 `STRIPE_NO_PURCHASE_HISTORY`. A deployment that configures no payment provider receives 400 `STRIPE_PAYMENT_NOT_AVAILABLE`, and a provider call that fails or answers without a URL receives 400 `STRIPE_ERROR`.
 
@@ -604,7 +604,7 @@ The window this operation ends runs to `premium_grace_ends_at`. [Receive Stripe 
 | The subscription ended early | The subscription end itself, which leaves no window for this route to close |
 | The early cancellation is already recorded | Nothing |
 
-A background reconciliation of the account against the payment provider records the same early cancellation deadline when it finds a terminal subscription that ended before the recorded premium end. `has_active_paid_premium` treats a missing deadline as exactly 3 days after `premium_until`, but this route requires the recorded deadline.
+This route requires an explicit `premium_grace_ends_at`. It does not end the default 3-day grace period used when that field is absent.
 
 :::caution[The downgrade is immediate]
 Premium features become unavailable before the recorded grace deadline arrives. The grace period cannot be restarted through this API.
@@ -651,7 +651,7 @@ A deployment that configures no payment provider receives 400 `STRIPE_PAYMENT_NO
 
 ### Side effects
 
-Fluxer sets the subscription to cancel at the current period end, sets the account's cancellation flag, and refreshes the mirrored subscription row. Every account session receives [User Update](/gateway/events/#user-update). The ordinary path writes no premium end, so the recorded end is whatever the account already has.
+Fluxer sets the subscription to cancel at the current period end, sets the account's cancellation flag, and refreshes the mirrored subscription row. Every account session receives [User Update](/gateway/events/#user-update). For a subscription with no schedule, Fluxer writes no premium end, so the recorded end is whatever the account already has.
 
 A subscription that has a schedule discards its pending billing cycle change and ends in cancellation at the current period end. Fluxer then rewrites the premium end from the refreshed subscription. Premium access continues through the recorded end, and [receive Stripe webhook](/http-api/billing/#receive-stripe-webhook) later applies the final downgrade.
 
@@ -722,7 +722,7 @@ A monthly to yearly change credits the first invoice of the new phase with the s
 
 ### Side effects
 
-An immediate change clears pending cancellation, replaces the subscription price, and updates the billing cycle and premium end. A period end change clears pending cancellation and schedules the target cycle to begin at the current period end without proration. A monthly to yearly change adds the applicable credit to the scheduled phase.
+An immediate change clears pending cancellation, replaces the subscription price, and updates the billing cycle and premium end. A period end change clears pending cancellation and schedules the target cycle to begin at the current period end without proration. A monthly to yearly change credits the first invoice of the scheduled phase with the smaller of the two amounts, except during a trial.
 
 A scheduled change becomes visible as `billing.pending_subscription_change` in [get premium state](#get-premium-state). Every account session receives [User Update](/gateway/events/#user-update). Requesting the already active cycle changes nothing.
 
@@ -754,7 +754,7 @@ A subscription set to cancel has no next billing period, so the switch would hav
 | 400<sup>1</sup> | [error response](/http-api/#error-response) | The payment provider is not configured, the account has no stored subscription, or the provider rejected the request |
 | 404 | [error response](/http-api/#error-response) | The authenticated account record no longer exists and the request returns `UNKNOWN_USER` |
 
-<sup>1</sup> A refusal that the account can act on is reported as a 200 with `status` `ineligible`, not as an error
+<sup>1</sup> A missing payment provider returns `STRIPE_PAYMENT_NOT_AVAILABLE` and a missing stored subscription returns `STRIPE_NO_ACTIVE_SUBSCRIPTION`, so this route never returns the `feature_unavailable` or `no_active_subscription` reason. Every other refusal is a 200 with `status` `ineligible`
 
 ### Switch result
 
@@ -776,7 +776,7 @@ A subscription set to cancel has no next billing period, so the switch would hav
 
 - `feature_unavailable`: the deployment configures no payment provider
 - `no_active_subscription`: the account has no stored subscription
-- `subscription_not_chargeable`: the subscription is neither active nor trialing
+- `subscription_not_chargeable`: the subscription is neither active nor on a trial
 - `unsupported_subscription`: the subscription has no recurring primary item with a resolvable amount, currency and interval
 - `no_list_price`: no list price is configured for that currency and billing cycle
 - `already_on_list_price`: the subscription already bills on the current list price
@@ -852,7 +852,7 @@ A deployment that configures no Visionary guild or no Visionary role returns 400
 
 A new membership sends [Guild Create](/gateway/events/#guild-create) with complete guild state to the joining account and [Guild Member Add](/gateway/events/#guild-member-add) to the guild. It also creates a join system message and sends [Message Create](/gateway/events/#message-create) unless the guild has no system channel or suppresses join notifications.
 
-A new or existing member then receives the Visionary role, which records a `MEMBER_ROLE_UPDATE` guild audit log entry attributed to the system user and emits [Guild Member Update](/gateway/events/#guild-member-update). An account already holding the role causes no role change. Billing state is unchanged.
+A new or existing member then receives the Visionary role, which records a `MEMBER_ROLE_UPDATE` guild audit log entry attributed to the system user and emits [Guild Member Update](/gateway/events/#guild-member-update). An account already holding the role causes no role change and records no audit entry. Billing state is unchanged.
 
 ### Rate limit
 

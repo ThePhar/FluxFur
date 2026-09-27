@@ -18,7 +18,7 @@ export type ScreenShareEndedModal = 'source-stopped' | 'encoder-failed' | 'codec
 
 export type ScreenShareEncoderVerification =
 	| 'recover-stalled'
-	| 'ignore-repeated-stall'
+	| 'stop-stalled'
 	| 'accept-negotiated'
 	| 'correct-negotiated';
 

@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {Config} from '@app/api/Config';
+import type {GifService} from '@app/api/gif/GifService';
+import type {IGifProvider} from '@app/api/gif/IGifProvider';
+import {
+	type DiscoveryValidators,
+	isDiscoveryNotModified,
+	nextDiscoveryValidators,
+} from '@app/api/instance/DiscoveryValidators';
+import type {InstanceCaptchaEffectiveConfig} from '@app/api/instance/InstanceConfigRepository';
+import {RateLimitMiddleware} from '@app/api/middleware/RateLimitMiddleware';
+import {OpenAPI} from '@app/api/middleware/ResponseTypeMiddleware';
+import {RateLimitConfigs} from '@app/api/RateLimitConfig';
+import type {HonoEnv} from '@app/api/types/HonoEnv';
 import {API_CODE_VERSION} from '@fluxer/constants/src/AppConstants';
 import {buildDiscoveryResponse, type DiscoveryStaticInput} from '@fluxer/instance_bootstrap/src/BuildDiscovery';
 import type {InstanceAppPublic} from '@fluxer/instance_bootstrap/src/Types';
+import {toDomainMigrationDiscovery} from '@fluxer/schema/src/domains/admin/DomainMigrationSchemas';
 import {WellKnownFluxerResponse} from '@fluxer/schema/src/domains/instance/InstanceSchemas';
 import type {Hono} from 'hono';
-import {Config} from '../Config';
-import type {GifService} from '../gif/GifService';
-import type {IGifProvider} from '../gif/IGifProvider';
-import {RateLimitMiddleware} from '../middleware/RateLimitMiddleware';
-import {OpenAPI} from '../middleware/ResponseTypeMiddleware';
-import {RateLimitConfigs} from '../RateLimitConfig';
-import type {HonoEnv} from '../types/HonoEnv';
-import {type DiscoveryValidators, isDiscoveryNotModified, nextDiscoveryValidators} from './DiscoveryValidators';
-import type {InstanceCaptchaEffectiveConfig} from './InstanceConfigRepository';
 
 let discoveryValidators: DiscoveryValidators | null = null;
 
@@ -98,15 +103,16 @@ export function InstanceController(app: Hono<HonoEnv>) {
 			const limits = ctx.get('limitConfigService').getConfigWireFormat();
 			const sso = await ctx.get('ssoService').getPublicStatus();
 			const instanceConfigRepository = ctx.get('instanceConfigRepository');
-			const [registration, community, services, appPublicConfig, captcha, email] = await Promise.all([
+			const [registration, community, services, appPublicConfig, captcha, email, domainMigration] = await Promise.all([
 				instanceConfigRepository.getRegistrationPublicConfig(),
 				instanceConfigRepository.getInstanceCommunityPublicConfig(),
 				instanceConfigRepository.getResolvedServicesConfig(),
 				instanceConfigRepository.getAppPublicConfig(),
 				instanceConfigRepository.getEffectiveCaptchaConfig(),
 				instanceConfigRepository.getEffectiveEmailConfig(),
+				instanceConfigRepository.getDomainMigrationConfig(),
 			]);
-			const response = buildDiscoveryResponse(
+			const discovery = buildDiscoveryResponse(
 				buildDiscoveryStaticInput(
 					gifService,
 					{
@@ -129,6 +135,7 @@ export function InstanceController(app: Hono<HonoEnv>) {
 					limits,
 				},
 			);
+			const response = {...discovery, domain_migration: toDomainMigrationDiscovery(domainMigration)};
 			discoveryValidators = nextDiscoveryValidators(response, discoveryValidators);
 			ctx.header('ETag', discoveryValidators.etag);
 			ctx.header('Last-Modified', discoveryValidators.lastModified.toUTCString());

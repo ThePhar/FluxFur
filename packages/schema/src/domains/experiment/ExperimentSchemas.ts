@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import {z} from 'zod';
+import {
+	DomainMigrationAssignmentResponse,
+	INERT_DOMAIN_MIGRATION_ASSIGNMENT,
+} from '@fluxer/schema/src/domains/admin/DomainMigrationSchemas';
 import {
 	INERT_VOICE_NOISE_SUPPRESSION_ASSIGNMENT,
 	VoiceNoiseSuppressionAssignmentResponse,
-} from '../admin/VoiceNoiseSuppressionSchemas';
+} from '@fluxer/schema/src/domains/admin/VoiceNoiseSuppressionSchemas';
+import {z} from 'zod';
 
 export const EXPERIMENT_MIN_POLL_INTERVAL_SECONDS = 60;
 export const EXPERIMENT_MAX_POLL_INTERVAL_SECONDS = 86400;
@@ -42,6 +46,7 @@ export type ExperimentDeliveryConfigResponse = z.infer<typeof ExperimentDelivery
 
 const ExperimentAssignmentsSchema = z.object({
 	voice_noise_suppression: VoiceNoiseSuppressionAssignmentResponse.optional(),
+	domain_migration: DomainMigrationAssignmentResponse.optional(),
 });
 
 export const ExperimentAssignmentsResponse = z.object({
@@ -62,4 +67,10 @@ export function readVoiceNoiseSuppressionAssignment(
 	response: ExperimentAssignmentsResponse,
 ): VoiceNoiseSuppressionAssignmentResponse {
 	return response.assignments.voice_noise_suppression ?? INERT_VOICE_NOISE_SUPPRESSION_ASSIGNMENT;
+}
+
+export function readDomainMigrationAssignment(
+	response: ExperimentAssignmentsResponse,
+): DomainMigrationAssignmentResponse {
+	return response.assignments.domain_migration ?? INERT_DOMAIN_MIGRATION_ASSIGNMENT;
 }

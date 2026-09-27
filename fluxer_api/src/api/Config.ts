@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type {APIConfig, BlueskyOAuthConfig} from '@app/api/config/APIConfig';
+import type {WorkerTaskName} from '@app/api/worker/WorkerLaneConfig';
 import type {MasterConfig} from '@fluxer/config/src/MasterConfig';
-import {resolveDownloadsProvider} from '@fluxer/config/src/S3DownloadsProvider';
 import {parseIpAddress} from '@fluxer/ip_utils/src/IpAddress';
 import {parseGeoipSourceConfig, resolveGeoipRuntimeSourceConfig} from '@pkgs/geoip/src/GeoipStartup';
-import type {APIConfig, BlueskyOAuthConfig} from './config/APIConfig';
-import type {WorkerTaskName} from './worker/WorkerLaneConfig';
 
 function extractHostname(url: string): string {
 	try {
@@ -92,18 +91,6 @@ function normalizeIpBanExemptIps(values: Array<string>): Array<string> {
 	return Array.from(normalized);
 }
 
-function normalizeCountryCodes(values: Array<string>, configName: string): ReadonlySet<string> {
-	const normalized = new Set<string>();
-	for (const value of values) {
-		const countryCode = value.trim().toUpperCase();
-		if (!/^[A-Z]{2}$/u.test(countryCode)) {
-			throw new Error(`${configName} contains an invalid ISO 3166-1 alpha-2 country code: ${value}`);
-		}
-		normalized.add(countryCode);
-	}
-	return normalized;
-}
-
 function mapPushProviderApps(
 	apps:
 		| Array<{
@@ -147,13 +134,16 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 	if (Buffer.from(uploadRelaySecretBase64, 'base64').length < 32) {
 		throw new Error('FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64 must decode to at least 32 bytes');
 	}
+	const donationProxyKey = (master.services.api.donation_proxy_key ?? '').trim();
+	if (donationProxyKey.length > 0 && donationProxyKey.length < 32) {
+		throw new Error('FLUXER_API_DONATION_PROXY_KEY must be at least 32 characters');
+	}
 	if (!s3Config) {
 		throw new Error('S3 configuration is required for the API');
 	}
 	const s3Buckets = s3Config.buckets ?? {
 		cdn: '',
 		uploads: '',
-		downloads: '',
 		reports: '',
 		harvests: '',
 	};
@@ -170,10 +160,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 		requestTimeoutMs: master.services.api.request_timeout_ms,
 		maxInflightRequests: master.services.api.max_inflight_requests,
 		ipBanExemptIps: normalizeIpBanExemptIps(master.services.api.ip_ban_exempt_ips),
-		desktopGitHubRedirectCountries: normalizeCountryCodes(
-			master.services.api.desktop_github_redirect_countries,
-			'FLUXER_API_DESKTOP_GITHUB_REDIRECT_COUNTRIES',
-		),
 		cassandra: {
 			hosts: cassandraSource?.hosts.join(',') ?? '',
 			port: cassandraSource?.port ?? 9042,
@@ -233,6 +219,11 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			jetStreamUrl: master.services.nats?.jetstream_url ?? 'nats://127.0.0.1:4223',
 			authToken: master.services.nats?.auth_token ?? '',
 		},
+		storageChangeFeed: {
+			enabled: master.services.api.storage_change_feed?.enabled ?? false,
+			stream: master.services.api.storage_change_feed?.stream ?? 'STORAGE_CHANGES',
+			skipBuckets: master.services.api.storage_change_feed?.skip_buckets ?? [s3Buckets.uploads],
+		},
 		search: {
 			engine: master.integrations.search?.engine ?? 'elasticsearch',
 			url: master.integrations.search?.url ?? 'http://127.0.0.1:9200',
@@ -254,6 +245,9 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 				tokenTtlSecs: uploadRelayConfig.token_ttl_secs,
 				keepDirectCountries: uploadRelayConfig.keep_direct_countries,
 			},
+			attachmentUrls: {
+				secretsBase64: master.services.media_proxy.attachment_urls.secrets_base64,
+			},
 		},
 		geoip: geoipSourceConfig,
 		proxy: {
@@ -264,6 +258,7 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			apiPublic: master.endpoints.api,
 			apiClient: master.endpoints.api_client,
 			webApp: master.endpoints.app,
+			webAppOrigins: [...new Set([new URL(master.endpoints.app).origin, ...master.services.api.app_origin_aliases])],
 			gateway: master.endpoints.gateway,
 			media: master.endpoints.media,
 			marketing: master.endpoints.marketing,
@@ -275,10 +270,9 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 		internal: {
 			gateway: resolveGatewayInternalUrl(master),
 			gatewayRpcAuthToken: master.services.gateway.rpc_auth_token ?? '',
+			donationProxyKey,
 		},
 		hosts: {
-			invite: extractHostname(master.endpoints.invite),
-			gift: extractHostname(master.endpoints.gift),
 			marketing: extractHostname(master.endpoints.marketing),
 			unfurlIgnored: master.services.api.unfurl_ignored_hosts,
 		},
@@ -291,7 +285,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			cacheMinTtlSeconds: master.services.api.embeds.cache_min_ttl_seconds,
 			cacheRespectRemoteTtl: master.services.api.embeds.cache_respect_remote_ttl,
 		},
-		s3Downloads: resolveDownloadsProvider(master),
 		s3: {
 			endpoint: s3Config.endpoint,
 			presignedUrlBase: s3Config.presigned_url_base,
@@ -334,6 +327,12 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 		},
 		blocklistFeeds: {
 			enabled: master.integrations.blocklist_feeds.enabled ?? !master.instance.self_hosted,
+		},
+		torExitList: {
+			enabled: master.integrations.tor_exit_list.enabled ?? !master.instance.self_hosted,
+		},
+		breachedPasswordCheck: {
+			enabled: master.integrations.breached_password_check.enabled ?? !master.instance.self_hosted,
 		},
 		captcha: {
 			enabled: master.integrations.captcha.enabled,
@@ -409,10 +408,13 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 				: undefined,
 			legacyPrices: master.integrations.stripe.legacy_prices,
 		},
-		bunny: {
-			purgeEnabled: master.integrations.bunny.purge_enabled,
-			apiKey: master.integrations.bunny.api_key,
-			pullZoneId: master.integrations.bunny.pull_zone_id,
+		cachePurge: {
+			adapter: master.integrations.cache_purge.adapter,
+			http: {
+				endpoint: master.integrations.cache_purge.http.endpoint,
+				token: master.integrations.cache_purge.http.token,
+				timeoutMs: master.integrations.cache_purge.http.timeout_ms,
+			},
 		},
 		clamav: {
 			enabled: master.integrations.clamav.enabled,
@@ -466,6 +468,8 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 				wordmarkUrl: master.instance.branding.wordmark_url,
 				faviconUrl: master.instance.branding.favicon_url,
 				themeColor: master.instance.branding.theme_color,
+				statusPageUrl: master.instance.branding.status_page_url,
+				statusPageIncidentHistoryUrl: master.instance.branding.status_page_incident_history_url,
 			},
 			setup: {
 				configured: master.instance.setup.configured,
@@ -473,6 +477,10 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 		},
 		abusePolicy: {
 			inboundPhoneCountryCodes: master.instance.abuse_policy.inbound_phone_country_codes,
+			phoneFlagging: {
+				enabled: master.instance.abuse_policy.phone_flagging.enabled,
+				exemptCountryCodes: master.instance.abuse_policy.phone_flagging.exempt_country_codes,
+			},
 			phoneVerification: {
 				inboundRequiredPrefixes: master.instance.abuse_policy.phone_verification.inbound_required_prefixes,
 			},
@@ -499,7 +507,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			validateResponses: resolveValidateResponses(master),
 		},
 		presignedAttachmentUploadsEnabled: master.services.api.presigned_attachment_uploads_enabled ?? false,
-		presignedDownloadsEnabled: master.services.api.presigned_downloads_enabled ?? false,
 		presignedHarvestDownloadsEnabled: master.services.api.presigned_harvest_downloads_enabled ?? true,
 		attachmentDecayEnabled: master.attachment_decay_enabled,
 		deletionGracePeriodHours: master.dev.test_mode_enabled ? 0.01 : master.deletion_grace_period_hours,
@@ -531,15 +538,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			laneName: apiWorkerConfig?.lane,
 			taskName: apiWorkerConfig?.task as WorkerTaskName | undefined,
 			enableCronScheduler: apiWorkerConfig?.enable_cron_scheduler,
-			enableVoiceReconciliation: apiWorkerConfig?.enable_voice_reconciliation ?? true,
-			voiceReconciliation: {
-				intervalMs: apiWorkerConfig?.voice_reconciliation?.interval_ms,
-				staggerDelayMs: apiWorkerConfig?.voice_reconciliation?.stagger_delay_ms,
-				lockTtlSeconds: apiWorkerConfig?.voice_reconciliation?.lock_ttl_seconds,
-				cadenceTtlSeconds: apiWorkerConfig?.voice_reconciliation?.cadence_ttl_seconds,
-				gatewayOnlyGraceMs: apiWorkerConfig?.voice_reconciliation?.gateway_only_grace_ms,
-				liveKitOnlyGraceMs: apiWorkerConfig?.voice_reconciliation?.livekit_only_grace_ms,
-			},
 			laneConcurrencyOverrides: {
 				realtime: apiWorkerConfig?.lane_concurrency_overrides?.realtime,
 				unfurl: apiWorkerConfig?.lane_concurrency_overrides?.unfurl,

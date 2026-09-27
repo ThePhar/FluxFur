@@ -7,7 +7,8 @@ use crate::{
             AppBrandingConfigUpdateRequest, AppLegalConfigUpdateRequest,
             AppPublicConfigUpdateRequest, AppRegistrationConfigUpdateRequest,
             AppSetupConfigUpdateRequest, CreateRegistrationUrlRequest,
-            DeferredPhoneGateUpdateRequest, ExperimentDeliveryConfigUpdateRequest,
+            DeferredPhoneGateUpdateRequest, DomainMigrationConfigUpdateRequest,
+            EXPERIMENT_MAX_TARGETED_USERS, ExperimentDeliveryConfigUpdateRequest,
             GatewayRolloutConfigUpdateRequest, GatewayRolloutMode,
             InstanceAttachmentDecayUpdateRequest, InstanceBlueskyIntegrationUpdateRequest,
             InstanceBlueskyKeyIntegrationUpdateRequest, InstanceCaptchaIntegrationUpdateRequest,
@@ -17,9 +18,9 @@ use crate::{
             InstanceMediaUpdateRequest, InstancePolicyUpdateRequest,
             InstanceRegistrationConfigUpdateRequest, InstanceServicesUpdateRequest,
             InstanceYoutubeIntegrationUpdateRequest, LimitConfigUpdateRequest, LimitRule,
-            LimitRuleFilters, NoiseSuppressionBackend, PremiumMode, RegistrationMode,
-            SsoConfigUpdateRequest, VOICE_NS_MAX_GUILD_OVERRIDES, VOICE_NS_MAX_TARGETED_USERS,
-            VoiceE2eeScope, VoiceNoiseSuppressionConfigUpdateRequest,
+            LimitRuleFilters, NoiseSuppressionBackend, PremiumMode,
+            PushServiceDeliveryConfigUpdateRequest, RegistrationMode, SsoConfigUpdateRequest,
+            VOICE_NS_MAX_GUILD_OVERRIDES, VoiceE2eeScope, VoiceNoiseSuppressionConfigUpdateRequest,
             VoiceNoiseSuppressionGuildOverride,
         },
     },
@@ -204,6 +205,14 @@ pub async fn instance_config_post(
             instance_config_result(client.update_instance_config(&update).await)
         }
         "update_voice_noise_suppression" => match build_voice_noise_suppression_update(&form) {
+            Ok(update) => instance_config_result(client.update_instance_config(&update).await),
+            Err(message) => FlashData::error(message),
+        },
+        "update_push_service_delivery" => match build_push_service_delivery_update(&form) {
+            Ok(update) => instance_config_result(client.update_instance_config(&update).await),
+            Err(message) => FlashData::error(message),
+        },
+        "update_domain_migration" => match build_domain_migration_update(&form) {
             Ok(update) => instance_config_result(client.update_instance_config(&update).await),
             Err(message) => FlashData::error(message),
         },
@@ -447,10 +456,10 @@ fn build_gateway_rollout_update(form: &MultiValueForm) -> InstanceConfigUpdateRe
     }
 }
 
-const VOICE_NS_ROLLOUT_BASIS_POINTS_MAX: u32 = 10_000;
+const EXPERIMENT_ROLLOUT_BASIS_POINTS_MAX: u32 = 10_000;
 const VOICE_NS_SUPPRESSION_STRENGTH_MAX: u32 = 100;
-const VOICE_NS_MAX_ROLLOUT_SALT_CHARS: usize = 64;
-const VOICE_NS_MAX_SNOWFLAKE_LENGTH: usize = 20;
+const EXPERIMENT_MAX_ROLLOUT_SALT_CHARS: usize = 64;
+const EXPERIMENT_MAX_SNOWFLAKE_LENGTH: usize = 20;
 const EXPERIMENT_MIN_POLL_INTERVAL_SECONDS: u64 = 60;
 const EXPERIMENT_MAX_POLL_INTERVAL_SECONDS: u64 = 86_400;
 const EXPERIMENT_MAX_POLL_JITTER_PERCENT: u32 = 50;
@@ -476,35 +485,51 @@ where
     Ok(Some(value))
 }
 
-fn parse_voice_noise_suppression_rollout_salt(
+fn parse_experiment_rollout_salt(
     form: &MultiValueForm,
+    key: &str,
 ) -> Result<Option<String>, String> {
-    let Some(raw) = form.first("voice_ns_rollout_salt") else {
+    let Some(raw) = form.first(key) else {
         return Ok(None);
     };
     let salt = raw.trim();
-    if salt.is_empty() || salt.encode_utf16().count() > VOICE_NS_MAX_ROLLOUT_SALT_CHARS {
+    if salt.is_empty() || salt.encode_utf16().count() > EXPERIMENT_MAX_ROLLOUT_SALT_CHARS {
         return Err(format!(
-            "Rollout salt must be between 1 and {VOICE_NS_MAX_ROLLOUT_SALT_CHARS} characters"
+            "Rollout salt must be between 1 and {EXPERIMENT_MAX_ROLLOUT_SALT_CHARS} characters"
         ));
     }
     Ok(Some(salt.to_owned()))
 }
 
-fn is_voice_noise_suppression_snowflake(value: &str) -> bool {
+fn parse_ascii_experiment_rollout_salt(
+    form: &MultiValueForm,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let salt = parse_experiment_rollout_salt(form, key)?;
+    if let Some(value) = salt.as_deref()
+        && !value
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic() || byte == b' ')
+    {
+        return Err("Rollout salt must use printable ASCII".to_owned());
+    }
+    Ok(salt)
+}
+
+fn is_experiment_snowflake(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= VOICE_NS_MAX_SNOWFLAKE_LENGTH
+        && value.len() <= EXPERIMENT_MAX_SNOWFLAKE_LENGTH
         && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
-fn parse_voice_noise_suppression_user_ids(value: &str, label: &str) -> Result<Vec<String>, String> {
+fn parse_experiment_user_ids(value: &str, label: &str) -> Result<Vec<String>, String> {
     let mut ids: Vec<String> = Vec::new();
     for (index, candidate) in value.split([',', '\n', '\r']).enumerate() {
         let candidate = candidate.trim();
         if candidate.is_empty() {
             continue;
         }
-        if !is_voice_noise_suppression_snowflake(candidate) {
+        if !is_experiment_snowflake(candidate) {
             return Err(format!(
                 "{label} entry {} must contain 1 to 20 decimal digits",
                 index + 1
@@ -513,9 +538,9 @@ fn parse_voice_noise_suppression_user_ids(value: &str, label: &str) -> Result<Ve
         if ids.iter().any(|existing| existing == candidate) {
             continue;
         }
-        if ids.len() == VOICE_NS_MAX_TARGETED_USERS {
+        if ids.len() == EXPERIMENT_MAX_TARGETED_USERS {
             return Err(format!(
-                "{label} must contain at most {VOICE_NS_MAX_TARGETED_USERS} unique IDs"
+                "{label} must contain at most {EXPERIMENT_MAX_TARGETED_USERS} unique IDs"
             ));
         }
         ids.push(candidate.to_owned());
@@ -536,7 +561,7 @@ fn parse_voice_noise_suppression_guild_overrides(
             format!("Guild overrides line {line_number} must use guild_id=backend")
         })?;
         let guild_id = guild_id.trim();
-        if !is_voice_noise_suppression_snowflake(guild_id) {
+        if !is_experiment_snowflake(guild_id) {
             return Err(format!(
                 "Guild overrides line {line_number} must use a guild ID with 1 to 20 decimal digits"
             ));
@@ -602,21 +627,20 @@ fn build_voice_noise_suppression_update(
                 "voice_ns_rollout_basis_points",
                 "Rollout basis points",
                 0,
-                VOICE_NS_ROLLOUT_BASIS_POINTS_MAX,
+                EXPERIMENT_ROLLOUT_BASIS_POINTS_MAX,
             )?,
-            rollout_salt: parse_voice_noise_suppression_rollout_salt(form)?,
-            included_user_ids: Some(parse_voice_noise_suppression_user_ids(
+            rollout_salt: parse_experiment_rollout_salt(form, "voice_ns_rollout_salt")?,
+            included_user_ids: Some(parse_experiment_user_ids(
                 form.first("voice_ns_included_user_ids").unwrap_or_default(),
                 "Included user IDs",
             )?),
-            excluded_user_ids: Some(parse_voice_noise_suppression_user_ids(
+            excluded_user_ids: Some(parse_experiment_user_ids(
                 form.first("voice_ns_excluded_user_ids").unwrap_or_default(),
                 "Excluded user IDs",
             )?),
             guild_overrides: Some(parse_voice_noise_suppression_guild_overrides(
                 form.first("voice_ns_guild_overrides").unwrap_or_default(),
             )?),
-            stereo_enabled: Some(form.bool_value("voice_ns_stereo_enabled")),
             suppression_strength: parse_form_number(
                 form,
                 "voice_ns_suppression_strength",
@@ -624,6 +648,78 @@ fn build_voice_noise_suppression_update(
                 0,
                 VOICE_NS_SUPPRESSION_STRENGTH_MAX,
             )?,
+        }),
+        ..Default::default()
+    })
+}
+
+fn build_push_service_delivery_update(
+    form: &MultiValueForm,
+) -> Result<InstanceConfigUpdateRequest, String> {
+    Ok(InstanceConfigUpdateRequest {
+        push_service_delivery: Some(PushServiceDeliveryConfigUpdateRequest {
+            enabled: Some(form.bool_value("push_service_delivery_enabled")),
+            rollout_basis_points: parse_form_number(
+                form,
+                "push_service_delivery_rollout_basis_points",
+                "Rollout basis points",
+                0,
+                EXPERIMENT_ROLLOUT_BASIS_POINTS_MAX,
+            )?,
+            rollout_salt: parse_ascii_experiment_rollout_salt(
+                form,
+                "push_service_delivery_rollout_salt",
+            )?,
+            included_user_ids: Some(parse_experiment_user_ids(
+                form.first("push_service_delivery_included_user_ids")
+                    .unwrap_or_default(),
+                "Included user IDs",
+            )?),
+            excluded_user_ids: Some(parse_experiment_user_ids(
+                form.first("push_service_delivery_excluded_user_ids")
+                    .unwrap_or_default(),
+                "Excluded user IDs",
+            )?),
+        }),
+        ..Default::default()
+    })
+}
+
+fn build_domain_migration_update(
+    form: &MultiValueForm,
+) -> Result<InstanceConfigUpdateRequest, String> {
+    Ok(InstanceConfigUpdateRequest {
+        domain_migration: Some(DomainMigrationConfigUpdateRequest {
+            enabled: Some(form.bool_value("domain_migration_enabled")),
+            rollout_basis_points: parse_form_number(
+                form,
+                "domain_migration_rollout_basis_points",
+                "Rollout basis points",
+                0,
+                EXPERIMENT_ROLLOUT_BASIS_POINTS_MAX,
+            )?,
+            rollout_salt: parse_ascii_experiment_rollout_salt(
+                form,
+                "domain_migration_rollout_salt",
+            )?,
+            included_user_ids: Some(parse_experiment_user_ids(
+                form.first("domain_migration_included_user_ids")
+                    .unwrap_or_default(),
+                "Included user IDs",
+            )?),
+            excluded_user_ids: Some(parse_experiment_user_ids(
+                form.first("domain_migration_excluded_user_ids")
+                    .unwrap_or_default(),
+                "Excluded user IDs",
+            )?),
+            anonymous_rollout_basis_points: parse_form_number(
+                form,
+                "domain_migration_anonymous_rollout_basis_points",
+                "Anonymous rollout basis points",
+                0,
+                EXPERIMENT_ROLLOUT_BASIS_POINTS_MAX,
+            )?,
+            standalone_forwarding: Some(form.bool_value("domain_migration_standalone_forwarding")),
         }),
         ..Default::default()
     })
@@ -683,6 +779,8 @@ fn build_app_public_update(form: &MultiValueForm) -> InstanceConfigUpdateRequest
                 wordmark_url: optional("app_wordmark_url"),
                 favicon_url: optional("app_favicon_url"),
                 theme_color: optional("app_theme_color"),
+                status_page_url: optional("app_status_page_url"),
+                status_page_incident_history_url: optional("app_status_page_incident_history_url"),
             }),
             setup: Some(AppSetupConfigUpdateRequest {
                 configured: Some(form.bool_value("app_setup_configured")),
@@ -1244,7 +1342,6 @@ mod tests {
             .expect("voice noise suppression update");
         assert_eq!(update.enabled, Some(true));
         assert_eq!(update.allow_user_override, Some(true));
-        assert_eq!(update.stereo_enabled, Some(false));
         assert_eq!(
             update.default_backend,
             Some(NoiseSuppressionBackend::Rnnoise)
@@ -1270,7 +1367,6 @@ mod tests {
             serde_json::json!({"voice_noise_suppression": {
                 "enabled": false,
                 "allow_user_override": false,
-                "stereo_enabled": false,
                 "enabled_backends": [],
                 "included_user_ids": [],
                 "excluded_user_ids": [],
@@ -1305,9 +1401,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_voice_noise_suppression_user_ids_splits_newlines_and_commas() {
+    fn parse_experiment_user_ids_splits_newlines_and_commas() {
         assert_eq!(
-            parse_voice_noise_suppression_user_ids("  1 ,2\n3\r\n 4 ,, 5 ", "Included user IDs")
+            parse_experiment_user_ids("  1 ,2\n3\r\n 4 ,, 5 ", "Included user IDs")
                 .expect("valid IDs"),
             vec![
                 "1".to_owned(),
@@ -1320,16 +1416,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_voice_noise_suppression_user_ids_dedupes_preserving_order() {
+    fn parse_experiment_user_ids_dedupes_preserving_order() {
         assert_eq!(
-            parse_voice_noise_suppression_user_ids("20,10,20,10,30", "Included user IDs")
-                .expect("valid IDs"),
+            parse_experiment_user_ids("20,10,20,10,30", "Included user IDs").expect("valid IDs"),
             vec!["20".to_owned(), "10".to_owned(), "30".to_owned()]
         );
     }
 
     #[test]
-    fn parse_voice_noise_suppression_user_ids_rejects_non_digit_and_overlong_values() {
+    fn parse_experiment_user_ids_rejects_non_digit_and_overlong_values() {
         for value in [
             "abc",
             "12a",
@@ -1339,11 +1434,8 @@ mod tests {
             "<script>",
         ] {
             assert_eq!(
-                parse_voice_noise_suppression_user_ids(
-                    &format!("123,{value}"),
-                    "Included user IDs"
-                )
-                .expect_err("invalid ID"),
+                parse_experiment_user_ids(&format!("123,{value}"), "Included user IDs")
+                    .expect_err("invalid ID"),
                 "Included user IDs entry 2 must contain 1 to 20 decimal digits",
                 "{value}"
             );
@@ -1351,18 +1443,17 @@ mod tests {
     }
 
     #[test]
-    fn parse_voice_noise_suppression_user_ids_rejects_exceeding_the_cap() {
-        let value = (0..VOICE_NS_MAX_TARGETED_USERS)
+    fn parse_experiment_user_ids_rejects_exceeding_the_cap() {
+        let value = (0..EXPERIMENT_MAX_TARGETED_USERS)
             .map(|index| index.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        let ids =
-            parse_voice_noise_suppression_user_ids(&format!("{value}\n999"), "Included user IDs")
-                .expect("valid IDs at cap");
-        assert_eq!(ids.len(), VOICE_NS_MAX_TARGETED_USERS);
+        let ids = parse_experiment_user_ids(&format!("{value}\n999"), "Included user IDs")
+            .expect("valid IDs at cap");
+        assert_eq!(ids.len(), EXPERIMENT_MAX_TARGETED_USERS);
         assert_eq!(ids.last(), Some(&"999".to_owned()));
         assert_eq!(
-            parse_voice_noise_suppression_user_ids(&format!("{value}\n1000"), "Included user IDs")
+            parse_experiment_user_ids(&format!("{value}\n1000"), "Included user IDs")
                 .expect_err("too many IDs"),
             "Included user IDs must contain at most 1000 unique IDs"
         );
@@ -1550,6 +1641,91 @@ mod tests {
             let form = MultiValueForm::parse(form.as_bytes());
             assert_eq!(
                 build_voice_noise_suppression_update(&form).expect_err("invalid targeting"),
+                message
+            );
+        }
+    }
+
+    #[test]
+    fn build_domain_migration_update_reads_the_rollout_fields() {
+        let form = MultiValueForm::parse(
+            b"domain_migration_enabled=true&domain_migration_rollout_basis_points=%20250%20&domain_migration_rollout_salt=%20domain-migration-v2%20&domain_migration_included_user_ids=1500000000000000001%0A1500000000000000002&domain_migration_excluded_user_ids=1500000000000000003%2C%201500000000000000004&domain_migration_anonymous_rollout_basis_points=%20100%20&domain_migration_standalone_forwarding=true",
+        );
+        let update = build_domain_migration_update(&form)
+            .expect("valid form")
+            .domain_migration
+            .expect("domain migration update");
+        assert_eq!(update.enabled, Some(true));
+        assert_eq!(update.rollout_basis_points, Some(250));
+        assert_eq!(update.rollout_salt, Some("domain-migration-v2".to_owned()));
+        assert_eq!(
+            update.included_user_ids,
+            Some(vec![
+                "1500000000000000001".to_owned(),
+                "1500000000000000002".to_owned()
+            ])
+        );
+        assert_eq!(
+            update.excluded_user_ids,
+            Some(vec![
+                "1500000000000000003".to_owned(),
+                "1500000000000000004".to_owned()
+            ])
+        );
+        assert_eq!(update.anonymous_rollout_basis_points, Some(100));
+        assert_eq!(update.standalone_forwarding, Some(true));
+    }
+
+    #[test]
+    fn build_domain_migration_update_leaves_the_feature_inert_when_nothing_is_submitted() {
+        let form = MultiValueForm::parse(b"_csrf=token");
+        let request = build_domain_migration_update(&form).expect("valid form");
+        assert_eq!(
+            serde_json::to_value(request).expect("serializable update"),
+            serde_json::json!({"domain_migration": {
+                "enabled": false,
+                "included_user_ids": [],
+                "excluded_user_ids": [],
+                "standalone_forwarding": false,
+            }})
+        );
+    }
+
+    #[test]
+    fn build_domain_migration_update_rejects_invalid_rollout_fields() {
+        for (form, message) in [
+            (
+                "domain_migration_rollout_basis_points=10001",
+                "Rollout basis points must be a whole number between 0 and 10000",
+            ),
+            (
+                "domain_migration_anonymous_rollout_basis_points=10001",
+                "Anonymous rollout basis points must be a whole number between 0 and 10000",
+            ),
+            (
+                "domain_migration_anonymous_rollout_basis_points=abc",
+                "Anonymous rollout basis points must be a whole number between 0 and 10000",
+            ),
+            (
+                "domain_migration_rollout_salt=%20%20",
+                "Rollout salt must be between 1 and 64 characters",
+            ),
+            (
+                "domain_migration_rollout_salt=caf%C3%A9",
+                "Rollout salt must use printable ASCII",
+            ),
+            (
+                "domain_migration_included_user_ids=123%2Cinvalid",
+                "Included user IDs entry 2 must contain 1 to 20 decimal digits",
+            ),
+            (
+                "domain_migration_excluded_user_ids=123%2Cinvalid",
+                "Excluded user IDs entry 2 must contain 1 to 20 decimal digits",
+            ),
+        ] {
+            let form = MultiValueForm::parse(form.as_bytes());
+            assert_eq!(
+                build_domain_migration_update(&form).expect_err("invalid rollout field"),
                 message
             );
         }

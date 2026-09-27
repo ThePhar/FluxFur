@@ -934,6 +934,22 @@
 						"description": "Filter by target entity ID (user, channel, role, invite code, etc.)"
 					},
 					{
+						"name": "access",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"description": "Only return entries recorded by reads or only entries recorded by writes",
+							"x-enumNames": ["read", "write"],
+							"x-enumDescriptions": [
+								"An entry recorded by an operation that only reads data",
+								"An entry recorded by an operation that changes data or triggers work"
+							],
+							"enum": ["read", "write"],
+							"type": "string"
+						},
+						"description": "Only return entries recorded by reads or only entries recorded by writes"
+					},
+					{
 						"name": "sort_by",
 						"in": "query",
 						"required": false,
@@ -1667,7 +1683,7 @@
 						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
 					}
 				},
-				"description": "Enqueue one background administrative job. The `task` discriminator selects both the body variant and the ACL evaluated for the request: `update_user_flags` needs bulk:update:user_flags, `update_suspicious_activity_flags` needs bulk:update:suspicious_activity, `update_guild_features` needs bulk:update:guild_features, `add_guild_members` needs bulk:add:guild_members, `schedule_user_deletion` needs bulk:delete:users, and `delete_user_messages` needs bulk:delete:user_messages. Returns a job_id immediately; observe progress at /admin/jobs/:job_id. Note: the schedule_user_deletion worker skips Stripe refunds, session termination, and identifier banning — apply those separately for high-risk accounts.",
+				"description": "Enqueue one background administrative job. The `task` discriminator selects both the body variant and the ACL evaluated for the request: `update_user_flags` needs bulk:update:user_flags, `update_suspicious_activity_flags` needs bulk:update:suspicious_activity, `update_guild_features` needs bulk:update:guild_features, `add_guild_members` needs bulk:add:guild_members, `schedule_user_deletion` needs bulk:delete:users, and `delete_user_messages` needs bulk:delete:user_messages. Returns a job_id immediately; observe progress at /admin/jobs/:job_id.",
 				"security": [{"adminApiKey": []}],
 				"requestBody": {
 					"required": true,
@@ -5425,59 +5441,6 @@
 					"required": true,
 					"content": {"application/json": {"schema": {"$ref": "#/components/schemas/SendSystemDmRequest"}}}
 				}
-			}
-		},
-		"/admin/system/heap-snapshots": {
-			"post": {
-				"operationId": "create_admin_system_heap_snapshot",
-				"summary": "Create a V8 heap snapshot",
-				"tags": ["Admin"],
-				"responses": {
-					"200": {
-						"description": "Success",
-						"content": {"application/octet-stream": {"schema": {"$ref": "#/components/schemas/HeapSnapshotResponse"}}}
-					},
-					"400": {
-						"description": "Bad Request - The request was malformed or contained invalid data",
-						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
-					},
-					"401": {
-						"description": "Unauthorized - Authentication is required or the token is invalid",
-						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
-					},
-					"403": {
-						"description": "Forbidden - You do not have permission to perform this action",
-						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
-					},
-					"429": {
-						"description": "Too Many Requests - You are being rate limited",
-						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/ThrottledError"}}},
-						"headers": {
-							"Retry-After": {
-								"description": "Number of seconds to wait before retrying (only on 429)",
-								"schema": {"type": "integer"}
-							},
-							"X-RateLimit-Limit": {
-								"description": "The number of requests that can be made in the current window",
-								"schema": {"type": "integer"}
-							},
-							"X-RateLimit-Remaining": {
-								"description": "The number of remaining requests that can be made",
-								"schema": {"type": "integer"}
-							},
-							"X-RateLimit-Reset": {
-								"description": "Unix timestamp when the rate limit resets",
-								"schema": {"type": "integer"}
-							}
-						}
-					},
-					"500": {
-						"description": "Internal Server Error - An unexpected error occurred",
-						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
-					}
-				},
-				"description": "Writes a V8 heap snapshot of the current process and returns the snapshot file. Used for diagnosing memory leaks. Requires SYSTEM_HEAP_SNAPSHOT permission.",
-				"security": [{"adminApiKey": []}]
 			}
 		},
 		"/admin/users": {
@@ -9874,7 +9837,7 @@
 				"type": "object",
 				"properties": {
 					"acls": {
-						"maxItems": 112,
+						"maxItems": 111,
 						"type": "array",
 						"items": {"$ref": "#/components/schemas/AdminAclType"},
 						"description": "List of access control permissions to assign"
@@ -9904,7 +9867,6 @@
 				"required": ["users", "total"],
 				"additionalProperties": false
 			},
-			"HeapSnapshotResponse": {"type": "string", "format": "binary", "description": "V8 heap snapshot file"},
 			"SendSystemDmRequest": {
 				"type": "object",
 				"properties": {
@@ -10562,6 +10524,8 @@
 					},
 					"gateway_rollout": {"$ref": "#/components/schemas/GatewayRolloutConfigResponse"},
 					"voice_noise_suppression": {"$ref": "#/components/schemas/VoiceNoiseSuppressionConfigResponse"},
+					"push_service_delivery": {"$ref": "#/components/schemas/PushServiceDeliveryConfigResponse"},
+					"domain_migration": {"$ref": "#/components/schemas/DomainMigrationConfigResponse"},
 					"experiment_delivery": {"$ref": "#/components/schemas/ExperimentDeliveryConfigResponse"},
 					"registration": {
 						"type": "object",
@@ -10579,13 +10543,13 @@
 										"created_at": {
 											"type": "string",
 											"format": "date-time",
-											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 										},
 										"expires_at": {
 											"nullable": true,
 											"type": "string",
 											"format": "date-time",
-											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 										},
 										"max_uses": {"nullable": true, "type": "integer", "minimum": 1, "maximum": 9007199254740991},
 										"use_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
@@ -10593,14 +10557,14 @@
 											"nullable": true,
 											"type": "string",
 											"format": "date-time",
-											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 										},
 										"approval_required": {"type": "boolean"},
 										"last_used_at": {
 											"nullable": true,
 											"type": "string",
 											"format": "date-time",
-											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 										},
 										"last_used_by_user_id": {
 											"nullable": true,
@@ -10636,7 +10600,7 @@
 										"requested_at": {
 											"type": "string",
 											"format": "date-time",
-											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+											"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 										},
 										"registration_url_id": {"nullable": true, "type": "string", "minLength": 1, "maxLength": 128},
 										"client_ip": {"nullable": true, "type": "string"}
@@ -10671,7 +10635,9 @@
 									"logo_url": {"nullable": true, "type": "string"},
 									"wordmark_url": {"nullable": true, "type": "string"},
 									"favicon_url": {"nullable": true, "type": "string"},
-									"theme_color": {"nullable": true, "type": "string"}
+									"theme_color": {"nullable": true, "type": "string"},
+									"status_page_url": {"nullable": true, "type": "string"},
+									"status_page_incident_history_url": {"nullable": true, "type": "string"}
 								},
 								"required": [
 									"product_name",
@@ -10680,7 +10646,9 @@
 									"logo_url",
 									"wordmark_url",
 									"favicon_url",
-									"theme_color"
+									"theme_color",
+									"status_page_url",
+									"status_page_incident_history_url"
 								],
 								"additionalProperties": false
 							},
@@ -10889,12 +10857,14 @@
 									"min_lifetime_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
 									"max_lifetime_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
@@ -10902,12 +10872,14 @@
 									"renew_threshold_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
 									"renew_window_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
@@ -10918,15 +10890,31 @@
 											"min_size_mb": {"type": "number", "minimum": 0, "exclusiveMinimum": true},
 											"max_size_mb": {"type": "number", "minimum": 0, "exclusiveMinimum": true},
 											"max_eligible_size_mb": {"type": "number", "minimum": 0, "exclusiveMinimum": true},
-											"min_lifetime_days": {"type": "integer", "exclusiveMinimum": true, "maximum": 9007199254740991},
-											"max_lifetime_days": {"type": "integer", "exclusiveMinimum": true, "maximum": 9007199254740991},
-											"curve": {"type": "number", "minimum": 0, "maximum": 1},
-											"renew_threshold_days": {
+											"min_lifetime_days": {
 												"type": "integer",
+												"minimum": 0,
 												"exclusiveMinimum": true,
 												"maximum": 9007199254740991
 											},
-											"renew_window_days": {"type": "integer", "exclusiveMinimum": true, "maximum": 9007199254740991}
+											"max_lifetime_days": {
+												"type": "integer",
+												"minimum": 0,
+												"exclusiveMinimum": true,
+												"maximum": 9007199254740991
+											},
+											"curve": {"type": "number", "minimum": 0, "maximum": 1},
+											"renew_threshold_days": {
+												"type": "integer",
+												"minimum": 0,
+												"exclusiveMinimum": true,
+												"maximum": 9007199254740991
+											},
+											"renew_window_days": {
+												"type": "integer",
+												"minimum": 0,
+												"exclusiveMinimum": true,
+												"maximum": 9007199254740991
+											}
 										},
 										"required": [
 											"enabled",
@@ -10965,6 +10953,8 @@
 					"sso",
 					"gateway_rollout",
 					"voice_noise_suppression",
+					"push_service_delivery",
+					"domain_migration",
 					"experiment_delivery",
 					"registration",
 					"self_hosted",
@@ -10983,7 +10973,7 @@
 						"nullable": true,
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"max_uses": {"nullable": true, "type": "integer", "minimum": 1, "maximum": 1000000},
 					"approval_required": {"default": false, "type": "boolean"}
@@ -11001,13 +10991,13 @@
 							"created_at": {
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 							},
 							"expires_at": {
 								"nullable": true,
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 							},
 							"max_uses": {"nullable": true, "type": "integer", "minimum": 1, "maximum": 9007199254740991},
 							"use_count": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
@@ -11015,14 +11005,14 @@
 								"nullable": true,
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 							},
 							"approval_required": {"type": "boolean"},
 							"last_used_at": {
 								"nullable": true,
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 							},
 							"last_used_by_user_id": {
 								"nullable": true,
@@ -11099,6 +11089,14 @@
 						"nullable": true,
 						"allOf": [{"$ref": "#/components/schemas/VoiceNoiseSuppressionConfigUpdateRequest"}]
 					},
+					"push_service_delivery": {
+						"nullable": true,
+						"allOf": [{"$ref": "#/components/schemas/PushServiceDeliveryConfigUpdateRequest"}]
+					},
+					"domain_migration": {
+						"nullable": true,
+						"allOf": [{"$ref": "#/components/schemas/DomainMigrationConfigUpdateRequest"}]
+					},
 					"experiment_delivery": {
 						"nullable": true,
 						"allOf": [{"$ref": "#/components/schemas/ExperimentDeliveryConfigUpdateRequest"}]
@@ -11144,7 +11142,9 @@
 									"logo_url": {"nullable": true, "type": "string", "maxLength": 2048},
 									"wordmark_url": {"nullable": true, "type": "string", "maxLength": 2048},
 									"favicon_url": {"nullable": true, "type": "string", "maxLength": 2048},
-									"theme_color": {"nullable": true, "type": "string", "maxLength": 64}
+									"theme_color": {"nullable": true, "type": "string", "maxLength": 64},
+									"status_page_url": {"nullable": true, "type": "string", "maxLength": 2048},
+									"status_page_incident_history_url": {"nullable": true, "type": "string", "maxLength": 2048}
 								}
 							},
 							"setup": {"nullable": true, "type": "object", "properties": {"configured": {"type": "boolean"}}},
@@ -11254,12 +11254,14 @@
 									"min_lifetime_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
 									"max_lifetime_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
@@ -11267,12 +11269,14 @@
 									"renew_threshold_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									},
 									"renew_window_days": {
 										"nullable": true,
 										"type": "integer",
+										"minimum": 0,
 										"exclusiveMinimum": true,
 										"maximum": 9007199254740991
 									}
@@ -11304,7 +11308,7 @@
 								"properties": {
 									"enabled": {"type": "boolean"},
 									"window_hours": {"type": "number", "minimum": 0, "exclusiveMinimum": true, "maximum": 8760},
-									"member_threshold": {"type": "integer", "exclusiveMinimum": true, "maximum": 1000000}
+									"member_threshold": {"type": "integer", "minimum": 0, "exclusiveMinimum": true, "maximum": 1000000}
 								}
 							}
 						}
@@ -11859,7 +11863,39 @@
 								},
 								"process_count": {"$ref": "#/components/schemas/Int32Type"},
 								"process_limit": {"$ref": "#/components/schemas/Int32Type"},
-								"uptime_seconds": {"$ref": "#/components/schemas/Int32Type"}
+								"uptime_seconds": {"$ref": "#/components/schemas/Int32Type"},
+								"cluster_metrics": {
+									"type": "object",
+									"properties": {
+										"gateway_cluster_member_count": {"$ref": "#/components/schemas/Int32Type"},
+										"gateway_cluster_discovery_resolve_failures_total": {"$ref": "#/components/schemas/Int32Type"},
+										"gateway_cluster_membership_transitions_total": {
+											"type": "object",
+											"properties": {
+												"up": {"$ref": "#/components/schemas/Int32Type"},
+												"down": {"$ref": "#/components/schemas/Int32Type"}
+											},
+											"required": ["up", "down"],
+											"additionalProperties": false
+										},
+										"gateway_node_router_owner_resolutions_total": {
+											"type": "object",
+											"properties": {
+												"self": {"$ref": "#/components/schemas/Int32Type"},
+												"peer": {"$ref": "#/components/schemas/Int32Type"}
+											},
+											"required": ["self", "peer"],
+											"additionalProperties": false
+										}
+									},
+									"required": [
+										"gateway_cluster_member_count",
+										"gateway_cluster_discovery_resolve_failures_total",
+										"gateway_cluster_membership_transitions_total",
+										"gateway_node_router_owner_resolutions_total"
+									],
+									"additionalProperties": false
+								}
 							},
 							"required": [
 								"node_id",
@@ -12589,6 +12625,16 @@
 						}
 					},
 					"action": {"type": "string", "minLength": 1, "maxLength": 256},
+					"access": {
+						"description": "Whether the recorded operation read data or changed it",
+						"x-enumNames": ["read", "write"],
+						"x-enumDescriptions": [
+							"An entry recorded by an operation that only reads data",
+							"An entry recorded by an operation that changes data or triggers work"
+						],
+						"enum": ["read", "write"],
+						"type": "string"
+					},
 					"audit_log_reason": {"nullable": true, "type": "string", "minLength": 1, "maxLength": 4000},
 					"metadata": {"type": "object", "additionalProperties": {"type": "string", "maxLength": 4000}},
 					"created_at": {"type": "string"}
@@ -12606,6 +12652,7 @@
 					"related_guilds",
 					"related_channels",
 					"action",
+					"access",
 					"audit_log_reason",
 					"metadata",
 					"created_at"
@@ -12694,7 +12741,7 @@
 					},
 					"acls": {
 						"description": "Replacement list of access control permissions for the key",
-						"maxItems": 112,
+						"maxItems": 111,
 						"type": "array",
 						"items": {"$ref": "#/components/schemas/AdminAclType"}
 					}
@@ -12712,7 +12759,7 @@
 						"type": "string"
 					},
 					"acls": {
-						"maxItems": 112,
+						"maxItems": 111,
 						"type": "array",
 						"items": {"type": "string"},
 						"description": "List of access control permissions for the key"
@@ -12742,7 +12789,7 @@
 						"maximum": 365
 					},
 					"acls": {
-						"maxItems": 112,
+						"maxItems": 111,
 						"type": "array",
 						"items": {"$ref": "#/components/schemas/AdminAclType"},
 						"description": "List of access control permissions for the key"
@@ -12763,7 +12810,7 @@
 						"type": "string"
 					},
 					"acls": {
-						"maxItems": 112,
+						"maxItems": 111,
 						"type": "array",
 						"items": {"type": "string"},
 						"description": "List of access control permissions for the key"
@@ -12776,7 +12823,7 @@
 				"type": "object",
 				"properties": {
 					"acls": {
-						"maxItems": 112,
+						"maxItems": 111,
 						"type": "array",
 						"items": {"type": "string", "minLength": 1, "maxLength": 64},
 						"description": "Every admin access control permission the admin API recognises"
@@ -12867,7 +12914,6 @@
 					"report:view",
 					"report:view:reporter_pii",
 					"system_dm:send",
-					"system:heap_snapshot",
 					"user:cancel:bulk_message_deletion",
 					"user:delete",
 					"user:disable:suspicious",
@@ -12979,14 +13025,14 @@
 						"description": "ISO 8601 timestamp when the bot token was created",
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"client_secret_created_at": {
 						"nullable": true,
 						"description": "ISO 8601 timestamp when the client secret was created",
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"version": {
 						"description": "The optimistic locking version of the application record",
@@ -13414,7 +13460,7 @@
 					"timestamp": {
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
 						"description": "The ISO 8601 timestamp of when the message was created"
 					},
 					"edited_timestamp": {
@@ -13422,7 +13468,7 @@
 						"nullable": true,
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"pinned": {"type": "boolean", "description": "Whether the message is pinned"},
 					"mention_everyone": {"type": "boolean", "description": "Whether the message mentions @everyone"},
@@ -13522,7 +13568,7 @@
 								"nullable": true,
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 							}
 						},
 						"required": ["participants"],
@@ -13559,7 +13605,7 @@
 							"timestamp": {
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
 								"description": "The ISO 8601 timestamp of when the message was created"
 							},
 							"edited_timestamp": {
@@ -13567,7 +13613,7 @@
 								"nullable": true,
 								"type": "string",
 								"format": "date-time",
-								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+								"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 							},
 							"pinned": {"type": "boolean", "description": "Whether the message is pinned"},
 							"mention_everyone": {"type": "boolean", "description": "Whether the message mentions @everyone"},
@@ -13667,7 +13713,7 @@
 										"nullable": true,
 										"type": "string",
 										"format": "date-time",
-										"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+										"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 									}
 								},
 								"required": ["participants"],
@@ -13831,7 +13877,7 @@
 					"timestamp": {
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
 						"description": "The ISO 8601 timestamp of when the original message was created"
 					},
 					"edited_timestamp": {
@@ -13839,7 +13885,7 @@
 						"nullable": true,
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"mentions": {
 						"description": "The user IDs mentioned in the snapshot",
@@ -14008,7 +14054,7 @@
 						"nullable": true,
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"description": {"description": "The description of the embed", "nullable": true, "type": "string"},
 					"author": {
@@ -14220,7 +14266,7 @@
 						"nullable": true,
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"description": {"description": "The description of the embed", "nullable": true, "type": "string"},
 					"author": {
@@ -14885,7 +14931,10 @@
 						"nullable": true,
 						"type": "string"
 					},
-					"reason": {"description": "The reason provided for the action", "type": "string"},
+					"reason": {
+						"description": "The audit log reason. For bans and timeouts without an X-Audit-Log-Reason header this is the reason sent in the request body",
+						"type": "string"
+					},
 					"options": {
 						"description": "Additional options depending on action type",
 						"type": "object",
@@ -14893,15 +14942,22 @@
 							"channel_id": {"description": "Channel ID for relevant actions", "type": "string"},
 							"count": {"description": "Count of items affected", "type": "number"},
 							"delete_member_days": {
-								"description": "Number of days of messages to delete on member ban",
+								"description": "Deprecated. Whole days of messages deleted, written only by bans recorded before delete_message_seconds",
 								"type": "string"
+							},
+							"delete_message_seconds": {
+								"description": "Seconds of the banned user's messages that the ban deleted, present only when positive",
+								"type": "number"
 							},
 							"id": {"description": "ID of the affected entity", "type": "string"},
 							"integration_type": {"description": "Type of integration", "type": "number"},
 							"message_id": {"description": "Message ID for relevant actions", "type": "string"},
 							"members_removed": {"description": "Number of members removed", "type": "number"},
-							"role_name": {"description": "Name of the role", "type": "string"},
-							"type": {"description": "Type identifier", "type": "number"},
+							"role_name": {"description": "Name of the role when the entry was written", "type": "string"},
+							"type": {
+								"description": "Channel type for CHANNEL_CREATE, CHANNEL_UPDATE and CHANNEL_DELETE. Overwrite target type (0 role, 1 member) for CHANNEL_OVERWRITE_*",
+								"type": "number"
+							},
 							"inviter_id": {"description": "ID of the user who created the invite", "type": "string"},
 							"max_age": {"description": "Maximum age of the invite in seconds", "type": "number"},
 							"max_uses": {"description": "Maximum number of uses for the invite", "type": "number"},
@@ -15082,7 +15138,7 @@
 					"joined_at": {
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
 						"description": "ISO8601 timestamp of when the user joined the guild"
 					},
 					"mute": {"type": "boolean", "description": "Whether the member is muted in voice channels"},
@@ -15092,7 +15148,7 @@
 						"nullable": true,
 						"type": "string",
 						"format": "date-time",
-						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
 					"profile_flags": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/GuildMemberProfileFlags"}]},
 					"mention_flags": {
@@ -15134,6 +15190,44 @@
 					"poll_jitter_percent": {"type": "integer", "minimum": 0, "maximum": 50}
 				}
 			},
+			"DomainMigrationConfigUpdateRequest": {
+				"type": "object",
+				"properties": {
+					"enabled": {"type": "boolean"},
+					"rollout_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+					"rollout_salt": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[\\x20-\\x7e]+$"},
+					"included_user_ids": {
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"excluded_user_ids": {
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"anonymous_rollout_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+					"standalone_forwarding": {"type": "boolean"}
+				}
+			},
+			"PushServiceDeliveryConfigUpdateRequest": {
+				"type": "object",
+				"properties": {
+					"enabled": {"type": "boolean"},
+					"rollout_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
+					"rollout_salt": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[\\x20-\\x7e]+$"},
+					"included_user_ids": {
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"excluded_user_ids": {
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					}
+				}
+			},
 			"VoiceNoiseSuppressionConfigUpdateRequest": {
 				"type": "object",
 				"properties": {
@@ -15169,7 +15263,6 @@
 							"required": ["guild_id", "backend"]
 						}
 					},
-					"stereo_enabled": {"type": "boolean"},
 					"suppression_strength": {"type": "integer", "minimum": 0, "maximum": 100}
 				}
 			},
@@ -15198,6 +15291,82 @@
 					"poll_jitter_percent": {"default": 15, "type": "integer", "minimum": 0, "maximum": 50}
 				},
 				"required": ["poll_interval_seconds", "poll_jitter_percent"],
+				"additionalProperties": false
+			},
+			"DomainMigrationConfigResponse": {
+				"type": "object",
+				"properties": {
+					"enabled": {"default": false, "type": "boolean"},
+					"config_version": {"default": 0, "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+					"rollout_basis_points": {"default": 0, "type": "integer", "minimum": 0, "maximum": 10000},
+					"rollout_salt": {
+						"default": "domain-migration-v1",
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64,
+						"pattern": "^[\\x20-\\x7e]+$"
+					},
+					"included_user_ids": {
+						"default": [],
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"excluded_user_ids": {
+						"default": [],
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"anonymous_rollout_basis_points": {"default": 0, "type": "integer", "minimum": 0, "maximum": 10000},
+					"standalone_forwarding": {"default": false, "type": "boolean"}
+				},
+				"required": [
+					"enabled",
+					"config_version",
+					"rollout_basis_points",
+					"rollout_salt",
+					"included_user_ids",
+					"excluded_user_ids",
+					"anonymous_rollout_basis_points",
+					"standalone_forwarding"
+				],
+				"additionalProperties": false
+			},
+			"PushServiceDeliveryConfigResponse": {
+				"type": "object",
+				"properties": {
+					"enabled": {"default": false, "type": "boolean"},
+					"config_version": {"default": 0, "type": "integer", "minimum": 0, "maximum": 9007199254740991},
+					"rollout_basis_points": {"default": 0, "type": "integer", "minimum": 0, "maximum": 10000},
+					"rollout_salt": {
+						"default": "push-service-delivery-v1",
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64,
+						"pattern": "^[\\x20-\\x7e]+$"
+					},
+					"included_user_ids": {
+						"default": [],
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"excluded_user_ids": {
+						"default": [],
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					}
+				},
+				"required": [
+					"enabled",
+					"config_version",
+					"rollout_basis_points",
+					"rollout_salt",
+					"included_user_ids",
+					"excluded_user_ids"
+				],
 				"additionalProperties": false
 			},
 			"VoiceNoiseSuppressionConfigResponse": {
@@ -15244,7 +15413,6 @@
 							"additionalProperties": false
 						}
 					},
-					"stereo_enabled": {"default": false, "type": "boolean"},
 					"suppression_strength": {"default": 80, "type": "integer", "minimum": 0, "maximum": 100}
 				},
 				"required": [
@@ -15258,7 +15426,6 @@
 					"included_user_ids",
 					"excluded_user_ids",
 					"guild_overrides",
-					"stereo_enabled",
 					"suppression_strength"
 				],
 				"additionalProperties": false
@@ -15396,7 +15563,7 @@
 					"pending_bulk_message_deletion_at": {"nullable": true, "type": "string"},
 					"deletion_reason_code": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/Int32Type"}]},
 					"deletion_public_reason": {"nullable": true, "type": "string"},
-					"acls": {"maxItems": 112, "type": "array", "items": {"type": "string"}},
+					"acls": {"maxItems": 111, "type": "array", "items": {"type": "string"}},
 					"traits": {"maxItems": 100, "type": "array", "items": {"type": "string"}},
 					"has_totp": {"type": "boolean"},
 					"authenticator_types": {"maxItems": 10, "type": "array", "items": {"$ref": "#/components/schemas/Int32Type"}},
@@ -15544,9 +15711,10 @@
 					"id": {"type": "string", "description": "The credential ID"},
 					"name": {"type": "string", "description": "User-assigned name for the credential"},
 					"created_at": {"type": "string", "description": "When the credential was registered"},
-					"last_used_at": {"nullable": true, "description": "When the credential was last used", "type": "string"}
+					"last_used_at": {"nullable": true, "description": "When the credential was last used", "type": "string"},
+					"rp_id": {"type": "string", "description": "Relying party ID the passkey belongs to"}
 				},
-				"required": ["id", "name", "created_at", "last_used_at"],
+				"required": ["id", "name", "created_at", "last_used_at", "rp_id"],
 				"additionalProperties": false
 			},
 			"VoiceServerAdminResponse": {
