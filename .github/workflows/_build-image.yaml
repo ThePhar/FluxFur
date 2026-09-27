@@ -76,8 +76,6 @@ jobs:
         with:
           client-id: ${{ vars.FLUXER_CI_APP_ID }}
           private-key: ${{ secrets.FLUXER_CI_APP_KEY }}
-          owner: ThePhar
-          repositories: FluxFur
           permission-contents: read
       - name: set variables
         id: vars
@@ -175,8 +173,6 @@ jobs:
         with:
           client-id: ${{ vars.FLUXER_CI_APP_ID }}
           private-key: ${{ secrets.FLUXER_CI_APP_KEY }}
-          owner: ThePhar
-          repositories: FluxFur
           permission-contents: write
       - name: Publish GitHub release
         env:
