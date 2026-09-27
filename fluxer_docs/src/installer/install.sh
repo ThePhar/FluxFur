@@ -50,7 +50,7 @@ set -eu
 LC_ALL=C
 export LC_ALL
 
-FLUXER_RAW_BASE='https://raw.githubusercontent.com/fluxerapp/fluxer'
+FLUXER_RAW_BASE='https://raw.githubusercontent.com/thephar/fluxfur'
 FLUXER_STACK_PATH='deploy/self-hosting'
 FLUXER_MIN_ENGINE='24.0.0'
 # Podman numbers its releases on its own scale, so the Docker Engine floor says

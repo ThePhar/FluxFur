@@ -341,7 +341,7 @@ mod tests {
             "LABEL org.opencontainers.image.vendor=\"Fluxer\"",
             "LABEL org.opencontainers.image.url=\"https://fluxer.app\"",
             "LABEL org.opencontainers.image.documentation=\"https://docs.fluxer.app\"",
-            "LABEL org.opencontainers.image.source=\"https://github.com/fluxerapp/fluxer\"",
+            "LABEL org.opencontainers.image.source=\"https://github.com/thephar/fluxfur\"",
             "LABEL org.opencontainers.image.version=\"${BUILD_VERSION}\"",
             "LABEL org.opencontainers.image.revision=\"${SOURCE_SHA}\"",
             "LABEL org.opencontainers.image.created=\"${SOURCE_DATE}\"",

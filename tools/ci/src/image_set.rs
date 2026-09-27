@@ -13,13 +13,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const SCHEMA_VERSION: u8 = 1;
-const DEFAULT_REGISTRY: &str = "ghcr.io/fluxerapp";
+const DEFAULT_REGISTRY: &str = "ghcr.io/thephar";
 const DEFAULT_MOVING_TAGS: &str = "v1,latest";
 const DEFAULT_FROM_TAG: &str = "v1";
 const DEFAULT_OUT_DIR: &str = "release-out";
 const RELEASE_COMPONENT: &str = "fluxer-release";
 const COMPOSE_IMAGE_PREFIX: &str =
-    "${FLUXER_REGISTRY:-ghcr.io/${FLUXER_REGISTRY_OWNER:-fluxerapp}}";
+    "${FLUXER_REGISTRY:-ghcr.io/${FLUXER_REGISTRY_OWNER:-thephar}}";
 const OCI_INDEX_MEDIA_TYPE: &str = "application/vnd.oci.image.index.v1+json";
 const DOCKER_MANIFEST_LIST_MEDIA_TYPE: &str =
     "application/vnd.docker.distribution.manifest.list.v2+json";
@@ -1089,7 +1089,7 @@ mod tests {
     fn promote_command_targets_the_digest() {
         let digest = format!("sha256:{}", "0".repeat(64));
         let spec = promote_command(
-            "ghcr.io/fluxerapp/fluxer-api",
+            "ghcr.io/thephar/fluxer-api",
             &digest,
             &["v1".to_string(), "latest".to_string()],
         );
@@ -1101,10 +1101,10 @@ mod tests {
                 "imagetools",
                 "create",
                 "-t",
-                "ghcr.io/fluxerapp/fluxer-api:v1",
+                "ghcr.io/thephar/fluxer-api:v1",
                 "-t",
-                "ghcr.io/fluxerapp/fluxer-api:latest",
-                &format!("ghcr.io/fluxerapp/fluxer-api@{digest}"),
+                "ghcr.io/thephar/fluxer-api:latest",
+                &format!("ghcr.io/thephar/fluxer-api@{digest}"),
             ]
         );
     }
@@ -1112,12 +1112,12 @@ mod tests {
     #[test]
     fn unpublished_moving_tags_are_reported_without_blocking_the_promote() {
         let tags = ["v1".to_string(), "latest".to_string()];
-        let complete = unpublished_moving_tags("ghcr.io/fluxerapp", "fluxer-docs", &tags, |_| true);
+        let complete = unpublished_moving_tags("ghcr.io/thephar", "fluxer-docs", &tags, |_| true);
         assert!(complete.is_empty());
 
         let bootstrapping =
-            unpublished_moving_tags("ghcr.io/fluxerapp", "fluxer-docs", &tags, |reference| {
-                !reference.starts_with("ghcr.io/fluxerapp/fluxer-gifs:")
+            unpublished_moving_tags("ghcr.io/thephar", "fluxer-docs", &tags, |reference| {
+                !reference.starts_with("ghcr.io/thephar/fluxer-gifs:")
             });
         assert_eq!(
             bootstrapping,
@@ -1132,8 +1132,8 @@ mod tests {
     fn unpublished_moving_tags_never_reports_the_component_being_promoted() {
         let tags = ["v1".to_string()];
         let warnings =
-            unpublished_moving_tags("ghcr.io/fluxerapp", "fluxer-gifs", &tags, |reference| {
-                !reference.starts_with("ghcr.io/fluxerapp/fluxer-gifs:")
+            unpublished_moving_tags("ghcr.io/thephar", "fluxer-gifs", &tags, |reference| {
+                !reference.starts_with("ghcr.io/thephar/fluxer-gifs:")
             });
         assert!(warnings.is_empty());
     }
@@ -1210,9 +1210,9 @@ mod tests {
         validate_registry(DEFAULT_REGISTRY).unwrap();
         validate_registry("registry.example.com:5000/fluxer").unwrap();
         assert!(validate_registry("").is_err());
-        assert!(validate_registry("ghcr.io/fluxerapp/").is_err());
-        assert!(validate_registry("ghcr.io/fluxerapp/fluxer-api:v1").is_err());
-        assert!(validate_registry("ghcr.io/ fluxerapp").is_err());
+        assert!(validate_registry("ghcr.io/thephar/").is_err());
+        assert!(validate_registry("ghcr.io/thephar/fluxer-api:v1").is_err());
+        assert!(validate_registry("ghcr.io/ thephar").is_err());
     }
 
     fn linear_compare<'a>(

@@ -2168,7 +2168,7 @@ async function verifyInstallerExecution(installerRoot: string): Promise<Array<st
 		'case "$1 $2" in',
 		"	'--version ') echo 'Docker version 27.1.1, build stub' ;;",
 		"	'compose version') if [ \"$3\" = '--short' ]; then echo '2.30.3'; else echo 'v2.30.3'; fi ;;",
-		"	'compose config') echo 'ghcr.io/fluxerapp/fluxer-api:v1' ;;",
+		"	'compose config') echo 'ghcr.io/thephar/fluxer-api:v1' ;;",
 		'esac',
 		'exit 0',
 		'',
