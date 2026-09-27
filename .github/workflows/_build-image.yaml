@@ -65,6 +65,11 @@ jobs:
         uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: "1.98.1"
+      - name: debug vars
+        run: |
+          echo "id length: ${#FLUXER_CI_APP_ID}"
+        env:
+          FLUXER_CI_APP_ID: ${{ vars.FLUXER_CI_APP_ID }}
       - name: Create token
         id: create-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
@@ -164,11 +169,6 @@ jobs:
             "${IMAGE}:${VERSION}-amd64" \
             "${IMAGE}:${VERSION}-arm64"
           docker buildx imagetools inspect "${IMAGE}:${VERSION}"
-      - name: debug vars
-        run: |
-          echo "id length: ${#FLUXER_CI_APP_ID}"
-        env:
-          FLUXER_CI_APP_ID: ${{ vars.FLUXER_CI_APP_ID }}
       - name: Create token
         id: create-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
