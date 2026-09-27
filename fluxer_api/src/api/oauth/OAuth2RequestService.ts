@@ -33,7 +33,6 @@ import type {
 	TokenRequest,
 } from '@fluxer/schema/src/domains/oauth/OAuthSchemas';
 import type {Context} from 'hono';
-import type {z} from 'zod';
 import type {ApiContext} from '../ApiContext';
 import type {SudoVerificationBody} from '../auth/services/SudoVerificationService';
 import {requireSudoMode} from '../auth/services/SudoVerificationService';
@@ -47,7 +46,12 @@ import {verifyPassword} from '../utils/PasswordUtils';
 import type {ApplicationService} from './ApplicationService';
 import {ApplicationNotOwnedError} from './ApplicationService';
 import type {BotAuthService} from './BotAuthService';
-import {mapApplicationToResponse, mapBotTokenResetResponse, mapBotUserToResponse} from './OAuth2Mappers';
+import {
+	mapApplicationToResponse,
+	mapBotProfileToResponse,
+	mapBotTokenResetResponse,
+	mapBotUserToResponse,
+} from './OAuth2Mappers';
 import {filterOAuth2Scopes} from './OAuth2ScopeUtils';
 import {ACCESS_TOKEN_TTL_SECONDS, type OAuth2Service} from './OAuth2Service';
 import type {IApplicationRepository} from './repositories/IApplicationRepository';
@@ -69,7 +73,7 @@ export class OAuth2RequestService {
 	) {}
 
 	async tokenExchange(params: {
-		form: z.infer<typeof TokenRequest>;
+		form: TokenRequest;
 		authorizationHeader?: string;
 		logPrefix: string;
 	}): Promise<OAuth2TokenResponse> {
@@ -144,7 +148,7 @@ export class OAuth2RequestService {
 		};
 	}
 
-	async revoke(params: {form: z.infer<typeof RevokeRequestForm>; authorizationHeader?: string}): Promise<void> {
+	async revoke(params: {form: RevokeRequestForm; authorizationHeader?: string}): Promise<void> {
 		const {clientId: clientIdStr, clientSecret: secret} = parseClientCredentials(
 			params.authorizationHeader,
 			params.form.client_id,
@@ -160,7 +164,7 @@ export class OAuth2RequestService {
 	}
 
 	async introspect(params: {
-		form: z.infer<typeof IntrospectRequestForm>;
+		form: IntrospectRequestForm;
 		authorizationHeader?: string;
 	}): Promise<OAuth2IntrospectResponse> {
 		const {clientId: clientIdStr, clientSecret: secret} = parseClientCredentials(
@@ -189,7 +193,7 @@ export class OAuth2RequestService {
 	}
 
 	async authorizeConsent(params: {
-		body: z.infer<typeof AuthorizeConsentRequest>;
+		body: AuthorizeConsentRequest;
 		userId: UserID;
 		requestCache: RequestCache;
 	}): Promise<OAuth2ConsentResponse> {
@@ -390,7 +394,7 @@ export class OAuth2RequestService {
 			redirect_uris: Array.from(application.oauth2RedirectUris),
 			scopes,
 			bot_public: application.botIsPublic || isOwner,
-			bot: botUser ? mapBotUserToResponse(botUser) : null,
+			bot: botUser ? mapBotProfileToResponse(botUser) : null,
 			current_user: requestingUser ? mapUserToPartialResponse(requestingUser) : null,
 		};
 	}

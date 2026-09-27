@@ -226,11 +226,16 @@ export class AdminVoiceService {
 
 	async createVoiceServer(data: CreateVoiceServerRequest, adminUserId: UserID, auditLogReason: string | null) {
 		const {voiceRepository} = this.deps;
+		const region = await voiceRepository.getRegion(data.region_id);
+		if (!region) {
+			throw new UnknownVoiceRegionError();
+		}
 		const server = await voiceRepository.createServer({
 			regionId: data.region_id,
 			serverId: data.server_id,
 			endpoint: data.endpoint,
 			isActive: data.is_active ?? true,
+			softConnectionLimit: data.soft_connection_limit ?? null,
 			apiKey: data.api_key ?? null,
 			apiSecret: data.api_secret ?? null,
 			latitude: data.latitude ?? null,
@@ -267,6 +272,7 @@ export class AdminVoiceService {
 		if (data.latitude !== undefined) updates.latitude = data.latitude;
 		if (data.longitude !== undefined) updates.longitude = data.longitude;
 		if (data.is_active !== undefined) updates.isActive = data.is_active;
+		if (data.soft_connection_limit !== undefined) updates.softConnectionLimit = data.soft_connection_limit;
 		updates.restrictions = patchVoiceRestrictions(existing.restrictions, data);
 		updates.updatedAt = new Date();
 		await voiceRepository.upsertServer(updates);
@@ -335,6 +341,7 @@ export class AdminVoiceService {
 			latitude: server.latitude ?? null,
 			longitude: server.longitude ?? null,
 			is_active: server.isActive,
+			soft_connection_limit: server.softConnectionLimit ?? null,
 			vip_only: server.restrictions.vipOnly,
 			required_guild_features: Array.from(server.restrictions.requiredGuildFeatures),
 			allowed_guild_ids: allowedGuildIds,

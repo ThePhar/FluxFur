@@ -6,6 +6,26 @@ import {
 	type GatewayRolloutConfig,
 	GatewayRolloutConfigSchema,
 } from '@fluxer/schema/src/domains/admin/GatewayRolloutSchemas';
+import {
+	type VoiceNoiseSuppressionConfig,
+	VoiceNoiseSuppressionConfigSchema,
+} from '@fluxer/schema/src/domains/admin/VoiceNoiseSuppressionSchemas';
+import {
+	type ExperimentDeliveryConfig,
+	ExperimentDeliveryConfigSchema,
+} from '@fluxer/schema/src/domains/experiment/ExperimentSchemas';
+import {
+	type InstanceAppPublic,
+	type InstanceBranding,
+	type InstanceCaptchaProvider,
+	InstanceCaptchaProviderSchema,
+	type InstanceCommunity,
+	type InstanceRegistration,
+	type InstanceRegistrationMode,
+	InstanceRegistrationModeSchema,
+	type InstanceServices,
+	type InstanceSetup,
+} from '@fluxer/schema/src/domains/instance/InstanceSchemas';
 import type {IKVProvider, IKVSubscription} from '@pkgs/kv_client/src/IKVProvider';
 import {Config} from '../Config';
 import type {APIConfig, BlueskyOAuthConfig, BlueskyOAuthKeyConfig} from '../config/APIConfig';
@@ -17,9 +37,12 @@ import {resolveDeferredPhoneGateEnabled, setCachedDeferredPhoneGateEnabled} from
 import {InstanceConfiguration} from '../Tables';
 import {DEFAULT_DECAY_CONSTANTS, DEFAULT_RENEWAL_CONSTANTS} from '../utils/AttachmentDecay';
 import {isJsonRecord, parseJsonArray, parseJsonRecord} from '../utils/JsonBoundaryUtils';
+import {getDefaultDateOfBirthCollection, setCachedDateOfBirthCollection} from './DateOfBirthCollectionCache';
 import {normalizeSsoAllowedEmailDomains} from './SsoConfigValidation';
 
 const GATEWAY_ROLLOUT_CONFIG_KEY = 'gateway_rollout_config';
+const VOICE_NOISE_SUPPRESSION_CONFIG_KEY = 'voice_noise_suppression_config';
+const EXPERIMENT_DELIVERY_CONFIG_KEY = 'experiment_delivery_config';
 const REGISTRATION_CONFIG_KEY = 'registration_config';
 const REGISTRATION_URLS_KEY = 'registration_urls';
 const REGISTRATION_PENDING_APPROVALS_KEY = 'registration_pending_approvals';
@@ -41,37 +64,12 @@ const DEFAULT_GATEWAY_ROLLOUT_CONFIG: GatewayRolloutConfig = {
 	gateway_dispatch_relay_shards: 32,
 	gateway_dispatch_relay_max_queue: 50000,
 	voice_e2ee_scope: 'guild_feature_only',
-	voice_reconciliation_v3_percentage: 100,
-	voice_reconciliation_v3_interval_ms: 2000,
 };
-export type InstanceRegistrationMode = 'open' | 'approval' | 'closed';
-export interface InstanceRegistrationConfig {
-	mode: InstanceRegistrationMode;
-	admin_registration_urls_enabled: boolean;
-}
 
-export interface InstanceBrandingConfig {
-	product_name: string;
-	icon_url: string | null;
-	symbol_url: string | null;
-	logo_url: string | null;
-	wordmark_url: string | null;
-	favicon_url: string | null;
-	theme_color: string | null;
-}
+export type InstanceRegistrationConfig = InstanceRegistration;
 
-interface InstanceAppPublicConfig {
-	branding: InstanceBrandingConfig;
-	setup: {
-		configured: boolean;
-	};
-	legal: {
-		terms_url: string | null;
-		privacy_url: string | null;
-	};
-	registration: {
-		collect_date_of_birth: boolean;
-	};
+interface InstanceAppPublicConfig extends Omit<InstanceAppPublic, 'setup'> {
+	setup: Pick<InstanceSetup, 'configured'>;
 }
 
 export type InstancePremiumMode = 'mirror' | 'everyone';
@@ -90,19 +88,6 @@ export interface InstancePolicyConfig {
 	deferred_phone_gate_member_threshold: number;
 }
 
-interface InstanceCommunityPublicConfig {
-	single_community: boolean;
-	single_community_guild_id: string | null;
-	direct_messages_disabled: boolean;
-}
-
-interface InstanceServicesPublicConfig {
-	gif_enabled: boolean;
-	youtube_enabled: boolean;
-	bluesky_enabled: boolean;
-}
-
-export type InstanceCaptchaProvider = 'hcaptcha' | 'turnstile' | 'none';
 type InstanceEmailProvider = 'smtp' | 'none';
 
 interface InstanceGifIntegrationConfig {
@@ -316,7 +301,7 @@ function isStringArray(value: unknown): value is Array<string> {
 }
 
 function isRegistrationMode(value: unknown): value is InstanceRegistrationMode {
-	return value === 'open' || value === 'approval' || value === 'closed';
+	return InstanceRegistrationModeSchema.safeParse(value).success;
 }
 
 function normalizeNullableString(value: unknown): string | null {
@@ -357,9 +342,19 @@ function getDefaultAppPublicConfig(): InstanceAppPublicConfig {
 			privacy_url: null,
 		},
 		registration: {
-			collect_date_of_birth: !Config.instance.selfHosted,
+			collect_date_of_birth: getDefaultDateOfBirthCollection(),
 		},
 	};
+}
+
+function parseAppPublicConfig(raw: string): InstanceAppPublicConfig {
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		return normalizeAppPublicConfig(parsed);
+	} catch (error) {
+		Logger.warn({error}, 'Invalid app public config JSON, returning defaults');
+		return getDefaultAppPublicConfig();
+	}
 }
 
 function normalizeAppPublicConfig(value: unknown): InstanceAppPublicConfig {
@@ -507,7 +502,7 @@ const DEFAULT_INSTANCE_MEDIA_CONFIG: InstanceMediaConfig = {
 };
 
 function isCaptchaProvider(value: unknown): value is InstanceCaptchaProvider {
-	return value === 'hcaptcha' || value === 'turnstile' || value === 'none';
+	return InstanceCaptchaProviderSchema.safeParse(value).success;
 }
 
 function isEmailProvider(value: unknown): value is InstanceEmailProvider {
@@ -939,6 +934,7 @@ export class InstanceConfigRepository {
 				this.configCache = await this.fetchAllConfigsFromDatabase();
 			} while (this.refreshRequested);
 			this.syncDeferredPhoneGateCache(this.configCache.get(INSTANCE_POLICY_CONFIG_KEY) ?? null);
+			this.syncDateOfBirthCollectionCache(this.configCache.get(APP_PUBLIC_CONFIG_KEY) ?? null);
 		})().finally(() => {
 			this.refreshPromise = null;
 		});
@@ -948,6 +944,11 @@ export class InstanceConfigRepository {
 	private syncDeferredPhoneGateCache(raw: string | null): void {
 		const policy = raw ? normalizeInstancePolicyConfig(parseJsonRecord(raw)) : {...DEFAULT_INSTANCE_POLICY_CONFIG};
 		setCachedDeferredPhoneGateEnabled(resolveDeferredPhoneGateEnabled(policy));
+	}
+
+	private syncDateOfBirthCollectionCache(raw: string | null): void {
+		const appPublic = raw ? normalizeAppPublicConfig(parseJsonRecord(raw)) : getDefaultAppPublicConfig();
+		setCachedDateOfBirthCollection(appPublic.registration.collect_date_of_birth);
 	}
 
 	private updateCachedConfigs(entries: Array<[string, string]>): void {
@@ -1035,6 +1036,48 @@ export class InstanceConfigRepository {
 		await this.setConfig(GATEWAY_ROLLOUT_CONFIG_KEY, JSON.stringify(config));
 	}
 
+	async getVoiceNoiseSuppressionConfig(): Promise<VoiceNoiseSuppressionConfig> {
+		const raw = await this.getConfig(VOICE_NOISE_SUPPRESSION_CONFIG_KEY);
+		if (!raw) {
+			return VoiceNoiseSuppressionConfigSchema.parse({});
+		}
+		const parsed = parseJsonRecord(raw);
+		if (!parsed) {
+			return VoiceNoiseSuppressionConfigSchema.parse({});
+		}
+		const result = VoiceNoiseSuppressionConfigSchema.safeParse(parsed);
+		if (!result.success) {
+			Logger.error({error: result.error}, 'Invalid voice noise suppression config');
+			return VoiceNoiseSuppressionConfigSchema.parse({});
+		}
+		return result.data;
+	}
+
+	async setVoiceNoiseSuppressionConfig(config: VoiceNoiseSuppressionConfig): Promise<void> {
+		await this.setConfig(VOICE_NOISE_SUPPRESSION_CONFIG_KEY, JSON.stringify(config));
+	}
+
+	async getExperimentDeliveryConfig(): Promise<ExperimentDeliveryConfig> {
+		const raw = await this.getConfig(EXPERIMENT_DELIVERY_CONFIG_KEY);
+		if (!raw) {
+			return ExperimentDeliveryConfigSchema.parse({});
+		}
+		const parsed = parseJsonRecord(raw);
+		if (!parsed) {
+			return ExperimentDeliveryConfigSchema.parse({});
+		}
+		const result = ExperimentDeliveryConfigSchema.safeParse(parsed);
+		if (!result.success) {
+			Logger.error({error: result.error}, 'Invalid experiment delivery config');
+			return ExperimentDeliveryConfigSchema.parse({});
+		}
+		return result.data;
+	}
+
+	async setExperimentDeliveryConfig(config: ExperimentDeliveryConfig): Promise<void> {
+		await this.setConfig(EXPERIMENT_DELIVERY_CONFIG_KEY, JSON.stringify(config));
+	}
+
 	async hasLimitConfig(): Promise<boolean> {
 		const raw = await this.getConfig('limit_config');
 		return raw !== null;
@@ -1067,20 +1110,13 @@ export class InstanceConfigRepository {
 
 	async getAppPublicConfig(): Promise<InstanceAppPublicConfig> {
 		const raw = await this.getConfig(APP_PUBLIC_CONFIG_KEY);
-		if (!raw) {
-			return getDefaultAppPublicConfig();
-		}
-		try {
-			const parsed: unknown = JSON.parse(raw);
-			return normalizeAppPublicConfig(parsed);
-		} catch (error) {
-			Logger.warn({error}, 'Invalid app public config JSON, returning defaults');
-			return getDefaultAppPublicConfig();
-		}
+		const config = raw ? parseAppPublicConfig(raw) : getDefaultAppPublicConfig();
+		setCachedDateOfBirthCollection(config.registration.collect_date_of_birth);
+		return config;
 	}
 
 	async setAppPublicConfig(config: {
-		branding?: Partial<InstanceBrandingConfig>;
+		branding?: Partial<InstanceBranding>;
 		setup?: Partial<InstanceAppPublicConfig['setup']>;
 		legal?: Partial<InstanceAppPublicConfig['legal']>;
 		registration?: Partial<InstanceAppPublicConfig['registration']>;
@@ -1105,6 +1141,7 @@ export class InstanceConfigRepository {
 			},
 		});
 		await this.setConfig(APP_PUBLIC_CONFIG_KEY, JSON.stringify(next));
+		setCachedDateOfBirthCollection(next.registration.collect_date_of_birth);
 		return next;
 	}
 
@@ -1262,8 +1299,8 @@ export class InstanceConfigRepository {
 					? Boolean(turnstileSiteKey && turnstileSecretKey)
 					: false;
 		return {
-			enabled: provider !== 'none' && providerReady,
-			provider,
+			enabled: providerReady,
+			provider: providerReady ? provider : 'none',
 			hcaptcha_site_key: hcaptchaSiteKey,
 			hcaptcha_secret_key: hcaptchaSecretKey,
 			turnstile_site_key: turnstileSiteKey,
@@ -1391,7 +1428,7 @@ export class InstanceConfigRepository {
 		};
 	}
 
-	async getInstanceCommunityPublicConfig(): Promise<InstanceCommunityPublicConfig> {
+	async getInstanceCommunityPublicConfig(): Promise<InstanceCommunity> {
 		const policy = await this.getInstancePolicyConfig();
 		return {
 			single_community: policy.single_community_enabled,
@@ -1400,7 +1437,7 @@ export class InstanceConfigRepository {
 		};
 	}
 
-	async getResolvedServicesConfig(): Promise<InstanceServicesPublicConfig> {
+	async getResolvedServicesConfig(): Promise<InstanceServices> {
 		const [policy, gif, youtubeApiKey, bluesky] = await Promise.all([
 			this.getInstancePolicyConfig(),
 			this.getEffectiveGifConfig(),

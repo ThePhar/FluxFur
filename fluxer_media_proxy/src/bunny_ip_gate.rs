@@ -25,12 +25,12 @@ pub struct Allowlist {
 }
 
 impl Allowlist {
-    pub fn len(&self) -> usize {
-        self.ips.len()
+    fn is_empty(&self) -> bool {
+        self.ips.is_empty()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.ips.is_empty()
+    fn len(&self) -> usize {
+        self.ips.len()
     }
 
     pub fn contains(&self, ip: &IpAddr) -> bool {
@@ -224,7 +224,10 @@ pub fn build_refresh_client() -> reqwest::Result<reqwest::Client> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::ADVERSARIAL_TEXT_INPUTS;
+    use axum::{Router, middleware, routing::get};
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use tower::ServiceExt;
 
     fn ip4(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
@@ -303,5 +306,164 @@ mod tests {
         assert!(snap.contains(&ip4(89, 187, 188, 227)));
         assert!(!snap.contains(&ip4(1, 1, 1, 1)));
         assert_eq!(snap.len(), 1);
+    }
+
+    fn ip6(text: &str) -> IpAddr {
+        IpAddr::V6(text.parse::<Ipv6Addr>().unwrap())
+    }
+
+    fn forwarded_for(gate: &BunnyIpGate, peer: IpAddr, xff: &str) -> IpAddr {
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("x-forwarded-for", xff.parse().unwrap());
+        resolve_client_ip(gate, &sock(peer), &headers)
+    }
+
+    #[test]
+    fn a_long_forwarded_chain_still_resolves_the_rightmost_untrusted_hop() {
+        let trusted: Vec<IpAddr> = (1..=24).map(|last| ip4(10, 0, 0, last)).collect();
+        let gate = BunnyIpGate::new(reqwest::Client::new(), trusted.clone());
+        let mut chain = vec!["89.187.188.227".to_owned()];
+        chain.extend(trusted.iter().map(ToString::to_string));
+        assert_eq!(25, chain.len());
+        assert_eq!(
+            ip4(89, 187, 188, 227),
+            forwarded_for(&gate, ip4(10, 0, 0, 24), &chain.join(", "))
+        );
+        assert_eq!(
+            ip4(10, 0, 0, 24),
+            forwarded_for(&gate, ip4(10, 0, 0, 24), &chain[1..].join(", "))
+        );
+    }
+
+    #[test]
+    fn unparseable_hops_are_skipped_instead_of_ending_the_scan() {
+        let gate = BunnyIpGate::new(
+            reqwest::Client::new(),
+            vec![ip4(10, 0, 0, 1), ip4(10, 0, 0, 2)],
+        );
+        assert_eq!(
+            ip4(89, 187, 188, 227),
+            forwarded_for(
+                &gate,
+                ip4(10, 0, 0, 1),
+                "89.187.188.227, unknown, 10.0.0.2, 10.0.0.1"
+            )
+        );
+        assert_eq!(
+            ip4(89, 187, 188, 227),
+            forwarded_for(
+                &gate,
+                ip4(10, 0, 0, 1),
+                "89.187.188.227, 10.0.0.1, , not-an-ip"
+            )
+        );
+        assert_eq!(
+            ip4(10, 0, 0, 1),
+            forwarded_for(&gate, ip4(10, 0, 0, 1), "unknown, also-unknown")
+        );
+    }
+
+    #[test]
+    fn forwarded_ipv6_hops_are_only_accepted_in_their_bare_form() {
+        let gate = BunnyIpGate::new(reqwest::Client::new(), vec![ip4(10, 0, 0, 1)]);
+        assert_eq!(
+            ip6("2a01:4f8::1"),
+            forwarded_for(&gate, ip4(10, 0, 0, 1), "2a01:4f8::1, 10.0.0.1")
+        );
+        assert_eq!(
+            ip4(10, 0, 0, 1),
+            forwarded_for(&gate, ip4(10, 0, 0, 1), "[2a01:4f8::1]:443, 10.0.0.1")
+        );
+        assert_eq!(
+            ip6("2a01:4f8::2"),
+            forwarded_for(
+                &gate,
+                ip4(10, 0, 0, 1),
+                "2a01:4f8::2, [2a01:4f8::1]:443, 10.0.0.1"
+            )
+        );
+    }
+
+    #[test]
+    fn a_trusted_ipv6_proxy_is_skipped_like_any_other_hop() {
+        let gate = BunnyIpGate::new(reqwest::Client::new(), vec![ip6("2a01:4f8::1")]);
+        assert_eq!(
+            ip4(89, 187, 188, 227),
+            forwarded_for(&gate, ip6("2a01:4f8::1"), "89.187.188.227, 2a01:4f8::1")
+        );
+    }
+
+    #[test]
+    fn adversarial_paths_are_never_exempt_from_the_bunny_gate() {
+        for text in ADVERSARIAL_TEXT_INPUTS {
+            for path in [
+                (*text).to_owned(),
+                format!("/{text}"),
+                format!("/avatars/1/{text}.png"),
+                format!("/external/{text}"),
+                format!("/_health{text}"),
+                format!("/v1/relay{text}"),
+                format!("/v1/relay/{text}"),
+            ] {
+                if !is_exempt_path(&path) {
+                    continue;
+                }
+                assert!(
+                    path == "/_health" || path.starts_with("/v1/relay/"),
+                    "{path:?} is exempt from the bunny gate"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn gate_after_successful_refresh_never_returns_503() {
+        let gate = Arc::new(BunnyIpGate::new(reqwest::Client::new(), vec![]));
+        gate.install_for_test(Allowlist::from_ips([ip4(89, 187, 188, 227)]));
+        let app = Router::new()
+            .route("/asset.png", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(gate, gate_middleware));
+        let allowed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/asset.png")
+                    .extension(ConnectInfo(sock(ip4(89, 187, 188, 227))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::OK, allowed.status());
+        let foreign = app
+            .oneshot(
+                Request::builder()
+                    .uri("/asset.png")
+                    .extension(ConnectInfo(sock(ip4(1, 1, 1, 1))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::FORBIDDEN, foreign.status());
+    }
+
+    #[tokio::test]
+    async fn an_empty_allowlist_refuses_a_public_request() {
+        let gate = Arc::new(BunnyIpGate::new(reqwest::Client::new(), vec![]));
+        let app = Router::new()
+            .route("/asset.png", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(gate, gate_middleware));
+        let refused = app
+            .oneshot(
+                Request::builder()
+                    .uri("/asset.png")
+                    .extension(ConnectInfo(sock(ip4(89, 187, 188, 227))))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::SERVICE_UNAVAILABLE, refused.status());
     }
 }

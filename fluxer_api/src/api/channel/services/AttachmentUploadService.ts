@@ -11,6 +11,7 @@ import {
 } from '@fluxer/constants/src/LimitConstants';
 import {ValidationErrorCodes} from '@fluxer/constants/src/ValidationErrorCodes';
 import {CannotSendMessageToNonTextChannelError} from '@fluxer/errors/src/domains/channel/CannotSendMessageToNonTextChannelError';
+import {UnknownChannelError} from '@fluxer/errors/src/domains/channel/UnknownChannelError';
 import {UnknownMessageError} from '@fluxer/errors/src/domains/channel/UnknownMessageError';
 import {FeatureTemporarilyDisabledError} from '@fluxer/errors/src/domains/core/FeatureTemporarilyDisabledError';
 import {FileSizeTooLargeError} from '@fluxer/errors/src/domains/core/FileSizeTooLargeError';
@@ -18,6 +19,7 @@ import {InputValidationError} from '@fluxer/errors/src/domains/core/InputValidat
 import {MissingPermissionsError} from '@fluxer/errors/src/domains/core/MissingPermissionsError';
 import {UnknownUserError} from '@fluxer/errors/src/domains/user/UnknownUserError';
 import {ServiceUnavailableError} from '@fluxer/errors/src/HttpErrors';
+import type {GuildResponse} from '@fluxer/schema/src/domains/guild/GuildResponseSchemas';
 import type {
 	CompleteMultipartAttachmentUploadItem,
 	CompleteMultipartAttachmentUploadResult,
@@ -26,7 +28,9 @@ import type {
 } from '@fluxer/schema/src/domains/message/AttachmentUploadSchemas';
 import type {AttachmentID, ChannelID, MessageID, UserID} from '../../BrandedTypes';
 import {Config} from '../../Config';
+import {SYSTEM_USER_ID} from '../../constants/Core';
 import type {IPurgeQueue} from '../../infrastructure/BunnyPurgeQueue';
+import type {IGatewayService} from '../../infrastructure/IGatewayService';
 import type {IStorageService} from '../../infrastructure/IStorageService';
 import type {LimitConfigService} from '../../limits/LimitConfigService';
 import {resolveLimitSafe} from '../../limits/LimitConfigUtils';
@@ -36,6 +40,7 @@ import type {Attachment} from '../../models/Attachment';
 import type {Channel} from '../../models/Channel';
 import type {Message} from '../../models/Message';
 import type {IUserRepository} from '../../user/IUserRepository';
+import {mapWithConcurrency} from '../../utils/ConcurrencyUtils';
 import {assertGuildMemberCanCommunicate} from '../../utils/GuildCommunicationUtils';
 import type {UploadedAttachment} from '../AttachmentDTOs';
 import type {IChannelRepositoryAggregate} from '../repositories/IChannelRepositoryAggregate';
@@ -64,6 +69,8 @@ interface DeleteAttachmentParams {
 	requestCache: RequestCache;
 }
 
+type UploadActor = 'member' | 'webhook';
+
 interface UploadFormDataAttachmentsParams {
 	userId: UserID;
 	channelId: ChannelID;
@@ -76,7 +83,7 @@ interface UploadFormDataAttachmentsParams {
 		id: number;
 		filename: string;
 	}>;
-	expiresAt?: Date;
+	actor?: UploadActor;
 }
 
 interface RequestPresignedAttachmentUploadUrlsParams {
@@ -105,6 +112,7 @@ export class AttachmentUploadService {
 		private messageInteractionService: MessageInteractionService,
 		private messageService: MessageService,
 		private limitConfigService: LimitConfigService,
+		private gatewayService: IGatewayService,
 	) {}
 
 	async uploadFormDataAttachments({
@@ -113,9 +121,9 @@ export class AttachmentUploadService {
 		clientIp,
 		files,
 		attachmentMetadata,
-		expiresAt,
+		actor = 'member',
 	}: UploadFormDataAttachmentsParams): Promise<Array<UploadedAttachment>> {
-		const {maxFileSize} = await this.getUploadPermissionAndLimit({userId, channelId});
+		const {maxFileSize} = await this.getUploadPermissionAndLimit({userId, channelId, actor});
 		assertAttachmentFileSizesWithinLimit(
 			files.map(({file}) => file.size),
 			maxFileSize,
@@ -138,7 +146,6 @@ export class AttachmentUploadService {
 					key: uploadKey,
 					body,
 					contentType,
-					expiresAt: expiresAt ?? undefined,
 				}),
 			);
 			await this.attachmentUploadTraceRepository.recordRequestedUpload({
@@ -171,7 +178,7 @@ export class AttachmentUploadService {
 		if (!Config.presignedAttachmentUploadsEnabled) {
 			throw new FeatureTemporarilyDisabledError();
 		}
-		const {maxFileSize} = await this.getUploadPermissionAndLimit({userId, channelId});
+		const {maxFileSize} = await this.getUploadPermissionAndLimit({userId, channelId, actor: 'member'});
 		assertAttachmentFileSizesWithinLimit(
 			attachments.map(({file_size}) => file_size),
 			maxFileSize,
@@ -278,7 +285,7 @@ export class AttachmentUploadService {
 		if (!Config.presignedAttachmentUploadsEnabled) {
 			throw new FeatureTemporarilyDisabledError();
 		}
-		const {maxFileSize} = await this.getUploadPermissionAndLimit({userId, channelId});
+		const {maxFileSize} = await this.getUploadPermissionAndLimit({userId, channelId, actor: 'member'});
 		const bucket = Config.s3.buckets.uploads;
 		return Promise.all(
 			uploads.map(async ({upload_filename, upload_id}, index) => {
@@ -415,20 +422,23 @@ export class AttachmentUploadService {
 		}
 	}
 
-	private async getUploadPermissionAndLimit({userId, channelId}: {userId: UserID; channelId: ChannelID}): Promise<{
+	private async getUploadPermissionAndLimit({
+		userId,
+		channelId,
+		actor,
+	}: {
+		userId: UserID;
+		channelId: ChannelID;
+		actor: UploadActor;
+	}): Promise<{
 		maxFileSize: number;
 	}> {
-		const {channel, guild, checkPermission, member} =
-			await this.messageInteractionService.authService.getChannelAuthenticated({
-				userId,
-				channelId,
-			});
+		const {channel, guild} =
+			actor === 'webhook'
+				? await this.getWebhookUploadChannel(channelId)
+				: await this.getMemberUploadChannel({userId, channelId});
 		if (!TEXT_BASED_CHANNEL_TYPES.has(channel.type)) {
 			throw new CannotSendMessageToNonTextChannelError();
-		}
-		if (guild) {
-			await checkPermission(Permissions.SEND_MESSAGES | Permissions.ATTACH_FILES);
-			assertGuildMemberCanCommunicate(member);
 		}
 		const user = await this.userRepository.findUnique(userId);
 		if (!user) {
@@ -442,24 +452,41 @@ export class AttachmentUploadService {
 		const maxFileSize = user.isBot ? Math.min(resolvedMaxFileSize, ATTACHMENT_MAX_SIZE_BOT) : resolvedMaxFileSize;
 		return {maxFileSize};
 	}
-}
 
-async function mapWithConcurrency<T, TResult>(
-	items: ReadonlyArray<T>,
-	concurrency: number,
-	mapper: (item: T, index: number) => Promise<TResult>,
-): Promise<Array<TResult>> {
-	const results = new Array<TResult>(items.length);
-	let nextIndex = 0;
-	async function worker(): Promise<void> {
-		for (;;) {
-			const index = nextIndex++;
-			if (index >= items.length) return;
-			results[index] = await mapper(items[index]!, index);
+	private async getMemberUploadChannel({userId, channelId}: {userId: UserID; channelId: ChannelID}): Promise<{
+		channel: Channel;
+		guild: GuildResponse | null;
+	}> {
+		const {channel, guild, checkPermission, member} =
+			await this.messageInteractionService.authService.getChannelAuthenticated({
+				userId,
+				channelId,
+			});
+		if (guild) {
+			await checkPermission(Permissions.SEND_MESSAGES | Permissions.ATTACH_FILES);
+			assertGuildMemberCanCommunicate(member);
 		}
+		return {channel, guild};
 	}
-	await Promise.all(Array.from({length: Math.min(concurrency, items.length)}, () => worker()));
-	return results;
+
+	private async getWebhookUploadChannel(channelId: ChannelID): Promise<{
+		channel: Channel;
+		guild: GuildResponse | null;
+	}> {
+		const channel = await this.channelRepository.channelData.findUnique(channelId);
+		if (!channel) {
+			throw new UnknownChannelError();
+		}
+		if (!channel.guildId) {
+			return {channel, guild: null};
+		}
+		const guild = await this.gatewayService.getGuildData({
+			guildId: channel.guildId,
+			userId: SYSTEM_USER_ID,
+			skipMembershipCheck: true,
+		});
+		return {channel, guild};
+	}
 }
 
 async function runAttachmentStorageOperation<T>(operation: () => Promise<T>): Promise<T> {

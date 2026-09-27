@@ -48,7 +48,7 @@ pub(crate) async fn messages_post(
             return flash::redirect_with_flash(
                 &format!("{base}/messages"),
                 FlashData::error("Invalid form data"),
-                config.is_production(),
+                config.secure_cookies(),
             );
         }
     };
@@ -164,7 +164,7 @@ pub(crate) async fn system_dms_post(
             return flash::redirect_with_flash(
                 &format!("{base}/system-dms"),
                 FlashData::error("Invalid form data"),
-                config.is_production(),
+                config.secure_cookies(),
             );
         }
     };
@@ -184,7 +184,11 @@ pub(crate) async fn system_dms_post(
     } else {
         FlashData::error("Recipients and content are required")
     };
-    flash::redirect_with_flash(&format!("{base}/system-dms"), flash, config.is_production())
+    flash::redirect_with_flash(
+        &format!("{base}/system-dms"),
+        flash,
+        config.secure_cookies(),
+    )
 }
 
 pub(crate) async fn bulk_actions_post(
@@ -201,7 +205,7 @@ pub(crate) async fn bulk_actions_post(
             return flash::redirect_with_flash(
                 &format!("{base}/bulk-actions"),
                 FlashData::error("Invalid form data"),
-                config.is_production(),
+                config.secure_cookies(),
             );
         }
     };
@@ -247,7 +251,7 @@ pub(crate) async fn bulk_actions_post(
                 .bulk_add_guild_members(&guild_id, &user_ids, audit_log_reason.as_deref())
                 .await
         }
-        "bulk-schedule-user-deletion" => {
+        "bulk-schedule-user-deletion" | "bulk_delete_users" => {
             let user_ids = form.list_values_any(&["user_ids[]", "user_ids"]);
             let reason_code = form.parse_u32("reason_code").unwrap_or(2);
             let days = form.parse_u32("days_until_deletion").unwrap_or(14);
@@ -262,17 +266,17 @@ pub(crate) async fn bulk_actions_post(
                 )
                 .await
         }
-        "bulk_delete_users" => {
+        "bulk-delete-user-messages" => {
             let user_ids = form.list_values_any(&["user_ids[]", "user_ids"]);
             client
-                .bulk_schedule_user_deletion(&user_ids, 0, 30, None, audit_log_reason.as_deref())
+                .bulk_delete_user_messages(&user_ids, audit_log_reason.as_deref())
                 .await
         }
         _ => {
             return flash::redirect_with_flash(
                 &format!("{base}/bulk-actions"),
                 FlashData::error("Unknown bulk action"),
-                config.is_production(),
+                config.secure_cookies(),
             );
         }
     };
@@ -284,7 +288,7 @@ pub(crate) async fn bulk_actions_post(
                 flash::redirect_with_flash(
                     &format!("{base}/bulk-actions"),
                     FlashData::success("Bulk action submitted"),
-                    config.is_production(),
+                    config.secure_cookies(),
                 )
             }
         }
@@ -292,8 +296,8 @@ pub(crate) async fn bulk_actions_post(
             tracing::warn!(%error, action, "admin API request failed: submit bulk action");
             flash::redirect_with_flash(
                 &format!("{base}/bulk-actions"),
-                FlashData::error("Failed to submit bulk action"),
-                config.is_production(),
+                FlashData::error(format!("Failed to submit bulk action: {error}")),
+                config.secure_cookies(),
             )
         }
     }
@@ -399,14 +403,14 @@ pub(crate) async fn archives_download(
         Ok(_) => flash::redirect_with_flash(
             &format!("{base}/archives"),
             FlashData::error("Archive download URL was empty"),
-            config.is_production(),
+            config.secure_cookies(),
         ),
         Err(error) => {
             tracing::warn!(%error, "admin API request failed: get archive download URL");
             flash::redirect_with_flash(
                 &format!("{base}/archives"),
                 FlashData::error("Failed to create archive download URL"),
-                config.is_production(),
+                config.secure_cookies(),
             )
         }
     }

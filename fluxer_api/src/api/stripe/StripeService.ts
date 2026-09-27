@@ -4,9 +4,9 @@ import {PremiumPurchaseBlockedError} from '@fluxer/errors/src/domains/payment/Pr
 import type {
 	CurrentSubscriptionPriceResponse,
 	PremiumStateResponse,
-	PricingMode,
 	SelfServeRefundEligibilityResponse,
 	SelfServeRefundResponse,
+	SwitchToListPriceResponse,
 } from '@fluxer/schema/src/domains/premium/PremiumSchemas';
 import type {ICacheService} from '@pkgs/cache/src/ICacheService';
 import Stripe from 'stripe';
@@ -143,7 +143,6 @@ export class StripeService {
 			| 'euWithdrawalWaiverAccepted'
 			| 'isBusiness'
 			| 'priceId'
-			| 'pricingMode'
 			| 'purchaseGeoipCountryCode'
 			| 'userId'
 		>,
@@ -159,10 +158,7 @@ export class StripeService {
 		return this.checkoutService.createCustomerPortalSession(userId);
 	}
 
-	async getPriceIds(
-		countryCode?: string,
-		pricingMode: PricingMode = 'localized',
-	): Promise<{
+	async getPriceIds(countryCode?: string): Promise<{
 		monthly: string | null;
 		yearly: string | null;
 		gift_1_month: string | null;
@@ -174,7 +170,7 @@ export class StripeService {
 		gift_1_month_amount_minor: number | null;
 		gift_1_year_amount_minor: number | null;
 	}> {
-		return this.checkoutService.getPriceIds(countryCode, pricingMode);
+		return this.checkoutService.getPriceIds(countryCode);
 	}
 
 	async getCurrentSubscriptionPrice(userId: UserID): Promise<CurrentSubscriptionPriceResponse> {
@@ -199,6 +195,10 @@ export class StripeService {
 		effectiveAt: 'now' | 'period_end' = 'now',
 	): Promise<void> {
 		return this.subscriptionService.changeBillingCycle(userId, billingCycle, effectiveAt);
+	}
+
+	async switchSubscriptionToCurrentListPrice(userId: UserID): Promise<SwitchToListPriceResponse> {
+		return this.subscriptionService.switchToCurrentListPrice(userId);
 	}
 
 	async cancelPendingSubscriptionChange(userId: UserID): Promise<void> {

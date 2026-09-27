@@ -25,9 +25,11 @@ import {
 } from '@fluxer/schema/src/domains/message/MessageRequestSchemas';
 import {
 	BulkMessageFetchResponse,
+	MessageListResponse,
+	MessagePurgeResponse,
 	MessageResponseSchema,
 } from '@fluxer/schema/src/domains/message/MessageResponseSchemas';
-import {z} from 'zod';
+
 import {requireSudoMode} from '../../auth/services/SudoVerificationService';
 import {createAttachmentID, createChannelID, createMessageID} from '../../BrandedTypes';
 import {Config} from '../../Config';
@@ -53,7 +55,7 @@ export function MessageController(app: HonoApp) {
 		OpenAPI({
 			operationId: 'list_messages',
 			summary: 'List messages in a channel',
-			responseSchema: z.array(MessageResponseSchema),
+			responseSchema: MessageListResponse,
 			statusCode: 200,
 			security: ['botToken', 'bearerToken', 'sessionToken'],
 			tags: ['Channels', 'Messages'],
@@ -424,20 +426,6 @@ export function MessageController(app: HonoApp) {
 		},
 	);
 	app.post(
-		'/channels/:channel_id/messages/bulk_delete',
-		RateLimitMiddleware(RateLimitConfigs.CHANNEL_MESSAGE_BULK_DELETE),
-		LoginRequired,
-		Validator('param', ChannelIdParam),
-		Validator('json', BulkDeleteMessagesRequest),
-		async (ctx) => {
-			const userId = ctx.get('user').id;
-			const channelId = createChannelID(ctx.req.valid('param').channel_id);
-			const messageIds = ctx.req.valid('json').message_ids.map(createMessageID);
-			await ctx.get('channelService').messages.deletion.bulkDeleteMessages({userId, channelId, messageIds});
-			return ctx.body(null, 204);
-		},
-	);
-	app.post(
 		'/channels/:channel_id/messages/purge',
 		RateLimitMiddleware(RateLimitConfigs.CHANNEL_MESSAGE_PURGE),
 		LoginRequired,
@@ -445,7 +433,7 @@ export function MessageController(app: HonoApp) {
 		OpenAPI({
 			operationId: 'purge_personal_notes_messages',
 			summary: 'Purge all messages in personal notes',
-			responseSchema: z.object({deleted_count: z.number().int().nonnegative()}),
+			responseSchema: MessagePurgeResponse,
 			statusCode: 200,
 			security: ['botToken', 'bearerToken', 'sessionToken'],
 			tags: ['Channels', 'Messages'],

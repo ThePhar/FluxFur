@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {ThemeTypes} from '@fluxer/constants/src/UserConstants';
+import {
+	WebAuthnAuthenticationOptions,
+	WebAuthnAuthenticationResponse,
+	WebAuthnRegistrationResponse,
+} from '@fluxer/schema/src/domains/auth/WebAuthnSchemas';
 import {UserPartialResponse} from '@fluxer/schema/src/domains/user/UserResponseSchemas';
 import {
 	createNamedStringLiteralUnion,
@@ -14,11 +19,6 @@ import {
 	PhoneNumberType,
 	UsernameType,
 } from '@fluxer/schema/src/primitives/UserValidators';
-import type {
-	AuthenticationResponseJSON,
-	PublicKeyCredentialCreationOptionsJSON,
-	RegistrationResponseJSON,
-} from '@simplewebauthn/server';
 import {z} from 'zod';
 
 const RegisterThemeType = createNamedStringLiteralUnion(
@@ -120,7 +120,7 @@ export const SudoVerificationSchema = z.object({
 		'MFA method to use for verification',
 	).optional(),
 	mfa_code: createStringType(1, 32).optional().describe('MFA verification code from an authenticator app'),
-	webauthn_response: z.custom<AuthenticationResponseJSON>().optional().describe('WebAuthn authentication response'),
+	webauthn_response: WebAuthnAuthenticationResponse.optional().describe('WebAuthn authentication response'),
 	webauthn_challenge: createStringType().optional().describe('WebAuthn challenge string'),
 });
 export const SsoStatusResponse = z.object({
@@ -214,7 +214,10 @@ export const AuthSessionsResponse = z.array(AuthSessionResponse);
 
 export type AuthSessionsResponse = z.infer<typeof AuthSessionsResponse>;
 
-export const WebAuthnAuthenticationOptionsResponse = z.custom<PublicKeyCredentialCreationOptionsJSON>();
+export const WebAuthnAuthenticationOptionsResponse = WebAuthnAuthenticationOptions.omit({
+	hints: true,
+	extensions: true,
+});
 
 export type WebAuthnAuthenticationOptionsResponse = z.infer<typeof WebAuthnAuthenticationOptionsResponse>;
 
@@ -304,14 +307,14 @@ export const IpAuthorizationPollResponse = z.object({
 export type IpAuthorizationPollResponse = z.infer<typeof IpAuthorizationPollResponse>;
 
 export const WebAuthnAuthenticateRequest = z.object({
-	response: z.custom<AuthenticationResponseJSON>().describe('WebAuthn authentication response'),
+	response: WebAuthnAuthenticationResponse.describe('WebAuthn authentication response'),
 	challenge: createStringType().describe('The challenge string from authentication options'),
 });
 
 export type WebAuthnAuthenticateRequest = z.infer<typeof WebAuthnAuthenticateRequest>;
 
 export const WebAuthnMfaRequest = z.object({
-	response: z.custom<AuthenticationResponseJSON>().describe('WebAuthn authentication response'),
+	response: WebAuthnAuthenticationResponse.describe('WebAuthn authentication response'),
 	challenge: createStringType().describe('The challenge string from authentication options'),
 	ticket: createStringType().describe('The MFA ticket from the login response'),
 });
@@ -349,7 +352,7 @@ export const EnableMfaTotpRequest = z
 		secret: createStringType(1, 256).describe('The TOTP secret key'),
 		code: createStringType(1, 32).describe('The TOTP verification code'),
 	})
-	.merge(SudoVerificationSchema);
+	.extend(SudoVerificationSchema.shape);
 
 export type EnableMfaTotpRequest = z.infer<typeof EnableMfaTotpRequest>;
 
@@ -358,7 +361,7 @@ export const DisableTotpRequest = z
 		code: createStringType(1, 32).describe('The TOTP code to verify'),
 		password: PasswordType.optional().describe('Account password for verification'),
 	})
-	.merge(SudoVerificationSchema);
+	.extend(SudoVerificationSchema.shape);
 
 export type DisableTotpRequest = z.infer<typeof DisableTotpRequest>;
 
@@ -367,7 +370,7 @@ export const MfaBackupCodesRequest = z
 		regenerate: z.boolean().describe('Whether to regenerate backup codes'),
 		password: PasswordType.optional().describe('Account password for verification'),
 	})
-	.merge(SudoVerificationSchema);
+	.extend(SudoVerificationSchema.shape);
 
 export type MfaBackupCodesRequest = z.infer<typeof MfaBackupCodesRequest>;
 
@@ -381,6 +384,38 @@ export const MfaBackupCodesResponse = z.object({
 });
 
 export type MfaBackupCodesResponse = z.infer<typeof MfaBackupCodesResponse>;
+
+export const MfaBackupCodesChallengeStartResponse = z.object({
+	ticket: z.string().describe('Ticket for backup codes challenge actions'),
+	code_expires_at: z.string().describe('ISO8601 timestamp when the verification code expires'),
+	resend_available_at: z.string().describe('ISO8601 timestamp when the code can be resent'),
+});
+
+export type MfaBackupCodesChallengeStartResponse = z.infer<typeof MfaBackupCodesChallengeStartResponse>;
+
+export const MfaBackupCodesChallengeResendRequest = z.object({
+	ticket: createStringType().describe('Backup codes challenge ticket identifier'),
+});
+
+export type MfaBackupCodesChallengeResendRequest = z.infer<typeof MfaBackupCodesChallengeResendRequest>;
+
+export const MfaBackupCodesChallengeVerifyRequest = MfaBackupCodesChallengeResendRequest.extend({
+	code: createStringType().describe('Verification code sent to the email address'),
+});
+
+export type MfaBackupCodesChallengeVerifyRequest = z.infer<typeof MfaBackupCodesChallengeVerifyRequest>;
+
+export const MfaBackupCodesChallengeVerifyResponse = MfaBackupCodesResponse.extend({
+	verification_proof: z.string().describe('Proof token authorizing backup code regeneration on this ticket'),
+});
+
+export type MfaBackupCodesChallengeVerifyResponse = z.infer<typeof MfaBackupCodesChallengeVerifyResponse>;
+
+export const MfaBackupCodesChallengeRegenerateRequest = MfaBackupCodesChallengeResendRequest.extend({
+	verification_proof: createStringType().describe('Proof token obtained from verifying the email code'),
+});
+
+export type MfaBackupCodesChallengeRegenerateRequest = z.infer<typeof MfaBackupCodesChallengeRegenerateRequest>;
 
 export const PhoneSendVerificationRequest = z.object({
 	phone: PhoneNumberType.describe('Phone number to send verification code'),
@@ -443,16 +478,14 @@ export const WebAuthnCredentialListResponse = z.array(WebAuthnCredentialResponse
 
 export type WebAuthnCredentialListResponse = z.infer<typeof WebAuthnCredentialListResponse>;
 
-export const WebAuthnChallengeResponse = z
-	.object({
-		challenge: z.string().describe('The WebAuthn challenge'),
-	})
-	.passthrough();
+export const WebAuthnChallengeResponse = z.looseObject({
+	challenge: z.string().describe('The WebAuthn challenge'),
+});
 
 export type WebAuthnChallengeResponse = z.infer<typeof WebAuthnChallengeResponse>;
 
 export const WebAuthnRegisterRequest = z.object({
-	response: z.custom<RegistrationResponseJSON>().describe('WebAuthn registration response'),
+	response: WebAuthnRegistrationResponse.describe('WebAuthn registration response'),
 	challenge: createStringType(1, 1024).describe('The challenge from registration options'),
 	name: createStringType(1, 100).describe('User-assigned name for the credential'),
 });
@@ -463,7 +496,7 @@ export const WebAuthnCredentialUpdateRequest = z
 	.object({
 		name: createStringType(1, 100).describe('New name for the credential'),
 	})
-	.merge(SudoVerificationSchema);
+	.extend(SudoVerificationSchema.shape);
 
 export type WebAuthnCredentialUpdateRequest = z.infer<typeof WebAuthnCredentialUpdateRequest>;
 
@@ -482,3 +515,5 @@ export const InboundSmsChallengeStartResponse = z.object({
 });
 
 export type InboundSmsChallengeStartResponse = z.infer<typeof InboundSmsChallengeStartResponse>;
+
+export const LogoutAuthSessionsWithVerificationRequest = LogoutAuthSessionsRequest.extend(SudoVerificationSchema.shape);

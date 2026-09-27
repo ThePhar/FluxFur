@@ -52,7 +52,18 @@ export function configureMiddleware(routes: HonoApp, options: MiddlewarePipeline
 	);
 	applyMiddlewareStack(routes, {
 		requestId: {},
-		cors: {origins: corsOrigins, exposedHeaders: [HttpHeaders.X_FLUXER_VERSION]},
+		cors: {
+			origins: corsOrigins,
+			allowedHeaders: [
+				HttpHeaders.CONTENT_TYPE,
+				HttpHeaders.AUTHORIZATION,
+				'X-Requested-With',
+				'Accept-Language',
+				HttpHeaders.X_REQUEST_ID,
+				HttpHeaders.IF_NONE_MATCH,
+			],
+			exposedHeaders: [HttpHeaders.X_FLUXER_VERSION, HttpHeaders.ETAG],
+		},
 		skipLogger: true,
 		skipErrorHandler: true,
 	});
@@ -91,11 +102,7 @@ export function configureMiddleware(routes: HonoApp, options: MiddlewarePipeline
 	}
 	routes.use(TorExitMiddleware);
 	routes.use(AuditLogMiddleware);
-	routes.use(
-		RequireClientIpMiddleware({
-			requiredHeaders: [resolvedHeader],
-		}),
-	);
+	routes.use(RequireClientIpMiddleware());
 	routes.use(ServiceMiddleware);
 	routes.use(UserMiddleware);
 	routes.use(ContentFilterMiddleware);

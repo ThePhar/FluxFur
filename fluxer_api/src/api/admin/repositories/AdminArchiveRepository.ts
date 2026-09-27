@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import type {ArchiveSubjectType} from '@fluxer/schema/src/domains/admin/AdminArchiveSchemas';
 import {ms} from 'itty-time';
 import {BatchBuilder, fetchMany, fetchOne} from '../../database/CassandraQueryExecution';
 import {Db} from '../../database/CassandraTypes';
 import type {AdminArchiveRow} from '../../database/types/AdminArchiveTypes';
 import {Logger} from '../../Logger';
 import {AdminArchivesByRequester, AdminArchivesBySubject, AdminArchivesByType} from '../../Tables';
-import type {ArchiveSubjectType} from '../models/AdminArchiveModel';
 import {AdminArchive} from '../models/AdminArchiveModel';
 
 const RETENTION_DAYS = 365;
@@ -86,6 +86,8 @@ export class AdminArchiveRepository {
 				},
 				{
 					started_at: Db.set(new Date()),
+					failed_at: Db.clear(),
+					error_message: Db.clear(),
 					progress_percent: Db.set(0),
 					progress_step: Db.set(progressStep),
 				},
@@ -101,6 +103,8 @@ export class AdminArchiveRepository {
 				},
 				{
 					started_at: Db.set(new Date()),
+					failed_at: Db.clear(),
+					error_message: Db.clear(),
 					progress_percent: Db.set(0),
 					progress_step: Db.set(progressStep),
 				},
@@ -116,6 +120,8 @@ export class AdminArchiveRepository {
 				},
 				{
 					started_at: Db.set(new Date()),
+					failed_at: Db.clear(),
+					error_message: Db.clear(),
 					progress_percent: Db.set(0),
 					progress_step: Db.set(progressStep),
 				},

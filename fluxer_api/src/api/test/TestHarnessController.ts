@@ -2261,7 +2261,6 @@ export function TestHarnessController(app: HonoApp) {
 				message_reference: null,
 				message_snapshots: null,
 				call: null,
-				nsfw_emojis: null,
 				has_reaction: false,
 				version: 1,
 			};
@@ -2797,6 +2796,7 @@ export function TestHarnessController(app: HonoApp) {
 		return ctx.json({cleared: true, deleted_count: totalDeleted});
 	});
 	app.post('/test/rpc-session-init', async (ctx) => {
+		ensureHarnessAccess(ctx);
 		const request = RpcRequest.parse(await ctx.req.json());
 		const response = await ctx.get('rpcService').handleRpcRequest({request, requestCache: ctx.get('requestCache')});
 		return ctx.json(response);

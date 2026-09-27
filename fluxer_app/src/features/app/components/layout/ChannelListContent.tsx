@@ -16,6 +16,7 @@ import {NullSpaceDropIndicator} from '@app/features/app/components/layout/NullSp
 import {ScrollIndicatorOverlay} from '@app/features/app/components/layout/ScrollIndicatorOverlay';
 import {type DragItem, DragItemType, type DropResult} from '@app/features/app/components/layout/types/DndTypes';
 import {
+	shouldShowCategoryWhenHidingMutedChannels,
 	shouldShowChannelInCollapsedCategory,
 	shouldShowChannelWhenHidingMutedChannels,
 } from '@app/features/app/components/layout/utils/ChannelListVisibility';
@@ -337,9 +338,7 @@ export const ChannelListContent = observer(({guild, scrollY}: {guild: Guild; scr
 		const unreadCount = ReadStates.getUnreadCount(channelId);
 		const hasUnread = ReadStates.hasUnread(channelId);
 		const mentionCount = ReadStates.getMentionCount(channelId);
-		const isMuted =
-			UserGuildSettings.isParentCategoryMuted(guild.id, channelId) ||
-			UserGuildSettings.isChannelDirectlyMuted(guild.id, channelId);
+		const isMuted = UserGuildSettings.isChannelDirectlyMuted(guild.id, channelId);
 		const channel = Channels.getChannel(channelId);
 		const unreadBadgesLevel = channel
 			? UserGuildSettings.resolvedUnreadBadgesLevel({
@@ -363,18 +362,21 @@ export const ChannelListContent = observer(({guild, scrollY}: {guild: Guild; scr
 	for (const group of channelGroups) {
 		const isCollapsed = group.category ? (collapsedCategories?.has(group.category.id) ?? false) : false;
 		const isNullSpace = !group.category;
-		const isCategoryMuted = group.category
-			? UserGuildSettings.isChannelDirectlyMuted(guild.id, group.category.id)
-			: false;
+		const isCategoryMuted =
+			hideMutedChannels && group.category
+				? UserGuildSettings.isChannelDirectlyMuted(guild.id, group.category.id)
+				: false;
 		let filteredTextChannels: Array<Channel>;
 		let filteredVoiceChannels: Array<Channel>;
 		if (hideMutedChannels) {
 			filteredTextChannels = [];
 			for (const ch of group.textChannels) {
-				const isMuted = UserGuildSettings.isChannelDirectlyMuted(guild.id, ch.id);
+				const isChannelMuted = UserGuildSettings.isChannelDirectlyMuted(guild.id, ch.id);
+				const isMuted = isCategoryMuted || isChannelMuted;
 				if (
 					shouldShowChannelWhenHidingMutedChannels({
-						isMuted,
+						isCategoryMuted,
+						isChannelMuted,
 						isSelected: ch.id === selectedChannelInGuildId,
 						isConnected: false,
 						hasVisibleUnread: isMuted && hasVisibleUnreadInChannel(ch.id),
@@ -385,10 +387,12 @@ export const ChannelListContent = observer(({guild, scrollY}: {guild: Guild; scr
 			}
 			filteredVoiceChannels = [];
 			for (const ch of group.voiceChannels) {
-				const isMuted = UserGuildSettings.isChannelDirectlyMuted(guild.id, ch.id);
+				const isChannelMuted = UserGuildSettings.isChannelDirectlyMuted(guild.id, ch.id);
+				const isMuted = isCategoryMuted || isChannelMuted;
 				if (
 					shouldShowChannelWhenHidingMutedChannels({
-						isMuted,
+						isCategoryMuted,
+						isChannelMuted,
 						isSelected: ch.id === selectedChannelInGuildId,
 						isConnected: ch.id === connectedChannelId,
 						hasVisibleUnread: isMuted && hasVisibleUnreadInChannel(ch.id),
@@ -410,8 +414,8 @@ export const ChannelListContent = observer(({guild, scrollY}: {guild: Guild; scr
 			for (const ch of filteredTextChannels) {
 				if (
 					shouldShowChannelInCollapsedCategory({
-						isCategoryMuted,
 						isSelected: ch.id === showTextSelected,
+						isConnected: false,
 						hasVisibleUnread: hasVisibleUnreadInChannel(ch.id),
 					})
 				) {
@@ -441,8 +445,8 @@ export const ChannelListContent = observer(({guild, scrollY}: {guild: Guild; scr
 			for (const ch of filteredVoiceChannels) {
 				if (
 					shouldShowChannelInCollapsedCategory({
-						isCategoryMuted,
 						isSelected: ch.id === selectedChannelInGuildId,
+						isConnected: ch.id === connectedChannelId,
 						hasVisibleUnread: hasVisibleUnreadInChannel(ch.id),
 					})
 				) {
@@ -471,8 +475,10 @@ export const ChannelListContent = observer(({guild, scrollY}: {guild: Guild; scr
 		if (
 			hideMutedChannels &&
 			group.category &&
-			filteredTextChannels.length === 0 &&
-			filteredVoiceChannels.length === 0
+			!shouldShowCategoryWhenHidingMutedChannels({
+				hasChannels: group.textChannels.length > 0 || group.voiceChannels.length > 0,
+				hasVisibleChannels: filteredTextChannels.length > 0 || filteredVoiceChannels.length > 0,
+			})
 		) {
 			continue;
 		}

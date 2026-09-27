@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {DELETED_USER_ID} from '@fluxer/constants/src/UserConstants';
 import {ValidationErrorCodes} from '@fluxer/constants/src/ValidationErrorCodes';
 import {InputValidationError} from '@fluxer/errors/src/domains/core/InputValidationError';
+import {UnknownUserError} from '@fluxer/errors/src/domains/user/UnknownUserError';
 import {
 	ChannelIdParam,
 	GuildIdParam,
@@ -23,10 +25,22 @@ import {
 	WebhookTokenUpdateRequest,
 	WebhookUpdateRequest,
 } from '@fluxer/schema/src/domains/webhook/WebhookRequestSchemas';
-import {WebhookResponse, WebhookTokenResponse} from '@fluxer/schema/src/domains/webhook/WebhookSchemas';
+import {
+	SlackWebhookResponse,
+	WebhookListResponse,
+	WebhookResponse,
+	WebhookTokenResponse,
+} from '@fluxer/schema/src/domains/webhook/WebhookSchemas';
 import type {Context} from 'hono';
-import {z} from 'zod';
-import {createChannelID, createGuildID, createMessageID, createWebhookID, createWebhookToken} from '../BrandedTypes';
+
+import {
+	createChannelID,
+	createGuildID,
+	createMessageID,
+	createUserID,
+	createWebhookID,
+	createWebhookToken,
+} from '../BrandedTypes';
 import type {MessageRequest} from '../channel/MessageTypes';
 import {normalizeMessageRequestPayload} from '../channel/services/message/MessageRequestCompatibility';
 import {parseMultipartMessageData} from '../channel/services/message/MessageRequestParser';
@@ -76,12 +90,12 @@ async function parseWebhookMultipartMessageData(
 		webhookId: createWebhookID(webhookId),
 		token: createWebhookToken(token),
 	});
-	if (!webhook.creatorId) {
-		throw InputValidationError.fromCode('message_data', ValidationErrorCodes.INVALID_MESSAGE_DATA);
-	}
-	const creator = await ctx.get('userRepository').findUnique(webhook.creatorId);
+	const userRepository = ctx.get('userRepository');
+	const creator =
+		(webhook.creatorId ? await userRepository.findUnique(webhook.creatorId) : null) ??
+		(await userRepository.findUnique(createUserID(DELETED_USER_ID)));
 	if (!creator) {
-		throw InputValidationError.fromCode('message_data', ValidationErrorCodes.INVALID_MESSAGE_DATA);
+		throw new UnknownUserError();
 	}
 	let parsedPayload: unknown = null;
 	const messageData: MessageRequest = await parseMultipartMessageData(
@@ -93,6 +107,7 @@ async function parseWebhookMultipartMessageData(
 			onPayloadParsed(payload) {
 				parsedPayload = payload;
 			},
+			actor: 'webhook',
 		},
 	);
 	if (!parsedPayload) {
@@ -118,7 +133,7 @@ export function WebhookController(app: HonoApp) {
 			summary: 'List guild webhooks',
 			description:
 				'Returns a list of all webhooks configured in the specified guild. Requires the user to have appropriate permissions to view webhooks in the guild.',
-			responseSchema: z.array(WebhookResponse),
+			responseSchema: WebhookListResponse,
 			statusCode: 200,
 			security: ['botToken', 'bearerToken', 'sessionToken'],
 			tags: ['Webhooks'],
@@ -142,7 +157,7 @@ export function WebhookController(app: HonoApp) {
 			summary: 'List channel webhooks',
 			description:
 				'Returns a list of all webhooks configured in the specified channel. Requires the user to have appropriate permissions to view webhooks in the channel.',
-			responseSchema: z.array(WebhookResponse),
+			responseSchema: WebhookListResponse,
 			statusCode: 200,
 			security: ['botToken', 'bearerToken', 'sessionToken'],
 			tags: ['Webhooks'],
@@ -482,7 +497,7 @@ export function WebhookController(app: HonoApp) {
 			summary: 'Execute Slack webhook',
 			description:
 				'Receives and processes Slack-formatted webhook payloads, converting them to messages in the configured channel. Returns "ok" as plain text with a 200 status code.',
-			responseSchema: z.string(),
+			responseSchema: SlackWebhookResponse,
 			statusCode: 200,
 			tags: ['Webhooks'],
 		}),

@@ -4,12 +4,14 @@ import {snowflakeToDate} from '@fluxer/snowflake/src/Snowflake';
 import type {ChannelID, GuildID, MessageID, UserID} from '../../../BrandedTypes';
 import {createChannelID} from '../../../BrandedTypes';
 import type {IChannelRepository} from '../../../channel/IChannelRepository';
+import {assertMutableUserId} from '../../../constants/Core';
 import type {IPurgeQueue} from '../../../infrastructure/BunnyPurgeQueue';
 import type {IGatewayService} from '../../../infrastructure/IGatewayService';
 import type {IStorageService} from '../../../infrastructure/IStorageService';
 import {Logger} from '../../../Logger';
 import type {Message} from '../../../models/Message';
 import {deleteMessageSearchDocuments} from '../../../search/MessageSearchIndexCleanup';
+import {chunkArray} from '../../../utils/ArrayUtils';
 import {ChannelEventDispatcher} from '../../../worker/services/ChannelEventDispatcher';
 import {purgeMessageAttachments} from './MessageHelpers';
 import {
@@ -50,14 +52,6 @@ interface MessageWithChannel {
 	message: Message;
 }
 
-function chunkArray<T>(items: Array<T>, chunkSize: number): Array<Array<T>> {
-	const chunks: Array<Array<T>> = [];
-	for (let i = 0; i < items.length; i += chunkSize) {
-		chunks.push(items.slice(i, i + chunkSize));
-	}
-	return chunks;
-}
-
 export class UserMessageDeletionService {
 	private readonly eventDispatcher: ChannelEventDispatcher;
 	private readonly FETCH_BATCH_SIZE = 100;
@@ -81,6 +75,7 @@ export class UserMessageDeletionService {
 	}
 
 	async deleteUserMessagesBulk(userId: UserID, options: BulkDeleteUserMessagesOptions = {}): Promise<number> {
+		assertMutableUserId(userId);
 		const {beforeTimestamp = Number.POSITIVE_INFINITY, channelIdAllowlist, onProgress} = options;
 		Logger.debug({userId, beforeTimestamp}, 'Starting bulk user message deletion');
 		const messagesByChannel = await this.collectUserMessages(userId, beforeTimestamp, channelIdAllowlist);

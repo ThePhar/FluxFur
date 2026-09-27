@@ -466,7 +466,10 @@ class ReadStates {
 		if (action.message.guild_id != null) {
 			state.storedGuildId = action.message.guild_id;
 		}
-		const previousLastMessageId = state.lastMessageId;
+		const previousLastMessageId =
+			state.isPrivate && !state.messagesLoaded && state.lastMessageId === action.message.id
+				? null
+				: state.lastMessageId;
 		const currentUser = Users.getCurrentUser();
 		const authorBlocked = Relationships.isBlocked(action.message.author.id);
 		const hadUnreadOrMentions = state.isUnreadOrMentioned();
@@ -552,17 +555,6 @@ class ReadStates {
 			state.readStateKnown = archivedState.readStateKnown;
 			this.archivedStates.delete(action.channel.id as ChannelId);
 		}
-		if (
-			(action.channel.type === ChannelTypes.DM ||
-				action.channel.type === ChannelTypes.GROUP_DM ||
-				action.channel.type === ChannelTypes.DM_PERSONAL_NOTES) &&
-			action.channel.last_message_id != null
-		) {
-			state.readStateKnown = true;
-			state.ackMessageId = action.channel.last_message_id;
-		} else if (GUILD_TEXT_BASED_CHANNEL_TYPES.has(action.channel.type) && state.hasUnread()) {
-			this.clearUnreadStateIfRead(state);
-		}
 		this.notifyChange(action.channel.id);
 	}
 
@@ -583,7 +575,7 @@ class ReadStates {
 				changed = state.guildId !== guildId;
 				state.storedGuildId = guildId;
 			}
-			if (lastMessageId !== state.lastMessageId) {
+			if (isNewerMessageId(lastMessageId, state.lastMessageId)) {
 				state.lastMessageId = lastMessageId;
 				changed = true;
 				this.clearUnreadStateIfRead(state);
@@ -610,6 +602,25 @@ class ReadStates {
 			guild_id?: string;
 		};
 	}): void {
+		const state = this.getIfExists(action.channel.id);
+		if (
+			state != null &&
+			(action.channel.type === ChannelTypes.DM ||
+				action.channel.type === ChannelTypes.GROUP_DM ||
+				action.channel.type === ChannelTypes.DM_PERSONAL_NOTES)
+		) {
+			if (action.channel.type === ChannelTypes.GROUP_DM) {
+				this.cancelPendingAck(action.channel.id);
+			}
+			state.messagesLoaded = false;
+			state.ackedManually = false;
+			state.clearStickyUnread();
+			state.estimated = false;
+			state.unreadCount = 0;
+			state.oldestUnreadMessageId = null;
+			this.notifyChange(action.channel.id);
+			return;
+		}
 		if (action.channel.guild_id != null && GUILD_TEXT_BASED_CHANNEL_TYPES.has(action.channel.type ?? -1)) {
 			this.archiveState(action.channel.id);
 		}
@@ -840,7 +851,6 @@ class ReadStates {
 			state.ackedManually = false;
 			state.clearStickyUnread();
 		}
-		this.cancelPendingAckIfCovered(state.channelId, decision.messageId);
 		return {acked: true, messageId: decision.messageId, hadMentions: decision.hadMentions};
 	}
 

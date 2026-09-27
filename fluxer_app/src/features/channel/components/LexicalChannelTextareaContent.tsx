@@ -92,7 +92,11 @@ import {CloudUpload} from '@app/features/messaging/upload/CloudUpload';
 import {canAttachFilesInChannel} from '@app/features/messaging/utils/AttachmentPermissionUtils';
 import {openFilePicker} from '@app/features/messaging/utils/FilePickerUtils';
 import * as FileUploadUtils from '@app/features/messaging/utils/FileUploadUtils';
-import {hasVisibleMessageContent} from '@app/features/messaging/utils/MessageRequestUtils';
+import {
+	canSubmitComposerContent,
+	getComposerMessageContent,
+	hasVisibleMessageContent,
+} from '@app/features/messaging/utils/MessageRequestUtils';
 import type {MentionSegment} from '@app/features/messaging/utils/TextareaSegmentManager';
 import {
 	resolveTypedEmojiShortcodes,
@@ -267,6 +271,7 @@ export const LexicalChannelTextareaContent = observer(
 		const referencedMessage = MessageReply.getReferencedMessage(channel.id);
 		const editingMessage = editingMobileMessageId ? Messages.getMessage(channel.id, editingMobileMessageId) : null;
 		const editingMessageForComposer = editingMessage === undefined ? null : editingMessage;
+		const isEditingMessageOnMobile = editingMessageForComposer !== null && mobileLayout.enabled;
 		const maxMessageLength = Limits.getMaxMessageLength();
 		const premiumMaxLength = Limits.getStockValue('max_message_length', maxMessageLength);
 		const maxAttachments = Limits.getMaxAttachmentsPerMessage();
@@ -496,6 +501,7 @@ export const LexicalChannelTextareaContent = observer(
 			isSlotMenu,
 			onCursorMove,
 			handleSelect,
+			specialMentionsAllowed,
 		} = useLexicalAutocomplete({
 			channel,
 			handleRef,
@@ -526,7 +532,11 @@ export const LexicalChannelTextareaContent = observer(
 			() => resolveTypedEmojiContent(wireValue.trim()),
 			[resolveTypedEmojiContent, wireValue],
 		);
-		const hasMessageContent = useMemo(() => hasVisibleMessageContent(trimmedMessageContent), [trimmedMessageContent]);
+		const composerMessageContent = useMemo(
+			() => getComposerMessageContent(trimmedMessageContent, isEditingMessageOnMobile),
+			[isEditingMessageOnMobile, trimmedMessageContent],
+		);
+		const hasMessageContent = useMemo(() => hasVisibleMessageContent(composerMessageContent), [composerMessageContent]);
 		const isSubmissionBlockedBySlowmode = useMemo(() => {
 			if (!isSlowmodeActive || isEditingMessageInComposer) {
 				return false;
@@ -708,12 +718,16 @@ export const LexicalChannelTextareaContent = observer(
 		}, [channel.id, hasAttachments, hasPendingSticker]);
 		const showAttachments = hasAttachments;
 		const showStickers = hasPendingSticker;
-		const isOverCharacterLimit = trimmedMessageContent.length > maxMessageLength;
-		const canSubmit =
-			!textareaInputDisabled &&
-			!isSubmissionBlockedBySlowmode &&
-			!isOverCharacterLimit &&
-			(hasMessageContent || hasAttachments || hasPendingSticker);
+		const isOverCharacterLimit = composerMessageContent.length > maxMessageLength;
+		const canSubmit = canSubmitComposerContent({
+			inputDisabled: textareaInputDisabled,
+			isSubmissionBlockedBySlowmode,
+			isOverCharacterLimit,
+			hasMessageContent,
+			hasAttachments,
+			hasPendingSticker,
+			isEditingMessageOnMobile,
+		});
 		const {onSubmit} = useTextareaSubmit({
 			channelId: channel.id,
 			guildId: channel.guildId === undefined ? null : channel.guildId,
@@ -1343,9 +1357,11 @@ export const LexicalChannelTextareaContent = observer(
 										initialSegments={initialDraftRef.current.segments}
 										slotResolvers={slotResolvers}
 										emojiShortcodeResolver={composerEmojiResolver}
+										specialMentionsAllowed={specialMentionsAllowed}
 										channelId={channel.id}
 										guildId={channel.guildId}
 										submitOnEnter={!mobileLayout.enabled}
+										silentMessagePrefix={!isEditingMessageOnMobile}
 										focusRingTarget={containerRef}
 										focusRingEnabled={!textareaInputDisabled && Accessibility.showTextareaFocusRing}
 										className={lexicalStyles.composerEditable}
@@ -1406,7 +1422,7 @@ export const LexicalChannelTextareaContent = observer(
 						styles.inputSection,
 					)}
 					<MessageCharacterCounter
-						currentLength={trimmedMessageContent.length}
+						currentLength={composerMessageContent.length}
 						maxLength={maxMessageLength}
 						canUpgrade={maxMessageLength < premiumMaxLength}
 						premiumMaxLength={premiumMaxLength}

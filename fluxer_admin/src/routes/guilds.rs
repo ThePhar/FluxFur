@@ -191,7 +191,7 @@ async fn guild_detail_post(
             return flash::redirect_with_flash(
                 &format!("{base}/guilds/{guild_id}"),
                 FlashData::error("Invalid form data"),
-                config.is_production(),
+                config.secure_cookies(),
             );
         }
     };
@@ -203,7 +203,7 @@ async fn guild_detail_post(
     } else {
         format!("{base}/guilds/{guild_id}?tab={tab}")
     };
-    flash::redirect_with_flash(&redirect, flash, config.is_production())
+    flash::redirect_with_flash(&redirect, flash, config.secure_cookies())
 }
 
 async fn dispatch_guild_action(
@@ -415,7 +415,7 @@ async fn dispatch_guild_action(
                 return FlashData::error("Emoji ID is required");
             };
             action_result(
-                client.purge_assets(&[emoji_id]).await,
+                client.purge_assets(guild_id, &[emoji_id]).await,
                 "Emoji deleted",
                 "Failed to delete emoji",
             )
@@ -425,7 +425,7 @@ async fn dispatch_guild_action(
                 return FlashData::error("Sticker ID is required");
             };
             action_result(
-                client.purge_assets(&[sticker_id]).await,
+                client.purge_assets(guild_id, &[sticker_id]).await,
                 "Sticker deleted",
                 "Failed to delete sticker",
             )

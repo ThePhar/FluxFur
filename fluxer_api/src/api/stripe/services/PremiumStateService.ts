@@ -4,6 +4,8 @@ import {PremiumFlags, UserPremiumTypes} from '@fluxer/constants/src/UserConstant
 import {UnknownUserError} from '@fluxer/errors/src/domains/user/UnknownUserError';
 import type {
 	CurrentSubscriptionPriceResponse,
+	ListPriceSwitchState,
+	PendingSubscriptionChangeKind,
 	PendingSubscriptionChangeResponse,
 	PremiumBillingInvoiceResponse,
 	PremiumBillingPaymentMethodResponse,
@@ -11,7 +13,6 @@ import type {
 	PremiumPricingState,
 	PremiumStateResponse,
 	PriceIdsResponse,
-	PricingMode,
 	SelfServeRefundEligibilityResponse,
 	SelfServeRefundIneligibilityReason,
 } from '@fluxer/schema/src/domains/premium/PremiumSchemas';
@@ -31,13 +32,7 @@ import type {User} from '../../models/User';
 import type {IUserRepository} from '../../user/IUserRepository';
 import {checkHasActivePaidPremium} from '../../user/UserHelpers';
 import {mapUserToPrivateResponse} from '../../user/UserMappers';
-import {
-	type Currency,
-	getBaseCurrencyPreferences,
-	getBaseGiftCurrencyPreferences,
-	getCurrencyPreferences,
-	getGiftCurrencyPreferences,
-} from '../../utils/CurrencyUtils';
+import {type Currency, getCurrencyPreferences, getGiftCurrencyPreferences} from '../../utils/CurrencyUtils';
 import type {RecurringBillingCycle} from '../ProductRegistry';
 import {ProductRegistry} from '../ProductRegistry';
 import {getPrimarySubscriptionItem} from '../StripeSubscriptionPeriod';
@@ -109,8 +104,11 @@ function normalizeCurrency(value: string | null | undefined): Currency | null {
 		currency === 'USD' ||
 		currency === 'EUR' ||
 		currency === 'BRL' ||
+		currency === 'DKK' ||
 		currency === 'INR' ||
+		currency === 'NOK' ||
 		currency === 'PLN' ||
+		currency === 'SEK' ||
 		currency === 'TRY'
 	) {
 		return currency;
@@ -264,6 +262,9 @@ export class PremiumStateService {
 			this.resolvePricing(countryCode),
 		]);
 		const refundEligibilityState = await this.resolveRefundEligibility(user, invoices.allRows);
+		const listPriceSwitch = this.resolveListPriceSwitch(subscription, subscriptionPrice, pendingSubscriptionChange);
+		const pendingBillingCycleChange =
+			pendingSubscriptionChange?.change_kind === 'billing_cycle' ? pendingSubscriptionChange : null;
 		const activePaidPremium = checkHasActivePaidPremium(user);
 		const isEffectivePremium = user.isPremium();
 		const actualPremiumEndAt = user.effectivePremiumUntil;
@@ -298,7 +299,8 @@ export class PremiumStateService {
 			billing: {
 				stripe_customer_id: customerIds[0] ?? user.stripeCustomerId ?? null,
 				current_subscription_price: subscriptionPrice,
-				pending_subscription_change: pendingSubscriptionChange,
+				pending_subscription_change: pendingBillingCycleChange,
+				list_price_switch: listPriceSwitch,
 				subscription: subscription ? await this.mapSubscription(subscription) : null,
 				invoices: invoices.rows.map(mapInvoice),
 				invoices_has_more: invoices.hasMore,
@@ -576,8 +578,16 @@ export class PremiumStateService {
 		const targetItem = futurePhase.items[0] ?? null;
 		const targetPriceDetails = await this.resolveStripePriceDetails(targetItem?.price ?? null);
 		const metadataTargetBillingCycle = normalizeBillingCycle(schedule.metadata?.pending_billing_cycle);
-		const targetBillingCycle = targetPriceDetails.billingCycle ?? metadataTargetBillingCycle;
-		if (!targetBillingCycle || targetBillingCycle === currentBillingCycle) {
+		const targetBillingCycle = targetPriceDetails.billingCycle ?? metadataTargetBillingCycle ?? currentBillingCycle;
+		if (!targetBillingCycle) {
+			return null;
+		}
+		const changeKind: PendingSubscriptionChangeKind =
+			targetBillingCycle === currentBillingCycle ? 'price' : 'billing_cycle';
+		if (
+			changeKind === 'price' &&
+			(targetPriceDetails.priceId == null || targetPriceDetails.priceId === currentPriceDetails.priceId)
+		) {
 			return null;
 		}
 		const quantity = targetItem?.quantity ?? currentItem?.quantity ?? 1;
@@ -598,16 +608,74 @@ export class PremiumStateService {
 		const creditAmountMinor = firstInvoiceAdjustmentTotal < 0 ? -firstInvoiceAdjustmentTotal : null;
 		return {
 			schedule_id: schedule.id,
+			change_kind: changeKind,
 			current_billing_cycle: currentBillingCycle,
 			target_billing_cycle: targetBillingCycle,
 			effective_at: new Date(futurePhase.start_date * 1000).toISOString(),
 			current_price_id: currentPriceDetails.priceId,
 			target_price_id: targetPriceDetails.priceId,
+			target_amount_minor: targetPriceDetails.amountMinor,
 			currency: targetPriceDetails.currency,
 			initial_amount_minor: initialAmountMinor,
 			recurring_amount_minor: recurringAmountMinor,
 			credit_amount_minor: creditAmountMinor,
 		};
+	}
+
+	private resolveListPriceSwitch(
+		subscription: BillingSubscriptionRow | null,
+		subscriptionPrice: CurrentSubscriptionPriceResponse,
+		pendingChange: PendingSubscriptionChangeResponse,
+	): ListPriceSwitchState {
+		const base = {
+			pending: false,
+			current_price_id: subscriptionPrice?.price_id ?? null,
+			current_amount_minor: subscriptionPrice?.amount_minor ?? null,
+			list_price_id: subscriptionPrice?.list_price_id ?? null,
+			list_amount_minor: subscriptionPrice?.list_amount_minor ?? null,
+			currency: subscriptionPrice?.currency ?? null,
+			billing_cycle: subscriptionPrice?.billing_cycle ?? null,
+			effective_at: toIso(subscription?.current_period_end),
+		};
+		if (Config.instance.selfHosted || !Config.stripe.enabled || !Config.stripe.secretKey) {
+			return {...base, available: false, reason: 'feature_unavailable'};
+		}
+		if (!subscription) {
+			return {...base, available: false, reason: 'no_active_subscription'};
+		}
+		if (!subscriptionPrice) {
+			return {...base, available: false, reason: 'unsupported_subscription'};
+		}
+		if (!subscription.status || !ACTIVE_SUBSCRIPTION_STATUSES.has(subscription.status)) {
+			return {...base, available: false, reason: 'subscription_not_chargeable'};
+		}
+		if (subscription.cancel_at != null || subscription.cancel_at_period_end === true) {
+			return {...base, available: false, reason: 'subscription_cancelling'};
+		}
+		if (pendingChange) {
+			const targetsListPrice =
+				subscriptionPrice.list_price_id != null && pendingChange.target_price_id === subscriptionPrice.list_price_id;
+			return {
+				...base,
+				available: false,
+				reason: targetsListPrice ? null : 'conflicting_pending_change',
+				pending: targetsListPrice,
+				effective_at: pendingChange.effective_at,
+			};
+		}
+		if (subscriptionPrice.list_price_id == null || subscriptionPrice.list_amount_minor == null) {
+			return {...base, available: false, reason: 'no_list_price'};
+		}
+		if (subscriptionPrice.list_price_id === subscriptionPrice.price_id) {
+			return {...base, available: false, reason: 'already_on_list_price'};
+		}
+		if (subscriptionPrice.list_amount_minor >= subscriptionPrice.amount_minor) {
+			return {...base, available: false, reason: 'not_a_price_decrease'};
+		}
+		if (base.effective_at == null) {
+			return {...base, available: false, reason: 'missing_period_end'};
+		}
+		return {...base, available: true, reason: null};
 	}
 
 	private async resolveStripePriceDetails(
@@ -671,22 +739,15 @@ export class PremiumStateService {
 
 	private async resolvePricing(countryCode: string | null | undefined): Promise<PremiumPricingState> {
 		const normalizedCountryCode = normalizeCountryCode(countryCode);
-		const [localized, base] = await Promise.all([
-			this.resolvePriceIds(normalizedCountryCode, 'localized'),
-			this.resolvePriceIds(normalizedCountryCode, 'base'),
-		]);
+		const localized = await this.resolvePriceIds(normalizedCountryCode);
 		return {
 			country_code: normalizedCountryCode,
 			localized,
-			base,
 		};
 	}
 
-	private async resolvePriceIds(
-		countryCode: string | null,
-		pricingMode: PricingMode,
-	): Promise<PriceIdsResponse | null> {
-		const resolved = this.resolveConfiguredPriceIds(countryCode, pricingMode);
+	private async resolvePriceIds(countryCode: string | null): Promise<PriceIdsResponse | null> {
+		const resolved = this.resolveConfiguredPriceIds(countryCode);
 		if (!resolved) return null;
 		const [monthlyPrice, yearlyPrice, gift1MonthPrice, gift1YearPrice] = await Promise.all([
 			resolved.monthly ? this.billingRepository.prices.findById(resolved.monthly) : null,
@@ -703,11 +764,9 @@ export class PremiumStateService {
 		};
 	}
 
-	private resolveConfiguredPriceIds(countryCode: string | null, pricingMode: PricingMode): ResolvedPriceIds | null {
-		const recurringCurrencyPreferences =
-			pricingMode === 'base' ? getBaseCurrencyPreferences(countryCode) : getCurrencyPreferences(countryCode);
-		const giftCurrencyPreferences =
-			pricingMode === 'base' ? getBaseGiftCurrencyPreferences(countryCode) : getGiftCurrencyPreferences(countryCode);
+	private resolveConfiguredPriceIds(countryCode: string | null): ResolvedPriceIds | null {
+		const recurringCurrencyPreferences = getCurrencyPreferences(countryCode);
+		const giftCurrencyPreferences = getGiftCurrencyPreferences(countryCode);
 		const recurringPrices = this.resolveRecurringPriceIds(recurringCurrencyPreferences);
 		const giftPrices = this.resolveGiftPriceIds(giftCurrencyPreferences);
 		if (!recurringPrices || !giftPrices) return null;

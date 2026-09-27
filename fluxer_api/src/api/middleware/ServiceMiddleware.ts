@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import crypto from 'node:crypto';
+import {lookupAsnByIp, lookupGeoipByIp} from '@pkgs/geoip/src/GeoipLookup';
 import {createIpInfoService, createUnavailableIpInfoService, type IpInfoService} from '@pkgs/geoip/src/IpInfoService';
 import {createMiddleware} from 'hono/factory';
 import type {ApiContext} from '../ApiContext';
@@ -58,8 +59,14 @@ import {createIpInfoChecker} from '../risk/adapters/IpInfoAdapter';
 import {createReverseDnsLookup} from '../risk/adapters/ReverseDnsAdapter';
 import {DeterministicRiskEngine} from '../risk/DeterministicRiskEngine';
 import {CassandraHistoricalOutcomeRepository} from '../risk/HistoricalOutcomeRepository';
+import {createKvIpInfoLookupBudget} from '../risk/IpInfoBudget';
 import {buildIpInfoCache, buildIpInfoRequestAuditLogger} from '../risk/IpInfoCacheFactory';
 import {CassandraRegistrationEventsRepository} from '../risk/RegistrationEventsRepository';
+import {
+	type IpInfoPrescreenVerdict,
+	ipInfoPrescreenOptionsFromEnv,
+	prescreenIpInfoLookup,
+} from '../risk/RegistrationIpPrescreen';
 import {CassandraRiskAssessmentRepository} from '../risk/RiskAssessmentRepository';
 import {createRiskToolbox} from '../risk/RiskToolboxFactory';
 import {CassandraSuspiciousIpRepository} from '../risk/SuspiciousIpRepository';
@@ -71,6 +78,7 @@ import {AgeVerificationService} from '../stripe/services/AgeVerificationService'
 import type {HonoEnv} from '../types/HonoEnv';
 import type {UserRepository} from '../user/repositories/UserRepository';
 import {EmailChangeService} from '../user/services/EmailChangeService';
+import {MfaBackupCodesChallengeService} from '../user/services/MfaBackupCodesChallengeService';
 import {PasswordChangeService} from '../user/services/PasswordChangeService';
 import {UserAccountRequestService} from '../user/services/UserAccountRequestService';
 import {UserAuthRequestService} from '../user/services/UserAuthRequestService';
@@ -267,6 +275,7 @@ export function getIpInfoService(): IpInfoService {
 		apiKey: Config.risk.ipinfoApiKey,
 		cache,
 		auditLogger: buildIpInfoRequestAuditLogger(),
+		budget: createKvIpInfoLookupBudget({getKvClient: getKVClient}),
 	});
 	return _ipInfoService;
 }
@@ -292,7 +301,14 @@ function getRegistrationRiskEvaluator(): IRegistrationRiskEvaluator {
 		return _registrationRiskEvaluator;
 	}
 	const ipInfoService = getIpInfoService();
-	const ipInfoChecker = Config.risk.ipinfoApiKey ? createIpInfoChecker({ipInfoService}) : undefined;
+	const lookupLocalCity = (ip: string) => lookupGeoipByIp(ip, Config.geoip.maxmindDbPath);
+	const lookupLocalAsn = (ip: string) => lookupAsnByIp(ip, Config.geoip.maxmindAsnDbPath);
+	const prescreenOptions = ipInfoPrescreenOptionsFromEnv();
+	const prescreen = async (ip: string): Promise<IpInfoPrescreenVerdict> => {
+		const [city, asn] = await Promise.all([lookupLocalCity(ip), lookupLocalAsn(ip)]);
+		return prescreenIpInfoLookup({countryIso: city.countryCode, asn: asn.asn, asnOrg: asn.asnOrg}, prescreenOptions);
+	};
+	const ipInfoChecker = Config.risk.ipinfoApiKey ? createIpInfoChecker({ipInfoService, prescreen}) : undefined;
 	const cacheService = getCacheService();
 	const reverseDnsLookup = createReverseDnsLookup({cacheService});
 	const toolbox = createRiskToolbox({
@@ -304,6 +320,8 @@ function getRegistrationRiskEvaluator(): IRegistrationRiskEvaluator {
 		historicalOutcomeRepository: getHistoricalOutcomeRepository(),
 		suspiciousIpRepository: getSuspiciousIpRepository(),
 		cacheService,
+		lookupLocalCity,
+		lookupLocalAsn,
 	});
 	const engine = new DeterministicRiskEngine(toolbox, {
 		logger: Logger,
@@ -330,10 +348,8 @@ function getLiveKitWebhookService(): LiveKitWebhookService | null {
 			_liveKitWebhookService = new LiveKitWebhookService(
 				voiceRoomStore,
 				getGatewayService(),
-				getUserRepository(),
 				liveKitService,
 				voiceTopology,
-				getLimitConfigService(),
 			);
 		}
 	}
@@ -363,6 +379,7 @@ class RequestServices implements RequestScopedServices {
 	private cachedFavoriteMemeRequestService: FavoriteMemeRequestService | undefined;
 	private cachedSingleCommunityService: SingleCommunityService | undefined;
 	private cachedEmailChangeService: EmailChangeService | undefined;
+	private cachedMfaBackupCodesChallengeService: MfaBackupCodesChallengeService | undefined;
 	private cachedPasswordChangeService: PasswordChangeService | undefined;
 	private cachedInviteRequestService: InviteRequestService | undefined;
 	private cachedOAuth2Service: OAuth2Service | undefined;
@@ -797,6 +814,11 @@ class RequestServices implements RequestScopedServices {
 	get emailChangeService(): EmailChangeService {
 		this.cachedEmailChangeService ??= new EmailChangeService(this.context, getEmailChangeRepository());
 		return this.cachedEmailChangeService;
+	}
+
+	get mfaBackupCodesChallengeService(): MfaBackupCodesChallengeService {
+		this.cachedMfaBackupCodesChallengeService ??= new MfaBackupCodesChallengeService(this.context);
+		return this.cachedMfaBackupCodesChallengeService;
 	}
 
 	get passwordChangeService(): PasswordChangeService {

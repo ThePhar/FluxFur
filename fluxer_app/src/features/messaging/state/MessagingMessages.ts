@@ -201,7 +201,7 @@ class Messages {
 	}
 
 	private hasLoadedPage(messages: ChannelMessages): boolean {
-		return messages.ready && messages.length > 0;
+		return messages.ready && messages.length > 0 && !messages.cached;
 	}
 
 	shouldPreloadLatestPage(channelId: string): boolean {
@@ -209,7 +209,9 @@ class Messages {
 			return false;
 		}
 		const messages = ChannelMessages.get(channelId);
-		return !messages || (messages.length === 0 && !messages.loadingMore && !messages.ready);
+		if (!messages) return true;
+		if (messages.loadingMore || ChannelMessages.isRetained(channelId)) return false;
+		return messages.length === 0 ? !messages.ready : messages.cached;
 	}
 
 	@action
@@ -282,15 +284,6 @@ class Messages {
 		this.indexedAuthorsByChannel.clear();
 		this.pendingJumpDispatches.clear();
 		this.pendingFullHydration = true;
-		this.notifyChange();
-		return true;
-	}
-
-	@action
-	handleResumed(): boolean {
-		ChannelMessages.forEach((messages) => {
-			this.commitMessages(messages.withPatch({ready: true}));
-		});
 		this.notifyChange();
 		return true;
 	}
@@ -386,9 +379,10 @@ class Messages {
 		if (!isNonGuildChannel && !guildExists) {
 			return false;
 		}
+		const distrustedTailId = messages.ready && messages.cached ? (messages.last()?.id ?? null) : null;
 		this.commitMessages(messages.withPatch({loadingMore: true}));
 		this.notifyChange();
-		MessageCommands.fetchMessages(channelId, null, null, MAX_MESSAGES_PER_CHANNEL);
+		MessageCommands.fetchMessages(channelId, null, distrustedTailId, MAX_MESSAGES_PER_CHANNEL);
 		return false;
 	}
 
@@ -449,9 +443,9 @@ class Messages {
 	}
 
 	@action
-	handleLoadMessages(action: {channelId: string; jump?: JumpOptions}): boolean {
+	handleLoadMessages(action: {channelId: string; jump?: JumpOptions; tailProbe?: boolean}): boolean {
 		const messages = ChannelMessages.getOrCreate(action.channelId);
-		this.commitMessages(messages.beginLoad(action.jump));
+		this.commitMessages(action.tailProbe ? messages.beginProbeLoad() : messages.beginLoad(action.jump));
 		this.notifyChange();
 		return false;
 	}
@@ -505,6 +499,7 @@ class Messages {
 		hasMoreBefore?: boolean;
 		hasMoreAfter?: boolean;
 		cached?: boolean;
+		tailProbe?: boolean;
 		messages: Array<WireMessage>;
 	}): boolean {
 		const messages = ChannelMessages.getOrCreate(action.channelId).applyLoadedWindow({
@@ -515,6 +510,7 @@ class Messages {
 			hasMoreBefore: action.hasMoreBefore,
 			hasMoreAfter: action.hasMoreAfter,
 			cached: action.cached,
+			tailProbe: action.tailProbe,
 		});
 		this.commitMessages(messages);
 		this.notifyChange();
@@ -527,6 +523,15 @@ class Messages {
 		this.commitMessages(messages.withPatch({loadingMore: false, error: true}));
 		this.notifyChange();
 		return false;
+	}
+
+	@action
+	handleTailProbeSettled(action: {channelId: string}): boolean {
+		const messages = ChannelMessages.get(action.channelId);
+		if (!messages?.probeLoading) return false;
+		this.commitMessages(messages.endProbeLoad());
+		this.notifyChange();
+		return true;
 	}
 
 	@action

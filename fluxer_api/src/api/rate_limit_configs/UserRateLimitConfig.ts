@@ -84,6 +84,14 @@ export const UserRateLimitConfigs = {
 		bucket: 'user:account:delete',
 		config: {limit: 5, windowMs: ms('1 hour')},
 	} as RouteRateLimitConfig,
+	USER_PHONE_GATE_ESCAPE_PREVIEW: {
+		bucket: 'user:phone_gate_escape:preview',
+		config: {limit: 20, windowMs: ms('1 minute')},
+	} as RouteRateLimitConfig,
+	USER_PHONE_GATE_ESCAPE: {
+		bucket: 'user:phone_gate_escape:execute',
+		config: {limit: 5, windowMs: ms('1 hour')},
+	} as RouteRateLimitConfig,
 	USER_DATA_HARVEST: {
 		bucket: 'user:data:harvest',
 		config: {limit: 5, windowMs: ms('30 minutes')},
@@ -190,6 +198,22 @@ export const UserRateLimitConfigs = {
 	} as RouteRateLimitConfig,
 	USER_MFA_BACKUP_CODES: {
 		bucket: 'user:mfa:backup_codes',
+		config: {limit: 6, windowMs: ms('1 minute')},
+	} as RouteRateLimitConfig,
+	USER_MFA_BACKUP_CODES_CHALLENGE_START: {
+		bucket: 'user:mfa:backup_codes_challenge:start',
+		config: {limit: 6, windowMs: ms('1 minute')},
+	} as RouteRateLimitConfig,
+	USER_MFA_BACKUP_CODES_CHALLENGE_RESEND: {
+		bucket: 'user:mfa:backup_codes_challenge:resend',
+		config: {limit: 6, windowMs: ms('1 minute')},
+	} as RouteRateLimitConfig,
+	USER_MFA_BACKUP_CODES_CHALLENGE_VERIFY: {
+		bucket: 'user:mfa:backup_codes_challenge:verify',
+		config: {limit: 20, windowMs: ms('1 minute')},
+	} as RouteRateLimitConfig,
+	USER_MFA_BACKUP_CODES_CHALLENGE_REGENERATE: {
+		bucket: 'user:mfa:backup_codes_challenge:regenerate',
 		config: {limit: 6, windowMs: ms('1 minute')},
 	} as RouteRateLimitConfig,
 	USER_PUSH_SUBSCRIBE: {

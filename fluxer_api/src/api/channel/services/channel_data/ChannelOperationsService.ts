@@ -7,7 +7,7 @@ import {
 	GUILD_TEXT_BASED_CHANNEL_TYPES,
 	Permissions,
 } from '@fluxer/constants/src/ChannelConstants';
-import {ContentWarningLevel, GuildFeatures} from '@fluxer/constants/src/GuildConstants';
+import {ContentWarningLevel, clampVoiceChannelBitrate, GuildFeatures} from '@fluxer/constants/src/GuildConstants';
 import {MAX_CHANNELS_PER_CATEGORY} from '@fluxer/constants/src/LimitConstants';
 import {ValidationErrorCodes} from '@fluxer/constants/src/ValidationErrorCodes';
 import {InvalidChannelTypeError} from '@fluxer/errors/src/domains/channel/InvalidChannelTypeError';
@@ -90,8 +90,20 @@ export class ChannelOperationsService {
 		private rateLimitService: IRateLimitService,
 	) {}
 
-	async getChannel({userId, channelId}: {userId: UserID; channelId: ChannelID}): Promise<Channel> {
-		const {channel} = await this.channelAuthService.getChannelAuthenticated({userId, channelId});
+	async getChannel({
+		userId,
+		channelId,
+		skipNsfwValidation,
+	}: {
+		userId: UserID;
+		channelId: ChannelID;
+		skipNsfwValidation?: boolean;
+	}): Promise<Channel> {
+		const {channel} = await this.channelAuthService.getChannelAuthenticated({
+			userId,
+			channelId,
+			skipNsfwValidation,
+		});
 		return channel;
 	}
 
@@ -127,6 +139,7 @@ export class ChannelOperationsService {
 		const {channel, guild, checkPermission} = await this.channelAuthService.getChannelAuthenticated({
 			userId,
 			channelId,
+			skipNsfwValidation: true,
 		});
 		if (channel.type === ChannelTypes.GROUP_DM) {
 			throw new InvalidChannelTypeError();
@@ -247,13 +260,17 @@ export class ChannelOperationsService {
 				validateCapacity: requestedParentId !== null && requestedParentId !== (channel.parentId ?? null),
 			});
 		}
+		let nextBitrate = channel.bitrate;
+		if (data.bitrate !== undefined && channel.type === ChannelTypes.GUILD_VOICE) {
+			nextBitrate = data.bitrate === null ? null : clampVoiceChannelBitrate(data.bitrate, guild.features ?? []);
+		}
 		const updatedChannelData = {
 			...channel.toRow(),
 			name: channelName,
 			topic: data.topic !== undefined ? data.topic : channel.topic,
 			url: data.url !== undefined && channel.type === ChannelTypes.GUILD_LINK ? data.url : channel.url,
 			parent_id: requestedParentId,
-			bitrate: data.bitrate !== undefined && channel.type === ChannelTypes.GUILD_VOICE ? data.bitrate : channel.bitrate,
+			bitrate: nextBitrate,
 			user_limit:
 				data.user_limit !== undefined && channel.type === ChannelTypes.GUILD_VOICE
 					? data.user_limit
@@ -456,7 +473,11 @@ export class ChannelOperationsService {
 		if (this.voiceAvailabilityService === null) {
 			return [];
 		}
-		const {channel, guild} = await this.channelAuthService.getChannelAuthenticated({userId, channelId});
+		const {channel, guild} = await this.channelAuthService.getChannelAuthenticated({
+			userId,
+			channelId,
+			skipNsfwValidation: true,
+		});
 		if (channel.type !== ChannelTypes.GUILD_VOICE) {
 			throw new InvalidChannelTypeError();
 		}

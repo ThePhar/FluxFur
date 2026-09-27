@@ -9,7 +9,12 @@ import {
 	SENDABLE_MESSAGE_FLAGS,
 } from '@fluxer/constants/src/ChannelConstants';
 import {GuildNSFWLevel, GuildOperations} from '@fluxer/constants/src/GuildConstants';
-import {RelationshipTypes, SensitiveMediaFilterLevel, UserFlags} from '@fluxer/constants/src/UserConstants';
+import {
+	DELETED_USER_ID,
+	RelationshipTypes,
+	SensitiveMediaFilterLevel,
+	UserFlags,
+} from '@fluxer/constants/src/UserConstants';
 import {ValidationErrorCodes} from '@fluxer/constants/src/ValidationErrorCodes';
 import {UnknownChannelError} from '@fluxer/errors/src/domains/channel/UnknownChannelError';
 import {UnknownMessageError} from '@fluxer/errors/src/domains/channel/UnknownMessageError';
@@ -18,7 +23,7 @@ import {FeatureTemporarilyDisabledError} from '@fluxer/errors/src/domains/core/F
 import {InputValidationError} from '@fluxer/errors/src/domains/core/InputValidationError';
 import {MissingPermissionsError} from '@fluxer/errors/src/domains/core/MissingPermissionsError';
 import {SlowmodeRateLimitError} from '@fluxer/errors/src/domains/core/SlowmodeRateLimitError';
-import {NsfwEmojiStickerBlockedError} from '@fluxer/errors/src/domains/moderation/NsfwEmojiStickerBlockedError';
+import {NsfwContentRequiresAgeVerificationError} from '@fluxer/errors/src/domains/moderation/NsfwContentRequiresAgeVerificationError';
 import type {GuildMemberResponse} from '@fluxer/schema/src/domains/guild/GuildMemberSchemas';
 import type {GuildResponse} from '@fluxer/schema/src/domains/guild/GuildResponseSchemas';
 import {snowflakeToDate} from '@fluxer/snowflake/src/Snowflake';
@@ -211,15 +216,18 @@ export class MessageSendService {
 		return processed.length > 0 ? processed : undefined;
 	}
 
-	private resolveWebhookAttachmentUploadUserId(
+	private async resolveWebhookAttachmentUploadUserId(
 		webhook: Webhook,
 		attachments?: Array<AttachmentRequestData>,
-	): UserID | undefined {
-		const uploadUserId = webhook.creatorId ?? undefined;
-		if (uploadUserId === undefined && this.attachmentsToProcess(attachments) !== undefined) {
-			throw InputValidationError.fromCode('attachments', ValidationErrorCodes.INVALID_MESSAGE_DATA);
+	): Promise<UserID | undefined> {
+		if (this.attachmentsToProcess(attachments) === undefined) {
+			return webhook.creatorId ?? undefined;
 		}
-		return uploadUserId;
+		if (!webhook.creatorId) {
+			return createUserID(DELETED_USER_ID);
+		}
+		const creator = await this.deps.userRepository.findUnique(webhook.creatorId);
+		return creator ? webhook.creatorId : createUserID(DELETED_USER_ID);
 	}
 
 	private getOneToOneDmRecipientId(channel: Channel, senderId: UserID): UserID | null {
@@ -845,7 +853,7 @@ export class MessageSendService {
 			const guildNsfw = guild != null && guild.nsfw_level === GuildNSFWLevel.AGE_RESTRICTED;
 			const destAllowsNsfw = channel.isNsfw || guildNsfw;
 			if (!destAllowsNsfw) {
-				throw new NsfwEmojiStickerBlockedError();
+				throw new NsfwContentRequiresAgeVerificationError();
 			}
 		}
 		if (data.message_reference && guild && !isForwardMessage) {
@@ -980,7 +988,7 @@ export class MessageSendService {
 			await this.settlePostCreateWork(messageId, [
 				{
 					step: 'update_dm_recipients',
-					promise: this.deps.processingService.updateDMRecipients({channel, channelId, requestCache}),
+					promise: this.deps.processingService.updateDMRecipients({channel, channelId, messageId, requestCache}),
 				},
 				{
 					step: 'process_message_after_creation',
@@ -1088,6 +1096,15 @@ export class MessageSendService {
 			embeds: data.embeds,
 			attachments: data.attachments,
 		});
+		const webhookActorId = createUserID(BigInt(webhook.id));
+		const existingMessage = await this.deps.operationsHelpers.findExistingMessage({
+			userId: webhookActorId,
+			nonce: data.nonce,
+			expectedChannelId: channelId,
+		});
+		if (existingMessage) {
+			return existingMessage;
+		}
 		let referencedMessage: Message | null = null;
 		let messageSnapshots: Array<MessageSnapshot> | undefined;
 		if (data.message_reference) {
@@ -1175,7 +1192,7 @@ export class MessageSendService {
 			flags: this.deps.validationService.calculateMessageFlags(data),
 			embeds: data.embeds,
 			attachments: this.attachmentsToProcess(data.attachments),
-			attachmentUploadUserId: this.resolveWebhookAttachmentUploadUserId(webhook, data.attachments),
+			attachmentUploadUserId: await this.resolveWebhookAttachmentUploadUserId(webhook, data.attachments),
 			stickerIds: data.sticker_ids ? data.sticker_ids.flatMap((stickerId) => createStickerID(stickerId)) : undefined,
 			messageReference,
 			messageSnapshots,
@@ -1194,15 +1211,17 @@ export class MessageSendService {
 		await this.deps.mentionService.handleMentionTasks({
 			guildId: channel.guildId,
 			message,
-			authorId: createUserID(BigInt(webhook.id)),
+			authorId: webhookActorId,
 			mentionHere: mentionData?.mentionHere ?? false,
 		});
 		await this.deps.dispatchService.dispatchMessageCreate({
 			channel,
 			message,
 			requestCache,
+			nonce: data.nonce,
 			mentionHere: mentionData?.mentionHere ?? false,
 		});
+		await this.cacheMessageNonceIfPresent({userId: webhookActorId, nonce: data.nonce, channelId, messageId});
 		void enqueueDeferredEmbeds().catch((error) => {
 			Logger.warn({error, messageId: messageId.toString()}, 'Failed to enqueue deferred embed extraction');
 		});
@@ -1258,7 +1277,7 @@ export class MessageSendService {
 			data,
 			channel,
 			guild,
-			attachmentUploadUserId: this.resolveWebhookAttachmentUploadUserId(webhook, data.attachments),
+			attachmentUploadUserId: await this.resolveWebhookAttachmentUploadUserId(webhook, data.attachments),
 			allowEmbeds: true,
 		});
 		await this.deps.dispatchService.dispatchMessageUpdate({channel, message: updatedMessage, requestCache});

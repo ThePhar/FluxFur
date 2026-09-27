@@ -23,6 +23,8 @@
 		"fluxer_desktop/src/main/Autostart.ts": ["exports"],
 		"fluxer_desktop/src/main/LinuxDesktopEntry.ts": ["exports"],
 		"fluxer_desktop/src/main/NotificationState.ts": ["exports", "types"],
+		"packages/schema/src/domains/admin/AdminUserSchemas.ts": ["exports"],
+		"packages/schema/src/domains/admin/VoiceNoiseSuppressionSchemas.ts": ["exports"],
 		"packages/schema/src/domains/geolocation/GeolocationSchemas.ts": ["exports"],
 		"pnpm-workspace.yaml": ["catalog"]
 	},
@@ -50,7 +52,7 @@
 		},
 		"fluxer_app": {
 			"entry": ["lingui.config.js", "scripts/build-sw.mjs", "scripts/Generate*.ts"],
-			"ignoreDependencies": ["@lingui/swc-plugin"]
+			"ignoreDependencies": ["@sapphi-red/web-noise-suppressor", "@lingui/swc-plugin"]
 		},
 		"fluxer_desktop": {
 			"entry": [
@@ -66,8 +68,12 @@
 			"project": ["src/**/*.{ts,tsx,mjs,js}", "scripts/**/*.mjs", "native/**/*.{js,mjs,cjs,d.ts}"],
 			"ignoreDependencies": ["electron-builder", "electron-builder-squirrel-windows"]
 		},
+		"fluxer_docs": {
+			"entry": ["scripts/*.ts", "src/**/*.astro"],
+			"project": ["src/**/*.{ts,astro}", "scripts/**/*.ts"],
+			"ignoreDependencies": ["sharp"]
+		},
 		"packages/openapi": {
-			"entry": ["src/GenerateOpenAPISpec.ts"],
 			"project": ["src/**/*.ts"]
 		},
 		"packages/schema": {

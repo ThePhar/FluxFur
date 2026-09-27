@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {AdminACLs} from '@fluxer/constants/src/AdminACLs';
+import {FeatureTemporarilyDisabledError} from '@fluxer/errors/src/domains/core/FeatureTemporarilyDisabledError';
 import type {SearchReportsRequest} from '@fluxer/schema/src/domains/admin/AdminSchemas';
 import type {MessageResponse} from '@fluxer/schema/src/domains/message/MessageResponseSchemas';
 import {getEmailTemplate} from '@pkgs/email/src/email_i18n/EmailI18n';
@@ -73,7 +74,7 @@ export class AdminReportService {
 		const {reportService} = this.deps;
 		const requestedLimit = limit || 50;
 		const currentOffset = offset || 0;
-		const reports = await reportService.listReportsByStatus(status, requestedLimit, currentOffset);
+		const {reports, total} = await reportService.listReportsByStatus(status, requestedLimit, currentOffset);
 		const requestCache = createRequestCache();
 		const reportNsfwLookupCache = createReportNsfwLookupCache();
 		const reportResponses = await Promise.all(
@@ -83,6 +84,9 @@ export class AdminReportService {
 		);
 		return {
 			reports: reportResponses,
+			total,
+			offset: currentOffset,
+			limit: requestedLimit,
 		};
 	}
 
@@ -152,14 +156,7 @@ export class AdminReportService {
 		publicComment: string;
 	}): Promise<void> {
 		const {users: userRepository} = this.deps.apiContext.services;
-		const systemUser = await userRepository.findUnique(SYSTEM_USER_ID);
-		if (!systemUser) {
-			Logger.warn(
-				{reportId: reportId.toString(), reporterId: reporter.id.toString()},
-				'Skipping report review system DM because system user does not exist',
-			);
-			return;
-		}
+		const systemUser = await userRepository.findUniqueAssert(SYSTEM_USER_ID);
 		const template = getEmailTemplate('report_resolved', reporter.locale, {
 			username: reporter.username,
 			reportId: reportId.toString(),
@@ -207,7 +204,7 @@ export class AdminReportService {
 	async searchReports(data: SearchReportsRequest, acls: ReadonlySet<string>) {
 		const reportSearchService = getReportSearchService();
 		if (!reportSearchService) {
-			throw new Error('Search is not enabled');
+			throw new FeatureTemporarilyDisabledError();
 		}
 		const filters: Record<string, string | number> = {};
 		if (data.reporter_id !== undefined) {

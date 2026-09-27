@@ -153,7 +153,6 @@ export interface APIConfig {
 			reports: string;
 			harvests: string;
 			downloads: string;
-			static: string;
 		};
 	};
 	s3Downloads: ResolvedDownloadsProvider;
@@ -227,17 +226,29 @@ export interface APIConfig {
 			monthlyUsd?: string;
 			monthlyEur?: string;
 			monthlyBrl?: string;
+			monthlyDkk?: string;
 			monthlyInr?: string;
+			monthlyNok?: string;
 			monthlyPln?: string;
+			monthlySek?: string;
 			monthlyTry?: string;
 			yearlyUsd?: string;
 			yearlyEur?: string;
 			yearlyBrl?: string;
+			yearlyDkk?: string;
 			yearlyInr?: string;
+			yearlyNok?: string;
 			yearlyPln?: string;
+			yearlySek?: string;
 			yearlyTry?: string;
 			gift1MonthUsd?: string;
 			gift1MonthEur?: string;
+			gift1MonthSek?: string;
+			gift1YearSek?: string;
+			gift1MonthDkk?: string;
+			gift1YearDkk?: string;
+			gift1MonthNok?: string;
+			gift1YearNok?: string;
 			gift1MonthBrl?: string;
 			gift1MonthInr?: string;
 			gift1MonthPln?: string;
@@ -249,6 +260,7 @@ export interface APIConfig {
 			gift1YearPln?: string;
 			gift1YearTry?: string;
 		};
+		legacyPrices?: Record<string, Array<string> | undefined>;
 	};
 	bunny: {
 		purgeEnabled: boolean;
@@ -280,10 +292,6 @@ export interface APIConfig {
 			email?: string;
 		};
 		bluesky: BlueskyOAuthConfig;
-	};
-	cookie: {
-		domain: string;
-		secure: boolean;
 	};
 	klipy: {
 		apiKey?: string;

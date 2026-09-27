@@ -44,6 +44,7 @@ import {
 } from '@app/features/voice/engine/v2/VoiceEngineV2AppScreenShareStateSync';
 import {VoiceEngineV2AppScreenShareTrackPlumbing} from '@app/features/voice/engine/v2/VoiceEngineV2AppScreenShareTrackPlumbing';
 import type {VoiceEngineV2AppSourceLifecycleBridge} from '@app/features/voice/engine/v2/VoiceEngineV2AppSourceLifecycleBridge';
+import {ensureNativeMicrophonePermissionForDeviceShare} from '@app/features/voice/engine/voice_screen_share_manager/NativePermissionGate';
 import {
 	captureScreenSharePublicationCleanup,
 	type DeviceScreenShareCaptureOptions,
@@ -72,9 +73,20 @@ import {
 import {disarmVirtmic} from '@app/features/voice/utils/LinuxScreenShareAudio';
 import {
 	captureNativeAudioTrackForLinuxRouting,
+	captureNativeAudioTrackForWindowPid,
 	commitNativeAudioBridgeReplacement,
 	disarmNativeAudio,
+	reconfigureLinuxNativeAudioRouting,
 } from '@app/features/voice/utils/NativeAudioCaptureBridge';
+import {
+	recordScreenShareEncoderVerification,
+	recordScreenShareEndedModal,
+	recordScreenShareRequestedCodec,
+	recordScreenShareStartError,
+	recordScreenShareStarted,
+	recordScreenShareStopped,
+	type ScreenShareEndedModal,
+} from '@app/features/voice/utils/ScreenShareLifecycleLog';
 import {SCREEN_SHARE_DEGRADATION_PREFERENCE} from '@app/features/voice/utils/ScreenShareOptions';
 import {ScreenShareRollbackIncompleteError} from '@app/features/voice/utils/ScreenShareRollbackIncompleteError';
 import {handleScreenShareError} from '@app/features/voice/utils/ScreenShareUtils';
@@ -82,6 +94,7 @@ import type {NativeAudioStartOptions} from '@app/types/electron.d';
 import type {VoiceEngineV2ScreenOptions} from '@fluxer/voice_engine_v2';
 import {msg} from '@lingui/core/macro';
 import {
+	createLocalAudioTrack,
 	type LocalAudioTrack,
 	type LocalParticipant,
 	type LocalTrackPublication,
@@ -396,7 +409,8 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 		this.transitionScreenShareLifecycleInternal({type: 'share.encoderVerification.cleared'});
 	}
 
-	showScreenShareEndedModalInternal(description: string): void {
+	showScreenShareEndedModalInternal(description: string, modal: ScreenShareEndedModal): void {
+		recordScreenShareEndedModal(modal);
 		ModalCommands.pushWithKey(
 			ModalCommands.modal(() => (
 				<GenericErrorModal
@@ -487,9 +501,11 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 			i18n._(
 				cause === 'stalled' ? SCREEN_SHARE_ENCODER_FAILED_DESCRIPTOR : SCREEN_SHARE_CODEC_POLICY_FAILED_DESCRIPTOR,
 			),
+			cause === 'stalled' ? 'encoder-failed' : 'codec-policy-failed',
 		);
 		if (this.endedScreenShareStopInFlight) return;
 		if (!this.isScreenShareTrackPublishedInternal(participant, track)) return;
+		recordScreenShareStopped('codec-republish-failed');
 		this.transitionScreenShareLifecycleInternal({type: 'share.endedStop.start'});
 		const stopPromise = this.setScreenShareEnabled(room, false, {sendUpdate: true, playSound: true})
 			.catch((error) => {
@@ -512,6 +528,7 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 	): void {
 		this.cancelEncoderVerificationInternal();
 		if (!codec) return;
+		recordScreenShareRequestedCodec(codec);
 		const publication = preferredTrack ? undefined : participant.getTrackPublication(Track.Source.ScreenShare);
 		const track = preferredTrack ?? (publication?.videoTrack as LocalVideoTrack | undefined);
 		const sender = track?.sender;
@@ -526,8 +543,10 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 				const action = resolveScreenShareEncoderVerificationAction(failure);
 				switch (action.kind) {
 					case 'ignore-repeated-stall':
+						recordScreenShareEncoderVerification('ignore-repeated-stall', null);
 						return;
 					case 'recover-stalled':
+						recordScreenShareEncoderVerification('recover-stalled', null);
 						logger.warn('Screen share encoder verification failed', {
 							codec: action.codec,
 							failureReason: 'screen-share-encode-stalled',
@@ -542,12 +561,14 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 						);
 						return;
 					case 'accept-negotiated':
+						recordScreenShareEncoderVerification('accept-negotiated', action.negotiated);
 						logger.info('Screen share publisher negotiated a different codec inside the publish policy', {
 							requested: action.requested,
 							negotiated: action.negotiated,
 						});
 						return;
 					case 'correct-negotiated':
+						recordScreenShareEncoderVerification('correct-negotiated', action.negotiated);
 						logger.warn('Screen share is sending a codec outside the publish policy', {
 							requested: action.requested,
 							negotiated: action.negotiated,
@@ -595,7 +616,8 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 				trigger,
 				readyState: mediaStreamTrack.readyState,
 			});
-			this.showScreenShareEndedModalInternal(i18n._(SCREEN_SHARE_SOURCE_STOPPED_DESCRIPTOR));
+			this.showScreenShareEndedModalInternal(i18n._(SCREEN_SHARE_SOURCE_STOPPED_DESCRIPTOR), 'source-stopped');
+			recordScreenShareStopped('media-track-ended');
 			this.transitionScreenShareLifecycleInternal({type: 'share.endedStop.start'});
 			const stopPromise = this.setScreenShareEnabled(room, false, {sendUpdate: true, playSound: true})
 				.catch((error) => {
@@ -659,6 +681,7 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 	}
 
 	handleLocalScreenShareTrackUnpublished(room: Room, playSound: boolean, publication?: LocalTrackPublication): void {
+		recordScreenShareStopped(this.isScreenSharePending ? 'user' : 'server-unpublish');
 		this.clearScreenShareKeepAliveSinkInternal();
 		this.cleanupActiveScreenShareEndListenerInternal();
 		const participant = room.localParticipant;
@@ -750,6 +773,14 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 		const participant = room?.localParticipant;
 		if (!participant || !participant.isScreenShareEnabled) return false;
 		if (!linuxRule) return false;
+		if (options.replaceExisting !== true) {
+			const reconfigured = await reconfigureLinuxNativeAudioRouting(linuxRule, options);
+			if (reconfigured !== 'unsupported') {
+				this.syncLocalScreenShareAudioStateInternal(participant, true);
+				this.syncPersistedScreenShareAudioPreferenceInternal(participant);
+				return true;
+			}
+		}
 		const capturedTrack = await captureNativeAudioTrackForLinuxRouting(linuxRule, options);
 		if (!capturedTrack) return false;
 		let adopted = false;
@@ -774,6 +805,73 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 		return true;
 	}
 
+	async ensureWindowScreenShareAudioPublication(room: Room | null, sourceId: string): Promise<boolean> {
+		const participant = room?.localParticipant;
+		if (!participant || !participant.isScreenShareEnabled) return false;
+		const targetPid = await getElectronAPI()
+			?.nativeAudio?.resolveAudioRootPidForSource(sourceId)
+			.catch((error) => {
+				logger.warn('Failed to resolve the shared window audio process', {error, sourceId});
+				return null;
+			});
+		if (targetPid == null) return false;
+		const capturedTrack = await captureNativeAudioTrackForWindowPid(targetPid);
+		if (!capturedTrack) return false;
+		let adopted = false;
+		try {
+			adopted = await this.replaceActiveScreenShareAudioTrackInternal(participant, capturedTrack);
+			if (adopted) {
+				commitNativeAudioBridgeReplacement();
+			}
+		} catch (error) {
+			logger.warn('Failed to publish mid-stream window screen-share audio track', {error, sourceId});
+		}
+		if (!adopted) {
+			stopMediaTrack(capturedTrack);
+			return false;
+		}
+		this.syncLocalScreenShareAudioStateInternal(participant, true);
+		this.syncPersistedScreenShareAudioPreferenceInternal(participant);
+		return true;
+	}
+
+	getActiveScreenShareVideoDeviceId(room: Room | null): string {
+		const publication = room?.localParticipant?.getTrackPublication(Track.Source.ScreenShare);
+		return publication?.videoTrack?.mediaStreamTrack.getSettings().deviceId ?? '';
+	}
+
+	async ensureDeviceScreenShareMicPublication(room: Room | null, audioDeviceId: string): Promise<boolean> {
+		const participant = room?.localParticipant;
+		if (!participant || !participant.isScreenShareEnabled) return false;
+		await ensureNativeMicrophonePermissionForDeviceShare('replace');
+		const micTrack = await createLocalAudioTrack({
+			deviceId: audioDeviceId && audioDeviceId !== 'default' ? audioDeviceId : undefined,
+			echoCancellation: false,
+			noiseSuppression: false,
+			autoGainControl: false,
+			voiceIsolation: false,
+			channelCount: 2,
+			sampleRate: 48000,
+		});
+		let adopted = false;
+		try {
+			adopted = await this.replaceActiveScreenShareAudioTrackInternal(participant, micTrack.mediaStreamTrack);
+		} catch (error) {
+			logger.warn('Failed to publish the device screen-share microphone track', {error});
+		}
+		if (!adopted) {
+			try {
+				await micTrack.stop();
+			} catch (stopError) {
+				logger.warn('Failed to stop the rejected device screen-share microphone track', {error: stopError});
+			}
+			return false;
+		}
+		this.syncLocalScreenShareAudioStateInternal(participant, true);
+		this.syncPersistedScreenShareAudioPreferenceInternal(participant);
+		return true;
+	}
+
 	async setScreenShareEnabled(
 		room: Room | null,
 		enabled: boolean,
@@ -787,7 +885,17 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 		publishOptions?: TrackPublishOptions,
 	): Promise<void> {
 		assert.equal(typeof enabled, 'boolean');
-		await this.controllerRouting.setEnabled(room, enabled, options, publishOptions);
+		if (enabled) {
+			recordScreenShareStarted();
+		}
+		try {
+			await this.controllerRouting.setEnabled(room, enabled, options, publishOptions);
+		} catch (error) {
+			if (enabled) {
+				recordScreenShareStartError(error);
+			}
+			throw error;
+		}
 		if (!enabled && options?.preserveStreamAudioPreferences !== true) {
 			VoiceSettingsCommands.update({
 				shareAppAudio: true,
@@ -829,7 +937,13 @@ class VoiceEngineV2AppScreenShareExecutionAdapter extends Store {
 		options?: DeviceScreenShareCaptureOptions,
 		publishOptions?: TrackPublishOptions,
 	): Promise<void> {
-		await this.liveKitFlows.startDeviceScreenShare(room, options, publishOptions);
+		recordScreenShareStarted();
+		try {
+			await this.liveKitFlows.startDeviceScreenShare(room, options, publishOptions);
+		} catch (error) {
+			recordScreenShareStartError(error);
+			throw error;
+		}
 	}
 
 	async replaceActiveDisplayScreenShare(

@@ -19,7 +19,9 @@ import {AppErrorBoundary} from '@app/features/app/components/AppErrorBoundary';
 import {BootstrapErrorScreen} from '@app/features/app/components/BootstrapErrorScreen';
 import {ErrorFallback} from '@app/features/app/components/ErrorFallback';
 import {installSelfXssNotice} from '@app/features/devtools/utils/SelfXssNotice';
+import {AppI18nProvider} from '@app/features/i18n/components/AppI18nProvider';
 import {installLocaleSwitchWatchdog} from '@app/features/i18n/utils/LocaleSwitchWatchdog';
+import {installTranslationDomGuard} from '@app/features/i18n/utils/TranslationDomGuard';
 import {installScrollRestoration} from '@app/features/platform/components/router/ScrollRestoration';
 import {Logger} from '@app/features/platform/utils/AppLogger';
 import {
@@ -30,8 +32,8 @@ import {
 } from '@app/features/platform/utils/ClientInfo';
 import {loadLazyModule} from '@app/features/platform/utils/LazyModuleLoader';
 import {scheduleNonLatinScriptFaces} from '@app/features/theme/fonts/ScriptFontLoader';
+import {installVoiceSubscriptionDebugApi} from '@app/features/voice/diagnostics/VoiceSubscriptionDebugApi';
 import {i18n} from '@lingui/core';
-import {I18nProvider} from '@lingui/react';
 import {configure} from 'mobx';
 import type {ReactNode} from 'react';
 import ReactDOM from 'react-dom/client';
@@ -48,6 +50,7 @@ if (typeof window !== 'undefined' && window.history) {
 }
 
 installFluxerConfigDebugApi();
+installVoiceSubscriptionDebugApi();
 
 function createRoot(): ReactDOM.Root {
 	const container = document.getElementById('root');
@@ -58,12 +61,13 @@ function createRoot(): ReactDOM.Root {
 }
 
 function mountRoot(content: ReactNode, dataFlxScope: string): void {
+	installTranslationDomGuard();
 	createRoot().render(
 		<AppErrorBoundary
 			fallback={(error) => (
-				<I18nProvider i18n={i18n}>
+				<AppI18nProvider i18n={i18n}>
 					<ErrorFallback error={error ?? undefined} data-flx={`${dataFlxScope}.error-fallback`} />
-				</I18nProvider>
+				</AppI18nProvider>
 			)}
 			data-flx={`${dataFlxScope}.app-error-boundary`}
 		>
@@ -91,9 +95,9 @@ async function bootstrapThemeStudio(): Promise<void> {
 	await AccountManager.bootstrap();
 	setupHttp();
 	mountRoot(
-		<I18nProvider i18n={i18n}>
+		<AppI18nProvider i18n={i18n}>
 			<ThemeStudioStandaloneApp data-flx="index.render-theme-studio.theme-studio-standalone-app" />
-		</I18nProvider>,
+		</AppI18nProvider>,
 		'index.render-theme-studio',
 	);
 }
@@ -164,8 +168,8 @@ bootstrap().catch((error: unknown) => {
 	const normalized = error instanceof Error ? error : new Error(String(error));
 	logger.error('Failed to bootstrap app:', normalized);
 	createRoot().render(
-		<I18nProvider i18n={i18n}>
+		<AppI18nProvider i18n={i18n}>
 			<BootstrapErrorScreen error={normalized} data-flx="index.bootstrap-error-screen" />
-		</I18nProvider>,
+		</AppI18nProvider>,
 	);
 });

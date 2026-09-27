@@ -9,8 +9,8 @@ import {InputValidationError} from '@fluxer/errors/src/domains/core/InputValidat
 import type {ApiContext} from '../../ApiContext';
 import * as AuthMfa from '../../auth/AuthMfa';
 import * as AuthUtility from '../../auth/AuthUtility';
+import {deriveSudoMethods, userHasMfa} from '../../auth/services/SudoMethods';
 import type {SudoVerificationResult} from '../../auth/services/SudoVerificationService';
-import {deriveSudoMethods, userHasMfa} from '../../auth/services/SudoVerificationService';
 import type {MfaBackupCode} from '../../models/MfaBackupCode';
 import type {User} from '../../models/User';
 import {mapUserToPrivateResponse} from '../UserMappers';
@@ -118,7 +118,7 @@ export async function getMfaBackupCodes(
 	return await users.listMfaBackupCodes(user.id);
 }
 
-async function regenerateMfaBackupCodes(ctx: ApiContext, user: User): Promise<Array<MfaBackupCode>> {
+export async function regenerateMfaBackupCodes(ctx: ApiContext, user: User): Promise<Array<MfaBackupCode>> {
 	const {users} = ctx.services;
 	const userId = user.id;
 	const newBackupCodes = AuthUtility.generateBackupCodes(ctx);

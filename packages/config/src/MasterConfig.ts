@@ -20,6 +20,7 @@ export interface MasterConfig {
 	env: RuntimeEnv;
 	domain: {
 		base_domain: string;
+		public_origin: string;
 		public_scheme: PublicScheme;
 		internal_scheme: PublicScheme;
 		public_port: number;
@@ -77,7 +78,6 @@ export interface MasterConfig {
 			downloads: string;
 			reports: string;
 			harvests: string;
-			static: string;
 		};
 	};
 	s3_downloads?: {
@@ -146,6 +146,7 @@ export interface MasterConfig {
 			mode: string;
 			upload_relay: {
 				endpoint: string;
+				secret_base64: string;
 				max_body_bytes: number;
 				token_ttl_secs: number;
 				keep_direct_countries: Array<string>;
@@ -156,7 +157,6 @@ export interface MasterConfig {
 			rpc_auth_token?: string;
 			media_proxy_endpoint?: string;
 			api_rpc_endpoint?: string;
-			push_enabled: boolean;
 		};
 		admin: {
 			port: number;
@@ -202,10 +202,6 @@ export interface MasterConfig {
 				private_key_path?: string;
 			}>;
 		};
-	};
-	cookie: {
-		domain: string;
-		secure: boolean;
 	};
 	integrations: {
 		email: {
@@ -272,6 +268,7 @@ export interface MasterConfig {
 			secret_key: string;
 			webhook_secret: string;
 			prices?: Record<string, string | undefined>;
+			legacy_prices?: Record<string, Array<string> | undefined>;
 		};
 		ncmec: {
 			enabled: boolean;

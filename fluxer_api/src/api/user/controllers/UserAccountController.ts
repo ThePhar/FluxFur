@@ -33,6 +33,7 @@ import {
 	UserGuildSettingsUpdateRequest,
 	UserNoteUpdateRequest,
 	UserProfileQueryRequest,
+	UserSettingsUpdateRequest,
 	UserTagCheckQueryRequest,
 	UserUpdateWithVerificationRequest,
 	VoiceActivitySharingUpdateRequest,
@@ -46,6 +47,7 @@ import {
 	PasswordChangeCompleteResponse,
 	PasswordChangeStartResponse,
 	PasswordChangeVerifyResponse,
+	PhoneGateEscapePreviewResponse,
 	PreloadMessagesResponse,
 	PushSubscribeResponse,
 	PushSubscriptionsListResponse,
@@ -71,10 +73,8 @@ import {SudoModeMiddleware} from '../../middleware/SudoModeMiddleware';
 import {RateLimitConfigs} from '../../RateLimitConfig';
 import type {HonoApp} from '../../types/HonoEnv';
 import {Validator} from '../../Validator';
-import type {UserUpdateWithVerificationRequestData} from '../services/UserAccountRequestService';
 import {getCachedUserPartialResponse} from '../UserCacheHelpers';
 import {mapUserGuildSettingsToResponse, mapUserSettingsToResponse, mapUserToPrivateResponse} from '../UserMappers';
-import {UserSettingsUpdateRequest} from '../UserModel';
 
 export function UserAccountController(app: HonoApp) {
 	app.get(
@@ -124,7 +124,7 @@ export function UserAccountController(app: HonoApp) {
 		async (ctx) => {
 			const userAccountRequestService = ctx.get('userAccountRequestService');
 			const user = ctx.get('user');
-			const rawBody: UserUpdateWithVerificationRequestData = ctx.req.valid('json');
+			const rawBody: UserUpdateWithVerificationRequest = ctx.req.valid('json');
 			return ctx.json(
 				await userAccountRequestService.updateCurrentUser({
 					ctx,
@@ -1172,6 +1172,55 @@ export function UserAccountController(app: HonoApp) {
 				},
 			});
 			return ctx.body(null, 202);
+		},
+	);
+	app.get(
+		'/users/@me/required-actions/phone-gate-escape',
+		RateLimitMiddleware(RateLimitConfigs.USER_PHONE_GATE_ESCAPE_PREVIEW),
+		LoginRequiredAllowSuspicious,
+		DefaultUserOnly,
+		OpenAPI({
+			operationId: 'get_phone_gate_escape',
+			summary: 'Preview setting the deferred phone check aside',
+			responseSchema: PhoneGateEscapePreviewResponse,
+			statusCode: 200,
+			security: ['bearerToken', 'sessionToken'],
+			tags: ['Users'],
+			description:
+				'Reports whether this account can set a deferred phone verification requirement aside, and which communities would be left if it did. Returns available false with empty lists for any account outside that state.',
+		}),
+		async (ctx) => {
+			const {available, guilds, ownedGuilds} = await ctx
+				.get('userService')
+				.accountService.lifecycleService.previewPhoneGateEscape(ctx.get('user').id);
+			return ctx.json({
+				available,
+				guilds: guilds.map((guild) => ({id: guild.id.toString(), name: guild.name})),
+				owned_guilds: ownedGuilds.map((guild) => ({id: guild.id.toString(), name: guild.name})),
+			});
+		},
+	);
+	app.post(
+		'/users/@me/required-actions/phone-gate-escape',
+		RateLimitMiddleware(RateLimitConfigs.USER_PHONE_GATE_ESCAPE),
+		LoginRequiredAllowSuspicious,
+		DefaultUserOnly,
+		Validator('json', EmptyBodyRequest),
+		OpenAPI({
+			operationId: 'execute_phone_gate_escape',
+			summary: 'Set the deferred phone check aside',
+			responseSchema: UserPrivateResponse,
+			statusCode: 200,
+			security: ['bearerToken', 'sessionToken'],
+			tags: ['Users'],
+			description:
+				'Leaves the communities that trigger the deferred phone verification check and restores the deferral, so the account works normally again. Communities the user owns are kept, and a run that hits the per-call community limit leaves what it can and can be repeated. Returns the updated private user object.',
+		}),
+		async (ctx) => {
+			const {user} = await ctx
+				.get('userService')
+				.accountService.lifecycleService.executePhoneGateEscape(ctx.get('user').id);
+			return ctx.json(mapUserToPrivateResponse(user));
 		},
 	);
 	app.post(

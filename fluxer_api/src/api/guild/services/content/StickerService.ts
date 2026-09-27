@@ -126,13 +126,10 @@ export class StickerService {
 		if (stickerCount >= maxStickers) {
 			throw new MaxGuildStickersStaticError(maxStickers);
 		}
-		const {
-			animated,
-			imageBuffer,
-			nsfw: isNsfw,
-		} = await this.avatarService.processSticker({
+		const {animated, imageBuffer} = await this.avatarService.processSticker({
 			errorPath: 'image',
 			base64Image: image,
+			guildFeatures,
 		});
 		const stickerId = createStickerID(await this.snowflakeService.generate());
 		await this.avatarService.uploadSticker({prefix: 'stickers', stickerId, imageBuffer});
@@ -142,7 +139,6 @@ export class StickerService {
 			name,
 			description: description ?? null,
 			animated,
-			nsfw: isNsfw,
 			tags,
 			creator_id: user.id,
 			version: 1,
@@ -175,7 +171,7 @@ export class StickerService {
 		const sourceSticker = await this.guildRepository.getStickerById(sourceStickerId);
 		if (!sourceSticker) throw new UnknownGuildStickerError();
 		const sourceGuild = await this.guildRepository.findUnique(sourceSticker.guildId);
-		if (!sourceGuild || sourceGuild.features.has(GuildFeatures.CLONE_STICKER_DISABLED)) {
+		if (!sourceGuild || !sourceGuild.features.has(GuildFeatures.CLONE_STICKER_ENABLED)) {
 			throw new MissingAccessError();
 		}
 		const guildData = await this.contentHelpers.getGuildData({userId: user.id, guildId});
@@ -198,7 +194,6 @@ export class StickerService {
 			name: sourceSticker.name,
 			description: sourceSticker.description,
 			animated: sourceSticker.animated,
-			nsfw: sourceSticker.hasNsfwClassification ? sourceSticker.isNsfw : null,
 			tags: sourceSticker.tags,
 			creator_id: user.id,
 			version: 1,
@@ -275,13 +270,10 @@ export class StickerService {
 				contentModerationService.scanText(stickerData.name, bulkStickerModCtx);
 				contentModerationService.scanText(stickerData.description, bulkStickerModCtx);
 				contentModerationService.scanText(stickerData.tags.join(' '), bulkStickerModCtx);
-				const {
-					animated,
-					imageBuffer,
-					nsfw: isNsfw,
-				} = await this.avatarService.processSticker({
+				const {animated, imageBuffer} = await this.avatarService.processSticker({
 					errorPath: `stickers[${success.length + failed.length}].image`,
 					base64Image: stickerData.image,
+					guildFeatures,
 				});
 				const stickerId = createStickerID(await this.snowflakeService.generate());
 				await this.avatarService.uploadSticker({prefix: 'stickers', stickerId, imageBuffer});
@@ -292,7 +284,6 @@ export class StickerService {
 					description: stickerData.description ?? null,
 					tags: stickerData.tags,
 					animated,
-					nsfw: isNsfw,
 					creator_id: user.id,
 					version: 1,
 				});

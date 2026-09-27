@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {FeatureTemporarilyDisabledError} from '@fluxer/errors/src/domains/core/FeatureTemporarilyDisabledError';
+import {InputValidationError} from '@fluxer/errors/src/domains/core/InputValidationError';
 import type {WorkerJobPayload} from '@pkgs/worker/src/contracts/WorkerTypes';
 import type {ApiContext} from '../../ApiContext';
 import {createGuildID, createUserID, type UserID} from '../../BrandedTypes';
+import {isSyntheticUserId} from '../../constants/Core';
 import type {IGuildRepositoryAggregate} from '../../guild/repositories/IGuildRepositoryAggregate';
 import {Logger} from '../../Logger';
 import {getGuildSearchService, getUserSearchService} from '../../SearchFactory';
@@ -44,8 +47,7 @@ export class AdminSearchService {
 		);
 		const guildSearchService = getGuildSearchService();
 		if (!guildSearchService) {
-			Logger.error('[AdminSearchService] searchGuilds - Search service not enabled');
-			throw new Error('Search is not enabled');
+			throw new FeatureTemporarilyDisabledError();
 		}
 		const query = data.query?.trim() || '';
 		const isIdQuery = /^\d+$/.test(query);
@@ -125,15 +127,14 @@ export class AdminSearchService {
 		}
 		const userSearchService = getUserSearchService();
 		if (!userSearchService) {
-			throw new Error('Search is not enabled');
+			throw new FeatureTemporarilyDisabledError();
 		}
 		const query = data.query?.trim() || '';
-		const isIdQuery = /^\d+$/.test(query);
+		const directUserId = /^\d+$/.test(query) ? createUserID(BigInt(query)) : null;
+		const canResolveDirectUser = directUserId !== null && !isSyntheticUserId(directUserId) && data.offset === 0;
 		const [searchResult, directUser] = await Promise.all([
 			userSearchService.search(query, {}, {limit: data.limit, offset: data.offset}),
-			isIdQuery && data.offset === 0
-				? userRepository.findUnique(createUserID(BigInt(query))).catch(() => null)
-				: Promise.resolve(null),
+			canResolveDirectUser ? userRepository.findUnique(directUserId).catch(() => null) : Promise.resolve(null),
 		]);
 		const {hits, total} = searchResult;
 		const userIds = hits.map((hit) => createUserID(BigInt(hit.id)));
@@ -179,25 +180,26 @@ export class AdminSearchService {
 		};
 		if (data.index_type === 'channel_messages') {
 			if (!data.guild_id) {
-				throw new Error('guild_id is required for the channel_messages index type');
+				throw InputValidationError.create('guild_id', 'guild_id is required for the channel_messages index type');
 			}
 			payload.guild_id = data.guild_id.toString();
 		}
 		if (data.index_type === 'guild_members') {
 			if (!data.guild_id) {
-				throw new Error('guild_id is required for the guild_members index type');
+				throw InputValidationError.create('guild_id', 'guild_id is required for the guild_members index type');
 			}
 			payload.guild_id = data.guild_id.toString();
 		}
 		if (data.index_type === 'favorite_memes') {
 			if (!data.user_id) {
-				throw new Error('user_id is required for favorite_memes index type');
+				throw InputValidationError.create('user_id', 'user_id is required for the favorite_memes index type');
 			}
 			payload.user_id = data.user_id.toString();
 		}
 		await workerService.addJob('refreshSearchIndex', payload, {
 			jobKey: `refreshSearchIndex_${data.index_type}_${jobId}`,
 			maxAttempts: 1,
+			requireLedger: true,
 		});
 		Logger.debug({index_type: data.index_type, job_id: jobId}, 'Queued search index refresh job');
 		const metadata = new Map([

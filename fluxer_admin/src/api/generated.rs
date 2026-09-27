@@ -16,6 +16,10 @@ pub use inner::types;
 
 pub use inner::Client as GeneratedClient;
 
+pub(crate) fn snowflake(value: &str) -> types::SnowflakeType {
+    types::SnowflakeType::Variant0(value.to_owned())
+}
+
 pub(crate) fn number_to_u64(value: f64, field: &str) -> Result<u64, String> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > MAX_SAFE_INTEGER {
@@ -30,6 +34,14 @@ pub(crate) fn i64_to_u64(value: i64, field: &str) -> Result<u64, String> {
 
 pub(crate) fn nonzero_u32(value: u32, field: &str) -> Result<std::num::NonZeroU32, String> {
     std::num::NonZeroU32::new(value).ok_or_else(|| format!("{field} must be greater than zero"))
+}
+
+pub(crate) fn deletion_reason_code(
+    value: i32,
+    field: &str,
+) -> Result<types::DeletionReasonCode, String> {
+    types::DeletionReasonCode::try_from(value)
+        .map_err(|_| format!("{field} is not a deletion reason code: {value}"))
 }
 
 #[cfg(test)]
@@ -118,10 +130,10 @@ mod tests {
         let response: SearchGuildsResponse =
             serde_json::from_value(json).expect("failed to deserialize SearchGuildsResponse");
 
-        assert_eq!(response.total as i64, 1);
+        assert_eq!(response.total, 1.0);
         assert_eq!(response.guilds.len(), 1);
         assert_eq!(response.guilds[0].name, "Test Guild");
-        assert_eq!(response.guilds[0].member_count, 42);
+        assert_eq!(*response.guilds[0].member_count, 42);
     }
 
     #[test]
