@@ -75,8 +75,8 @@ jobs:
         with:
           client-id: ${{ vars.FLUXER_CI_APP_ID }}
           private-key: ${{ secrets.FLUXER_CI_APP_KEY }}
-          owner: fluxerapp
-          repositories: fluxer
+          owner: thephar
+          repositories: fluxfur
           permission-contents: write
           permission-packages: read
 
@@ -133,7 +133,7 @@ jobs:
             exit 1
           fi
           gh release create "fluxer-release@${VERSION}" \
-            --repo fluxerapp/fluxer \
+            --repo thephar/fluxfur \
             --target "${BUNDLE_COMMIT}" \
             --title "fluxer-release ${VERSION}" \
             --latest=true \
