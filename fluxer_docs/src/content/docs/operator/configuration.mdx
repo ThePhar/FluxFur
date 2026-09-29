@@ -323,7 +323,7 @@ No default. Legacy unprefixed aliases. Accepted only by `admin` and `app-proxy`,
 
 #### `FLUXER_API_IP_BAN_EXEMPT_IPS`
 
-Default empty. Addresses exempt from IP bans. Comma separated. Every entry must parse as an IP or the API fails at boot.
+Default empty. Addresses and CIDR ranges exempt from IP bans. Comma separated. A bare IPv4 address exempts that address, a bare IPv6 address exempts its /64, and a CIDR range such as `2001:db8:1200::/56` exempts every address in it. Every entry must parse as an IP or a CIDR range or the API fails at boot.
 
 The API returns 403 for any request whose client-IP header is missing, empty, or not a parsable address, and for every request while `FLUXER_TRUST_CLIENT_IP_HEADER` is `false`. The exceptions are `/_health`, `/webhooks/livekit`, `/test`, and the Bluesky client metadata and JWKS routes. The edge sets the header on every upstream hop, so a missing or unparsable header happens only in a layout that puts something other than the edge directly in front of `api`. A proxy in front of the edge that never sets the header passes the check, and every request then looks as though it came from the proxy.
 
@@ -463,7 +463,7 @@ Keep persistent storage and the bundled `noeviction` policy to protect deletion 
 
 ## Object storage
 
-Every uploaded file lands in an S3-compatible object store, which the stack provides with SeaweedFS. `FLUXER_S3_ACCESS_KEY_ID` and `FLUXER_S3_SECRET_ACCESS_KEY` are required. The rest are optional.
+Every uploaded file lands in an S3-compatible object store, which the stack provides with SeaweedFS. `FLUXER_S3_ACCESS_KEY_ID` and `FLUXER_S3_SECRET_ACCESS_KEY` are required. The rest are optional. [Run a data store outside the stack](/operator/upgrading/#run-a-data-store-outside-the-stack) has the overlay that stops the bundled SeaweedFS once the stack points at another store.
 
 #### `FLUXER_S3_ENDPOINT`
 
@@ -760,14 +760,7 @@ Only `api` and `worker` build the mail service, so recreating those two is enoug
 
 ## CAPTCHA
 
-All are optional.
-
-| Variable | Value in `.env.example` | Controls |
-| --- | --- | --- |
-| FLUXER_CAPTCHA_ENABLED | `false` | The [CAPTCHA](/topics/captcha/) switch. Startup fails when it is `true` without a provider and that provider's keys |
-| FLUXER_CAPTCHA_PROVIDER | `none` | The provider. `hcaptcha`, `turnstile`, or `none`. Anything else fails startup |
-
-`FLUXER_CAPTCHA_HCAPTCHA_SITE_KEY`, `FLUXER_CAPTCHA_HCAPTCHA_SECRET_KEY`, `FLUXER_CAPTCHA_TURNSTILE_SITE_KEY`, and `FLUXER_CAPTCHA_TURNSTILE_SECRET_KEY` ship empty in `.env.example` and the shipped Compose file forwards them all. Set the pair the selected provider needs. The admin dashboard's Runtime Integrations panel sets the same provider and keys, and a value stored there wins over the environment. An instance that configures CAPTCHA only there must leave `FLUXER_CAPTCHA_ENABLED` at `false`, because the boot check reads the environment alone.
+[ALTCHA](/topics/captcha/) proof-of-work is on by default. Turn it off or tune it under Instance Config, Bot protection in the admin panel. No environment variables configure it.
 
 ## Single sign-on and passkeys
 
@@ -811,17 +804,15 @@ For environment-based configuration, use `FLUXER_AUTH_BLUESKY_ENABLED`, `FLUXER_
 | FLUXER_VAPID_PRIVATE_KEY | `CHANGE_ME` | The VAPID private key. Base64url of the 32-byte scalar, and the matching half of the pair |
 | FLUXER_VAPID_EMAIL | unset | The VAPID contact address. Compose derives `admin@` followed by `FLUXER_DOMAIN` when it is unset |
 
-The Gateway reads the same names. A malformed pair, or a private key that does not derive the public point, does not stop it. It records the fault in its log at startup and then drops every web push notification.
-
-`FLUXER_GATEWAY_PUSH_ENABLED` is read by the Gateway alone, defaults to `true`, and skips that startup check on the VAPID pair when it is `false`.
+`FLUXER_GATEWAY_PUSH_ENABLED` is read by the Gateway alone and defaults to `true`. When it is `false`, the Gateway hands no message or clear notification to `push`.
 
 ## Mobile push
 
-`api`, `gateway`, and `push` read the APNs and FCM names. None appear in `.env.example` or in `docker-compose.yml`, so configuring mobile push means editing the Compose file. All are optional.
+`api` and `push` read the APNs and FCM names. None appear in `.env.example` or in `docker-compose.yml`, so configuring mobile push means editing the Compose file. All are optional.
 
 #### `FLUXER_PUSH_APNS_ENABLED`
 
-Default `false`. The APNs switch. Must be set on `api`, `gateway`, and `push`.
+Default `false`. The APNs switch. Must be set on `api` and `push`.
 
 #### `FLUXER_PUSH_APNS_TEAM_ID`
 
@@ -849,7 +840,7 @@ Default `[]`. Per-app APNs configuration. JSON array. An entry with no `app_id` 
 
 #### `FLUXER_PUSH_FCM_ENABLED`
 
-Default `false`. The FCM switch. Must be set on `api`, `gateway`, and `push`.
+Default `false`. The FCM switch. Must be set on `api` and `push`.
 
 #### `FLUXER_PUSH_FCM_PROJECT_ID`
 
@@ -907,13 +898,19 @@ No default. Replaces the APNs host in both environments. Set it only for a test 
 
 Default `https://fcm.googleapis.com`. The FCM host. Set it only for a proxy or a test double.
 
+#### `FLUXER_PUSH_SERVICE_RELAY_CONSENT_ACCEPTED`
+
+Default `false`. Accepts the push relay supplemental privacy notice for this `push` process. `true`, `1`, or `yes` accepts it, and `false`, `0`, or `no` leaves the decision to the [push relay configuration](/admin-api/instance/#push-relay-configuration-object). Any other value fails startup. When it is `true`, `push` sends through the Fluxer-run relay even while the stored consent is off. Compose does not forward it.
+
 ## Payments
 
-Stripe billing, which the shipped stack keeps off. All are optional.
+Stripe billing for a paid premium tier and gift purchases. All are optional. On a self-hosted instance, set billing in the admin dashboard's [Premium & billing](#runtime-settings-in-the-admin-dashboard) group instead. A value stored there wins over the matching variable below.
+
+A self-hosted instance sells premium only while its premium mode is `mirror`, billing is switched on, a Stripe secret key is set, and at least one currency has both a monthly and a yearly price. Instance discovery reports this as `stripe_enabled`. Existing subscribers can still manage, cancel and renew while the premium mode is `mirror` and a Stripe secret key is set, even after sales are switched off or the prices are removed. Instance discovery reports this as `stripe_serviceable`. Stripe sends events to `https://<FLUXER_DOMAIN>/api/stripe/webhook`, which the dashboard shows as the webhook URL to register in Stripe.
 
 #### `FLUXER_STRIPE_ENABLED`
 
-Default `false`. The Stripe switch. Compose hardcodes `false`, so a self-hosted instance cannot enable it from `.env`.
+Default `false`. The Stripe switch. Compose forwards it from `.env`.
 
 #### `FLUXER_STRIPE_SECRET_KEY`
 
@@ -925,15 +922,19 @@ Default empty. The webhook signing secret. Not forwarded by the shipped Compose 
 
 #### `FLUXER_STRIPE_PRICES`
 
-Default `{}`. Every price ID at once. JSON object. An individual price variable overrides the matching price in this object.
+Default `{}`. Every price ID at once. JSON object. An individual price variable overrides the matching price in this object. Not forwarded by the shipped Compose file.
 
-Individual price variables also exist, one per product and currency: `FLUXER_STRIPE_PRICE_MONTHLY_`, `FLUXER_STRIPE_PRICE_YEARLY_`, `FLUXER_STRIPE_PRICE_GIFT_1_MONTH_` and `FLUXER_STRIPE_PRICE_GIFT_1_YEAR_` in USD, EUR, BRL, DKK, INR, NOK, PLN, SEK, and TRY, plus `FLUXER_STRIPE_PRICE_VISIONARY_` and `FLUXER_STRIPE_PRICE_GIFT_VISIONARY_` in USD and EUR.
+Individual price variables also exist, one per product and currency: `FLUXER_STRIPE_PRICE_MONTHLY_`, `FLUXER_STRIPE_PRICE_YEARLY_`, `FLUXER_STRIPE_PRICE_GIFT_1_MONTH_` and `FLUXER_STRIPE_PRICE_GIFT_1_YEAR_` in USD, EUR, BRL, DKK, INR, NOK, PLN, SEK, and TRY.
+
+Prices saved in the dashboard replace this catalogue entirely. They take any three-letter currency code. A buyer gets the currency mapped to their country, then the default currency, then the first configured one. Fluxer's country checks for localised currencies apply only to prices set by these variables.
 
 #### `FLUXER_STRIPE_LEGACY_PRICES`
 
-Default `{}`. Retired price IDs, keyed by the same slot names `FLUXER_STRIPE_PRICES` uses, each mapped to a list: `{"monthly_brl": ["price_..."]}`. JSON object. Existing subscriptions on these prices keep renewing. The localised checkout catalogue uses `FLUXER_STRIPE_PRICES` alone.
+Default `{}`. Retired price IDs, keyed by the same slot names `FLUXER_STRIPE_PRICES` uses, each mapped to a list: `{"monthly_brl": ["price_..."]}`. JSON object. Existing subscriptions on these prices keep renewing. The localised checkout catalogue uses `FLUXER_STRIPE_PRICES` alone. Legacy prices saved in the dashboard replace this variable, and there the currency in a slot name is upper case, such as `monthly_GBP`.
 
 Repricing a slot has a fixed order. Doing the steps in another order leaves a price ID unknown to the API, and invoices on that price fail. Create the new price in Stripe, move the ID it replaces into this variable, roll the API, and only then point `FLUXER_STRIPE_PRICES` at the new price. A price ID that neither variable names is unknown to the API: a renewal invoice on it fails the webhook with `Unknown product for invoice renewal`, a checkout completing on it fails with `Unknown price ID for checkout session`, and both keep failing until the ID is registered. The API answers Stripe as soon as the signature verifies and hands the event to `worker`, so any retry comes from `worker` rerunning the `processStripeWebhook` job: the Stripe dashboard shows the delivery as succeeded and the error is in the `worker` logs. Keep a retired ID listed for as long as any subscription still bills on it, which for a yearly price is at least a year after the switch.
+
+With prices saved in the dashboard, add the retired ID to its legacy prices before you replace the price.
 
 ## Moderation and abuse
 
@@ -979,91 +980,19 @@ Default `false`. Behaviour when the scanner is unreachable. With scanning on and
 
 Default `0.7`. The API-side NSFW score cutoff. No range check. Distinct from the Media Proxy threshold, which defaults to `0.85`.
 
-#### `FLUXER_RISK_INTEGRATION_ENABLED`
+#### `FLUXER_IPINFO_API_KEY`
 
-Default `false`. IP intelligence. Needs an ipinfo key to do anything.
-
-#### `FLUXER_RISK_IPINFO_API_KEY`
-
-Default empty. The ipinfo key. Paired with `FLUXER_RISK_INTEGRATION_ENABLED`.
-
-#### `FLUXER_ACCOUNT_POLICY_DSL`
-
-No default. The account risk policy. JSON. Malformed JSON fails startup, and an unknown key in a well-formed policy surfaces when the policy runs.
-
-#### `FLUXER_ABUSE_INBOUND_PHONE_COUNTRY_CODES`
-
-Default empty. Allowed inbound phone countries. Comma separated, passed through unvalidated.
-
-#### `FLUXER_ABUSE_PHONE_FLAGGING_ENABLED`
-
-Default `true`. Automatic phone requirements. With this off, registration, setting an email and gateway session start never add a requirement that offers phone verification. An email or phone requirement becomes its email only form. A deferred phone requirement stays dormant on a community join. Requirements already on an account and flags set by an Admin are untouched.
-
-#### `FLUXER_ABUSE_PHONE_FLAGGING_EXEMPT_COUNTRY_CODES`
-
-Default empty. Countries that never get an automatic phone requirement, matched against the request's GeoIP country. An email or phone requirement becomes its email only form. Comma separated, unvalidated.
-
-#### `FLUXER_ABUSE_PHONE_INBOUND_REQUIRED_PREFIXES`
-
-Default empty. Required inbound prefixes. Comma separated.
-
-#### `FLUXER_ABUSE_DIRECT_CONTACT_SPAM_ENABLED`
-
-Default `false`. Direct contact spam detection.
-
-#### `FLUXER_ABUSE_DIRECT_CONTACT_SPAM_COUNTRY_CODES`
-
-Default empty. Countries the rule applies to. Comma separated, unvalidated.
-
-#### `FLUXER_ABUSE_DIRECT_CONTACT_SPAM_DISTINCT_TARGET_THRESHOLD`
-
-Default `25`. Distinct targets before the rule fires. Integer.
-
-#### `FLUXER_ABUSE_DIRECT_CONTACT_SPAM_TARGET_WINDOW_MS`
-
-Default `7200000`. The observation window. Milliseconds, two hours by default.
-
-#### `FLUXER_ABUSE_DIRECT_CONTACT_SPAM_ACTION`
-
-Default `flag_spammer`. What happens when it fires. `flag_spammer` or `suppress_delivery`. Anything else fails startup.
+Default empty. The ipinfo key. Admin and guild IP bans use it to skip carrier-grade NAT and other shared addresses. Without it those checks treat every address as unknown. The previous name `FLUXER_RISK_IPINFO_API_KEY` is still read when this one is unset.
 
 #### `FLUXER_BLOCKLIST_FEEDS_ENABLED`
 
-Defaults to the inverse of `FLUXER_SELF_HOSTED`. Off by default on a self-hosted instance. With feeds on, the worker downloads disposable email domains and the URLhaus and PhishTank URL lists every six hours, and MalwareBazaar file hashes every twelve hours. Fluxer checks registrations and email changes against the domains, posted links against the URLs, and uploads against the hashes.
+Defaults to the inverse of `FLUXER_SELF_HOSTED`. Off by default on a self-hosted instance. With feeds on, the worker downloads the URLhaus and PhishTank URL lists every six hours, and MalwareBazaar file hashes every twelve hours. Fluxer checks posted links against the URLs and uploads against the hashes.
 
-With feeds off, Fluxer checks none of this data. The first worker start with feeds off removes every disposable email domain, the URL feed file, and every `malware_bazaar` file-SHA ban that no Admin added. File-SHA bans added through the Admin API stay. Turning feeds back on downloads the disposable domains at the next worker start, the URLs within six hours, and the hashes within twelve.
-
-#### `FLUXER_TOR_EXIT_LIST_ENABLED`
-
-Defaults to the inverse of `FLUXER_SELF_HOSTED`. Tor exit blocking. The API fetches the exit relay list from `onionoo.torproject.org` at startup and every 30 minutes. Off by default on a self-hosted instance.
+With feeds off, Fluxer checks none of this data. The first worker start with feeds off removes the URL feed file and every `malware_bazaar` file-SHA ban that no Admin added. File-SHA bans added through the Admin API stay. Turning feeds back on downloads the URLs within six hours and the hashes within twelve.
 
 #### `FLUXER_BREACHED_PASSWORD_CHECK_ENABLED`
 
 Defaults to the inverse of `FLUXER_SELF_HOSTED`. Breached password rejection. Sends the first five characters of the password's SHA-1 hash to `api.pwnedpasswords.com`. Off by default on a self-hosted instance.
-
-A second family, unrelated to the rules above, tunes the IP auto-banner: `FLUXER_ABUSE_WINDOW_MS`, the `FLUXER_ABUSE_THRESHOLD_` names, the `FLUXER_ABUSE_TOKEN_DIVERSITY_` names, `FLUXER_ABUSE_BAN_TTL_SEC`, `FLUXER_ABUSE_BATCH_FLUSH_MS`, `FLUXER_ABUSE_MAX_BATCH_TICKS`, `FLUXER_ABUSE_MAX_NEW_TOKENS_PER_TICK`, `FLUXER_ABUSE_MAX_TRACKED_IPS`, `FLUXER_ABUSE_MAX_TOKEN_HASHES_PER_IP`, `FLUXER_ABUSE_MIN_SCORE_FOR_LOOKUP`, `FLUXER_ABUSE_MIN_TOKENS_FOR_LOOKUP`, and `FLUXER_ABUSE_REQUIRED_SCORE_WINDOWS_FOR_AUTO_BAN`. All are read directly from the environment, none are in `.env.example` or the Compose file, and a non-finite value or one at or below zero falls back to the default.
-
-`FLUXER_ABUSE_EXEMPT_ASNS` takes comma-separated ASN numbers that the auto-banner never bans. Non-numeric entries are dropped. Before it buys a classification the auto-banner resolves the IP against the local MaxMind ASN database, and an IP on a listed ASN is neither classified nor banned. With no MaxMind ASN database the list has no effect. It does not change admin or guild IP bans, and `FLUXER_API_IP_BAN_EXEMPT_IPS` remains the way to exempt single addresses and ranges from every kind of IP ban.
-
-Other names in that family limit how often the auto-banner buys an IP classification from ipinfo. A shared claim lets one replica do the lookup for the others. With the claim off, every API replica looks up the same attacking IP at the same moment, so one IP costs one lookup per replica.
-
-- `FLUXER_ABUSE_IP_CLASS_CLAIM_ENABLED` defaults to `1` and gates the shared claim. It is read as a string, and only `0` turns the claim off.
-- `FLUXER_ABUSE_IP_CLASS_CLAIM_TTL_SEC` defaults to `15` seconds and sets how long a replica holds that claim.
-- `FLUXER_ABUSE_IP_CLASS_PENDING_TTL_MS` defaults to `20000` milliseconds and sets how long a replica that lost the claim waits before it tries again.
-- `FLUXER_ABUSE_IP_CLASS_NEGATIVE_TTL_MS` defaults to `300000` milliseconds and sets how long a failed classification is remembered.
-- `FLUXER_ABUSE_IP_CLASS_HINT_TTL_MS` defaults to `600000` milliseconds and sets how long a class sent by another replica stays usable.
-
-For these numeric settings, a non-finite value or one at or below zero falls back to the default.
-
-A `FLUXER_IPINFO_BUDGET_` family caps what the instance spends at ipinfo. `FLUXER_IPINFO_BUDGET_ENABLED` defaults to `1`, and `0` turns off all shedding. `FLUXER_IPINFO_BUDGET_MONTHLY_MAX` defaults to `140000` and is the ceiling for one UTC calendar month. Lookups run at the priorities below, each with a share of that ceiling and a token bucket for bursts refilled once a minute.
-
-- Admin IP bans and scheduled deletion checks are critical. They reach the full ceiling, with a burst of `60` from `FLUXER_IPINFO_BUDGET_CRITICAL_BURST` refilled at `60` a minute by `FLUXER_IPINFO_BUDGET_CRITICAL_REFILL_PER_MIN`.
-- Registration risk is standard. It stops at `FLUXER_IPINFO_BUDGET_STANDARD_MONTHLY_PCT` percent of the ceiling, default `90`, with a burst of `240` from `FLUXER_IPINFO_BUDGET_STANDARD_BURST` refilled at `120` a minute by `FLUXER_IPINFO_BUDGET_STANDARD_REFILL_PER_MIN`.
-- The IP auto-banner is background. It stops at `FLUXER_IPINFO_BUDGET_BACKGROUND_MONTHLY_PCT` percent, default `60`, with a burst of `120` from `FLUXER_IPINFO_BUDGET_BACKGROUND_BURST` refilled at `30` a minute by `FLUXER_IPINFO_BUDGET_BACKGROUND_REFILL_PER_MIN`.
-
-Background lookups stop first and critical lookups stop last. A denied lookup returns an unavailable result. If the key-value store fails, lookups remain allowed at every priority, so an outage can increase usage beyond these budgets.
-
-Local MaxMind data can reduce registration-risk lookups. Set `FLUXER_RISK_IPINFO_PRESCREEN_ENABLED` to `1` or `true`, in any letter case, and fill `FLUXER_RISK_IPINFO_PRESCREEN_ALLOW_ASNS` with comma-separated ASN numbers. Non-numeric entries are dropped. An IP skips ipinfo only when MaxMind supplies its country and an allowed ASN, and the organisation is not a commercial privacy provider, education network or cellular network.
 
 ## Stored instance policy
 
@@ -1141,7 +1070,7 @@ Defaults to `false` at the Gateway's environment layer. Gateway telemetry. Read 
 
 #### `HOSTNAME`
 
-Set by Docker. Node identity in metrics and logs. Also used by the IP auto-banner.
+Set by Docker. Node identity in metrics and logs.
 
 #### `FLUXER_ENV`
 
@@ -1149,7 +1078,7 @@ Default `development`. The runtime mode. `development`, `production`, or `test`.
 
 #### `FLUXER_SELF_HOSTED`
 
-Default `false`. The self-host switch. Compose sets `true`. It relaxes the production Postgres SSL requirement, seeds the limit tier, gates registration, billing and discovery controllers, and turns blocklist feeds off.
+Default `false`. The self-host switch. Compose sets `true`. It relaxes the production Postgres SSL requirement, seeds the limit tier, gates registration, donation and discovery controllers, keeps premium billing off until it is set up as [Payments](#payments) describes, and turns blocklist feeds off.
 
 `/_metrics` on `api`, `media-proxy`, `gateway`, and `push`, plus the Gateway's `/_health/ready`, `/_health/drain`, and `/_health/undrain`, are gated to loopback peers, so no proxy reaches them. The probes that work from outside are `/api/_health`, `/gateway/_health`, `/media/_health`, and the edge's own `/_health`.
 
@@ -1247,7 +1176,7 @@ Default `10000`. Purge request timeout. Accepts 1000 to 10000. The range is chec
 
 #### `FLUXER_GEOIP_DB_PATH`
 
-Default empty. The GeoIP database. A filesystem path, or an `s3://bucket/key` URL whose `download_path` query parameter is mandatory and must be absolute. `app-proxy` also accepts `MAXMIND_DB_PATH`. The API also reads an ASN database. On a filesystem path it looks for `GeoLite2-ASN.mmdb` in the same directory. On an `s3://` URL it needs an `asn_key` query parameter, and takes an optional absolute `asn_download_path` next to it. A missing ASN database is not an error, and the API falls back to ipinfo for ASN data.
+Default empty. The GeoIP database. A filesystem path, or an `s3://bucket/key` URL whose `download_path` query parameter is mandatory and must be absolute. `app-proxy` also accepts `MAXMIND_DB_PATH`.
 
 ## Instance identity and branding
 
@@ -1711,7 +1640,7 @@ See [Bluesky connections](#bluesky-connections) for configuration.
 
 #### `FLUXER_PUSH_APNS_` and `FLUXER_PUSH_FCM_`
 
-Mobile push cannot be configured at all from the example. `api`, `gateway`, and `push` all read these names. An override has to reach all three.
+Mobile push cannot be configured at all from the example. `api` and `push` both read these names. An override has to reach both.
 
 #### `RUST_LOG`, `LOG_LEVEL` and `LOGGER_LEVEL`
 
@@ -1725,7 +1654,7 @@ Branding is otherwise admin-dashboard only.
 
 Supplies the initial setup state on a self-hosted instance, until the first write of the stored `app_public_config` row takes over.
 
-#### Every `FLUXER_ABUSE_` auto-banner name, every `FLUXER_IPINFO_` budget name, and every Media Proxy performance knob
+#### Every Media Proxy performance knob
 
 No example coverage at all.
 
@@ -1741,13 +1670,21 @@ Product name, client-visible brand assets, and the setup state in the instance d
 
 Registration mode of `open`, `approval`, or `closed`, admin-issued registration URLs, and pending approval requests.
 
+#### Instance Config, Bot protection
+
+The [ALTCHA](/topics/captcha/) proof-of-work check on sign-up, login, password recovery, and a few other gated operations. It is on by default. Turn it off here, or change its cost and maximum counter.
+
 #### Instance Config, Community & Policy
 
 Single-community mode, direct messages and friends, the premium model, and optional embed services.
 
 #### Instance Config, Runtime Integrations
 
-The Klipy GIF key, the YouTube Data API key, the CAPTCHA provider and its keys, email delivery with an SMTP connection test, and Bluesky OAuth.
+The Klipy GIF key, the YouTube Data API key, email delivery with an SMTP connection test, and Bluesky OAuth.
+
+#### Instance Config, Premium & billing
+
+The premium tier name and information link, the billing switch, the Stripe secret key and webhook secret, the webhook URL to register in Stripe, and the price catalogue with its default currency, country currencies and legacy prices. See [Payments](#payments).
 
 #### Instance Config, Media Expiry
 

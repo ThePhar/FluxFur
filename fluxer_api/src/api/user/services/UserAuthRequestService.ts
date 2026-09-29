@@ -126,13 +126,19 @@ export class UserAuthRequestService {
 		user,
 		data,
 		clientIp,
+		hasCaptchaToken,
+		verifyCaptcha,
 	}: UserAuthRequest<PhoneSendVerificationRequest> & {
 		clientIp: string;
+		hasCaptchaToken: boolean;
+		verifyCaptcha: () => Promise<boolean>;
 	}): Promise<PhoneSendVerificationResponse> {
 		await this.assertPhoneEligible(user);
 		const result = await AuthPhone.sendPhoneVerificationCode(this.apiContext, data.phone, user.id, {
 			clientIp,
 			channel: data.channel,
+			hasCaptchaToken,
+			verifyCaptcha,
 		});
 		if (result.channel === 'inbound_challenge') {
 			return {
@@ -140,7 +146,7 @@ export class UserAuthRequestService {
 				challenge_code: result.challengeCode,
 				our_number: result.ourNumber,
 				expires_at: result.expiresAt.toISOString(),
-				reason: result.reason,
+				reason: 'verification_required',
 			};
 		}
 		return {channel: result.channel};

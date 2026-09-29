@@ -4,10 +4,6 @@ import {
 	DomainMigrationAssignmentResponse,
 	INERT_DOMAIN_MIGRATION_ASSIGNMENT,
 } from '@fluxer/schema/src/domains/admin/DomainMigrationSchemas';
-import {
-	INERT_VOICE_NOISE_SUPPRESSION_ASSIGNMENT,
-	VoiceNoiseSuppressionAssignmentResponse,
-} from '@fluxer/schema/src/domains/admin/VoiceNoiseSuppressionSchemas';
 import {z} from 'zod';
 
 export const EXPERIMENT_MIN_POLL_INTERVAL_SECONDS = 60;
@@ -45,7 +41,6 @@ export const ExperimentDeliveryConfigResponse = ExperimentDeliveryConfigSchema;
 export type ExperimentDeliveryConfigResponse = z.infer<typeof ExperimentDeliveryConfigResponse>;
 
 const ExperimentAssignmentsSchema = z.object({
-	voice_noise_suppression: VoiceNoiseSuppressionAssignmentResponse.optional(),
 	domain_migration: DomainMigrationAssignmentResponse.optional(),
 });
 
@@ -62,12 +57,6 @@ export const INERT_EXPERIMENT_ASSIGNMENTS_RESPONSE: ExperimentAssignmentsRespons
 	poll_jitter_percent: DEFAULT_EXPERIMENT_POLL_JITTER_PERCENT,
 	assignments: {},
 };
-
-export function readVoiceNoiseSuppressionAssignment(
-	response: ExperimentAssignmentsResponse,
-): VoiceNoiseSuppressionAssignmentResponse {
-	return response.assignments.voice_noise_suppression ?? INERT_VOICE_NOISE_SUPPRESSION_ASSIGNMENT;
-}
 
 export function readDomainMigrationAssignment(
 	response: ExperimentAssignmentsResponse,

@@ -58,9 +58,9 @@ FLUXER_MIN_ENGINE='24.0.0'
 # as written, healthcheck conditions and all.
 FLUXER_MIN_PODMAN='5.0.0'
 FLUXER_MIN_COMPOSE='2.20.2'
-# Both overlays this script downloads use the !override tag, which Compose learned
-# in 2.24.4. A stack that loads neither runs on the lower minimum, so the higher
-# one is required only once COMPOSE_FILE names more than one file.
+# Every overlay this script downloads uses the !override or !reset tag, which
+# Compose 2.24.4 reads. A stack that loads none runs on the lower minimum, so the
+# higher one is required only once COMPOSE_FILE names more than one file.
 FLUXER_MIN_COMPOSE_OVERLAY='2.24.4'
 FLUXER_READY_TIMEOUT=600
 FLUXER_READY_INTERVAL=5
@@ -82,8 +82,8 @@ FLUXER_TAG_FILE='image-tag'
 FLUXER_DUMP_FILE='fluxer.dump'
 
 # Free space demanded before a volume copy, as a percentage of the measured
-# volume size. The tarball compresses, so this is generous on purpose. A backup
-# that fills the disk it writes to takes the instance down with it.
+# volume size. A backup that fills the disk it writes to takes the instance down
+# with it.
 FLUXER_VOLUME_HEADROOM=110
 
 # The keys .env carries, in the order they are written. The installer iterates
@@ -127,6 +127,7 @@ fluxer_stack_files() {
 docker-compose.yml
 docker-compose.proxy.yml
 tunnel.compose.yml
+external-object-store.compose.yml
 Caddyfile
 .env.example
 FILES
@@ -226,6 +227,7 @@ Options:
   --rollback               Restore the images and stack files of the last record.
   --backup-dir <path>      Where records go. Default <dir>/backups.
   --no-volume-backup       Take the database dump and skip the uploads copy.
+  --no-volume-compression  Copy the uploads as a plain .tar. Faster, larger.
   --skip-backup-accept-data-loss
                            Upgrade with no backup at all. Losable data is lost.
   --allow-root             Permit running as root.
@@ -298,6 +300,7 @@ opt_update=0
 opt_rollback=0
 opt_backup_dir=''
 opt_no_volume_backup=0
+opt_no_volume_compression=0
 opt_skip_backup=0
 opt_allow_root=0
 
@@ -370,6 +373,10 @@ while [ $# -gt 0 ]; do
 			;;
 		--no-volume-backup)
 			opt_no_volume_backup=1
+			shift
+			;;
+		--no-volume-compression)
+			opt_no_volume_compression=1
 			shift
 			;;
 		--skip-backup-accept-data-loss)
@@ -687,6 +694,12 @@ fluxer_validate_options() {
 	if [ "$opt_skip_backup" -eq 1 ] && [ "$opt_no_volume_backup" -eq 1 ]; then
 		fluxer_bad_usage '--skip-backup-accept-data-loss already skips the volume copy.'
 	fi
+	if [ "$opt_no_volume_compression" -eq 1 ] && [ "$opt_update" -eq 0 ]; then
+		fluxer_bad_usage '--no-volume-compression belongs to --update.'
+	fi
+	if [ "$opt_no_volume_compression" -eq 1 ] && { [ "$opt_skip_backup" -eq 1 ] || [ "$opt_no_volume_backup" -eq 1 ]; }; then
+		fluxer_bad_usage '--no-volume-compression changes the volume copy, which this run skips.'
+	fi
 }
 
 fluxer_ref_for_tag() {
@@ -937,6 +950,7 @@ fluxer_stack_ready() {
 	fluxer_service_count=0
 	while read -r fluxer_service fluxer_status fluxer_health fluxer_code; do
 		[ -n "$fluxer_service" ] || continue
+		fluxer_stack_defines_service "$fluxer_service" || continue
 		fluxer_service_count=$((fluxer_service_count + 1))
 		case $fluxer_status in
 			running)
@@ -1264,6 +1278,13 @@ fluxer_resolve_compose_base() {
 	esac
 }
 
+fluxer_overlay_absence() {
+	case $1 in
+		external-object-store.compose.yml) printf '%s' 'Without it the bundled seaweedfs starts again and api, worker and media-proxy wait for it.' ;;
+		*) printf '%s' "Without $1 the edge container binds 80 and 443 and requests its own certificate." ;;
+	esac
+}
+
 fluxer_require_compose_files() {
 	fluxer_read_compose_setting
 	[ -n "$fluxer_compose_file" ] || return 0
@@ -1290,13 +1311,13 @@ fluxer_require_compose_files() {
 		if fluxer_stack_files | grep -qxF "$fluxer_name"; then
 			fluxer_fail 2 "COMPOSE_FILE from $fluxer_compose_from names $fluxer_name and $fluxer_path is not there, so every $fluxer_engine compose command in $opt_dir fails and this run stops before it changes anything. This script downloads $fluxer_name, and an instance set up before it existed does not hold that file yet. Put it in place and run this again:
   curl -fsSL --proto '=https' --tlsv1.2 -o $fluxer_path $FLUXER_RAW_BASE/$opt_ref/$FLUXER_STACK_PATH/$fluxer_name
-Leave the COMPOSE_FILE line as it is. Without $fluxer_name the edge container binds 80 and 443 and requests its own certificate."
+Leave the COMPOSE_FILE line as it is. $(fluxer_overlay_absence "$fluxer_name")"
 		fi
 		fluxer_fail 2 "COMPOSE_FILE from $fluxer_compose_from names $fluxer_name and $fluxer_path is not there, so every $fluxer_engine compose command in $opt_dir fails. This script does not download $fluxer_name. Put that file back, or take it out of the COMPOSE_FILE line."
 	done
 	if [ "$fluxer_compose_count" -gt 1 ] &&
 		! fluxer_version_ge "$fluxer_compose_version" "$FLUXER_MIN_COMPOSE_OVERLAY"; then
-		fluxer_fail 2 "COMPOSE_FILE from $fluxer_compose_from loads $fluxer_compose_count files and this host runs Compose $fluxer_compose_version. Every overlay this script downloads uses the !override tag, which needs Compose $FLUXER_MIN_COMPOSE_OVERLAY or newer. Upgrade Compose, or load only $fluxer_compose_base."
+		fluxer_fail 2 "COMPOSE_FILE from $fluxer_compose_from loads $fluxer_compose_count files and this host runs Compose $fluxer_compose_version. Every overlay this script downloads uses the !override or !reset tag, which needs Compose $FLUXER_MIN_COMPOSE_OVERLAY or newer. Upgrade Compose, or load only $fluxer_compose_base."
 	fi
 }
 
@@ -1566,6 +1587,13 @@ $(fluxer_volume_error '  ')" ;;
 	if [ "$fluxer_copy_any" -eq 0 ]; then
 		return 0
 	fi
+	if [ "$opt_no_volume_compression" -eq 1 ]; then
+		fluxer_tar_flags='cf'
+		fluxer_tar_ext='tar'
+	else
+		fluxer_tar_flags='czf'
+		fluxer_tar_ext='tgz'
+	fi
 	fluxer_say 'Stopping the stack for a consistent copy of the uploads.'
 	if ! $fluxer_engine compose stop; then
 		fluxer_fail 7 "$fluxer_engine compose stop failed in $opt_dir."
@@ -1574,7 +1602,7 @@ $(fluxer_volume_error '  ')" ;;
 		[ -n "$fluxer_volume" ] || continue
 		fluxer_full="${fluxer_project}_${fluxer_volume}"
 		fluxer_say "Copying $fluxer_full."
-		if ! $fluxer_engine run --rm -v "$fluxer_full:/data:ro" -v "$fluxer_record:/backup" "$FLUXER_HELPER_IMAGE" tar czf "/backup/$fluxer_volume.tgz" -C /data .; then
+		if ! $fluxer_engine run --rm -v "$fluxer_full:/data:ro" -v "$fluxer_record:/backup" "$FLUXER_HELPER_IMAGE" tar "$fluxer_tar_flags" "/backup/$fluxer_volume.$fluxer_tar_ext" -C /data .; then
 			$fluxer_engine compose up -d --remove-orphans || true
 			fluxer_fail 7 "Copying $fluxer_full failed. The stack is started again on the images it was running."
 		fi
@@ -1761,7 +1789,11 @@ fluxer_plan_update() {
 	elif [ "$opt_no_volume_backup" -eq 1 ]; then
 		fluxer_say '  backup        the database dump, .env, and the stack files'
 	else
-		fluxer_say '  backup        the database dump, the uploads volume, .env, and the stack files'
+		if [ "$opt_no_volume_compression" -eq 1 ]; then
+			fluxer_say '  backup        the database dump, the uploads volume uncompressed, .env, and the stack files'
+		else
+			fluxer_say '  backup        the database dump, the uploads volume, .env, and the stack files'
+		fi
 		fluxer_say '  downtime      the stack stops for the uploads copy, then again for the recreate'
 	fi
 	fluxer_fetch_stack

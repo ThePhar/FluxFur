@@ -20,7 +20,7 @@ An OAuth2 protocol failure raised by the [OAuth2 resource](/http-api/oauth2/) an
 
 ## Supplementary members
 
-The error code determines which supplementary members a failure has, and most codes have none. A client reads only the members documented for the code it matched. `errors` is the list of field violations. `retry_after` is the delay before another attempt is admitted. `global` is `true` on a global rate limit denial and `false` on a route one. `required_scope` is the OAuth2 scope the request is missing. `has_mfa` and `methods` are the [sudo mode](/http-api/users/mfa/#sudo-mode) proofs an account can supply.
+The error code determines which supplementary members a failure has, and most codes have none. A client reads only the members documented for the code it matched. `errors` is the list of field violations. `retry_after` is the delay before another attempt is admitted. `global` is `true` on a global rate limit denial and `false` on a route one. `required_scope` is the OAuth2 scope the request is missing. `has_mfa` and `methods` are the [sudo mode](/http-api/users/mfa/#sudo-mode) proofs an account can supply. `captcha_provider` and `altcha_challenge` are the challenge described in [CAPTCHA handling](/topics/captcha/).
 
 `GLOBAL_IP_BANNED` and `GLOBAL_IP_TEMPORARILY_BANNED` have their own members:
 
@@ -110,7 +110,7 @@ Fluxer answers an unrecognised failure with 500 `INTERNAL_SERVER_ERROR` and a ge
 
 ## Client errors as an abuse signal
 
-Repeated invalid requests or credentials can trigger a temporary IP ban. A `4xx` answer to a request with no authenticated user adds to that signal, weighted by status. A 429 weighs 3, a 401 weighs 0.75, a 403 weighs 0.5, and every other 4xx weighs 0.25. One request adds at most one signal, and a request from a private or exempt address adds none. Stop using a rejected credential. Change a rejected request before sending it again, and after a 429 wait `retry_after` before the next attempt.
+Repeated invalid requests or credentials can trigger a temporary IP ban. Stop using a rejected credential. Change a rejected request before sending it again, and after a 429 wait `retry_after` before the next attempt.
 
 :::caution[An automatic ban answers every request for 24 hours]
 A temporary ban lasts 24 hours by default. Requests from the banned address return 403 `GLOBAL_IP_TEMPORARILY_BANNED`. Use `expires_at` from the response when available.
@@ -286,7 +286,7 @@ Community ownership can't be transferred to a bot
 
 ### `CAPTCHA_REQUIRED`
 
-Captcha is required
+Verification required. Try again
 
 ### `COMMUNICATION_DISABLED`
 
@@ -506,7 +506,7 @@ Invalid bot flag
 
 ### `INVALID_CAPTCHA`
 
-Invalid captcha
+Verification failed. Try again
 
 ### `INVALID_CHANNEL_TYPE`
 

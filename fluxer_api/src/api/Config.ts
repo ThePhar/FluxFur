@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type {APIConfig, BlueskyOAuthConfig} from '@app/api/config/APIConfig';
+import {parseIpBanEntry} from '@app/api/utils/IpRangeUtils';
 import type {WorkerTaskName} from '@app/api/worker/WorkerLaneConfig';
 import type {MasterConfig} from '@fluxer/config/src/MasterConfig';
 import {parseIpAddress} from '@fluxer/ip_utils/src/IpAddress';
@@ -82,6 +83,14 @@ function resolveTrustClientIpHeader(proxyConfig: object): boolean {
 function normalizeIpBanExemptIps(values: Array<string>): Array<string> {
 	const normalized = new Set<string>();
 	for (const value of values) {
+		if (value.includes('/')) {
+			const range = parseIpBanEntry(value);
+			if (range?.type !== 'range') {
+				throw new Error(`FLUXER_API_IP_BAN_EXEMPT_IPS contains an invalid CIDR range: ${value}`);
+			}
+			normalized.add(range.canonical);
+			continue;
+		}
 		const parsed = parseIpAddress(value);
 		if (!parsed) {
 			throw new Error(`FLUXER_API_IP_BAN_EXEMPT_IPS contains an invalid IP address: ${value}`);
@@ -311,44 +320,14 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 					}
 				: undefined,
 		},
-		sms: {
-			enabled: master.integrations.sms.enabled,
-			accountSid: master.integrations.sms.account_sid,
-			authToken: master.integrations.sms.auth_token,
-			verifyServiceSid: master.integrations.sms.verify_service_sid,
-			inboundChallengeNumber: master.integrations.sms.inbound_challenge_number || undefined,
-			inboundWebhookAuthToken: master.integrations.sms.inbound_webhook_auth_token || master.integrations.sms.auth_token,
-			inboundWebhookPublicUrl: master.integrations.sms.inbound_webhook_public_url || undefined,
-		},
-		risk: {
-			enabled: master.integrations.risk_integration.enabled,
-			ipinfoApiKey: master.integrations.risk_integration.ipinfo_api_key || undefined,
-			accountPolicyDsl: master.integrations.risk_integration.account_policy_dsl,
+		ipinfo: {
+			apiKey: master.integrations.ipinfo.api_key || undefined,
 		},
 		blocklistFeeds: {
 			enabled: master.integrations.blocklist_feeds.enabled ?? !master.instance.self_hosted,
 		},
-		torExitList: {
-			enabled: master.integrations.tor_exit_list.enabled ?? !master.instance.self_hosted,
-		},
 		breachedPasswordCheck: {
 			enabled: master.integrations.breached_password_check.enabled ?? !master.instance.self_hosted,
-		},
-		captcha: {
-			enabled: master.integrations.captcha.enabled,
-			provider: master.integrations.captcha.provider,
-			hcaptcha: master.integrations.captcha.hcaptcha
-				? {
-						siteKey: master.integrations.captcha.hcaptcha.site_key,
-						secretKey: master.integrations.captcha.hcaptcha.secret_key,
-					}
-				: undefined,
-			turnstile: master.integrations.captcha.turnstile
-				? {
-						siteKey: master.integrations.captcha.turnstile.site_key,
-						secretKey: master.integrations.captcha.turnstile.secret_key,
-					}
-				: undefined,
 		},
 		contentModeration: {
 			nsfwThreshold: master.services.api.content_moderation?.nsfw_threshold ?? 0.7,
@@ -473,23 +452,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			},
 			setup: {
 				configured: master.instance.setup.configured,
-			},
-		},
-		abusePolicy: {
-			inboundPhoneCountryCodes: master.instance.abuse_policy.inbound_phone_country_codes,
-			phoneFlagging: {
-				enabled: master.instance.abuse_policy.phone_flagging.enabled,
-				exemptCountryCodes: master.instance.abuse_policy.phone_flagging.exempt_country_codes,
-			},
-			phoneVerification: {
-				inboundRequiredPrefixes: master.instance.abuse_policy.phone_verification.inbound_required_prefixes,
-			},
-			directContactSpam: {
-				enabled: master.instance.abuse_policy.direct_contact_spam.enabled,
-				countryCodes: master.instance.abuse_policy.direct_contact_spam.country_codes,
-				distinctTargetThreshold: master.instance.abuse_policy.direct_contact_spam.distinct_target_threshold,
-				targetWindowMs: master.instance.abuse_policy.direct_contact_spam.target_window_ms,
-				action: master.instance.abuse_policy.direct_contact_spam.action,
 			},
 		},
 		domain: {

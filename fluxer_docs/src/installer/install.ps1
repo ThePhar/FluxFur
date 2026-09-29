@@ -52,6 +52,7 @@ param(
 	[switch]$Update,
 	[switch]$Rollback,
 	[switch]$NoVolumeBackup,
+	[switch]$NoVolumeCompression,
 	[switch]$SkipBackupAcceptDataLoss,
 	[switch]$Help,
 	[Parameter(ValueFromRemainingArguments = $true)]
@@ -86,9 +87,8 @@ $FluxerImagesFile = 'images'
 $FluxerTagFile = 'image-tag'
 $FluxerDumpFile = 'fluxer.dump'
 
-# Free space demanded before a volume copy, as a percentage of the measured volume size. The
-# tarball compresses, so this is generous on purpose. A backup that fills the disk it writes to
-# takes the instance down with it.
+# Free space demanded before a volume copy, as a percentage of the measured volume size. A backup
+# that fills the disk it writes to takes the instance down with it.
 $FluxerVolumeHeadroomPercent = 110
 
 $FluxerExitUsage = 1
@@ -104,6 +104,7 @@ $FluxerStackFiles = @(
 	'docker-compose.yml'
 	'docker-compose.proxy.yml'
 	'tunnel.compose.yml'
+	'external-object-store.compose.yml'
 	'Caddyfile'
 	'.env.example'
 )
@@ -238,6 +239,7 @@ function Show-FluxerUsage {
 	Write-FluxerLine '  -Rollback               Restore the images and stack files of the last record.'
 	Write-FluxerLine '  -BackupDir <path>       Where records go. Default: the backups folder under -Dir.'
 	Write-FluxerLine '  -NoVolumeBackup         Take the database dump and skip the uploads copy.'
+	Write-FluxerLine '  -NoVolumeCompression    Copy the uploads as a plain .tar. Faster, larger.'
 	Write-FluxerLine '  -SkipBackupAcceptDataLoss'
 	Write-FluxerLine '                          Upgrade with no backup at all. Losable data is lost.'
 	Write-FluxerLine '  -Help                   Print this text.'
@@ -669,6 +671,7 @@ function Move-FluxerStackFiles([string]$StagingDir, [string]$TargetDir) {
 	foreach ($name in $FluxerStackFiles) {
 		Move-Item -LiteralPath (Join-Path $StagingDir $name) -Destination (Join-Path $TargetDir (Get-FluxerPlacedName $name)) -Force
 	}
+	$script:FluxerStackServices = $null
 }
 
 # The same file by hand, which is what the caller of this function does in one pass:
@@ -784,7 +787,7 @@ function Wait-FluxerStack([string]$Lead) {
 	$deadline = (Get-Date).AddSeconds($FluxerReadyTimeoutSeconds)
 	$reportAt = (Get-Date).AddSeconds($FluxerReadyReportSeconds)
 	while ((Get-Date) -lt $deadline) {
-		$rows = @(Get-FluxerComposeRows)
+		$rows = @(Get-FluxerComposeRows | Where-Object { Test-FluxerStackDefinesService (Get-FluxerProperty $_ 'Service') (Get-Location).Path })
 		if ($rows.Count -gt 0) {
 			$ready = Measure-FluxerReadyRows $rows
 			if ($ready -eq $rows.Count) {
@@ -1413,6 +1416,12 @@ function Copy-FluxerVolumes([string]$Record, [string]$Project, [string]$TargetDi
 	if ($present.Count -eq 0) {
 		return
 	}
+	$tarFlags = 'czf'
+	$tarExtension = 'tgz'
+	if ($NoVolumeCompression) {
+		$tarFlags = 'cf'
+		$tarExtension = 'tar'
+	}
 	Write-FluxerLine 'Stopping the stack for a consistent copy of the uploads.'
 	if ((Invoke-FluxerDocker @('compose', 'stop')) -ne 0) {
 		Stop-Fluxer 'docker compose stop failed.' $FluxerExitBackup
@@ -1420,7 +1429,7 @@ function Copy-FluxerVolumes([string]$Record, [string]$Project, [string]$TargetDi
 	foreach ($volume in $present) {
 		$full = "${Project}_$volume"
 		Write-FluxerLine "Copying $full."
-		$code = Invoke-FluxerDocker @('run', '--rm', '-v', "${full}:/data:ro", '-v', "${Record}:/backup", $FluxerHelperImage, 'tar', 'czf', "/backup/$volume.tgz", '-C', '/data', '.')
+		$code = Invoke-FluxerDocker @('run', '--rm', '-v', "${full}:/data:ro", '-v', "${Record}:/backup", $FluxerHelperImage, 'tar', $tarFlags, "/backup/$volume.$tarExtension", '-C', '/data', '.')
 		if ($code -ne 0) {
 			[void](Invoke-FluxerDocker @('compose', 'up', '-d', '--remove-orphans'))
 			Stop-Fluxer "Copying $full failed. The stack is started again on the images it was running." $FluxerExitBackup
@@ -1529,7 +1538,11 @@ function Show-FluxerUpdatePlan([string]$TargetDir, [string]$EnvPath, [string]$Ba
 	} elseif ($NoVolumeBackup) {
 		Write-FluxerLine '  Backup:     the database dump, .env, and the stack files'
 	} else {
-		Write-FluxerLine '  Backup:     the database dump, the uploads volume, .env, and the stack files'
+		if ($NoVolumeCompression) {
+			Write-FluxerLine '  Backup:     the database dump, the uploads volume uncompressed, .env, and the stack files'
+		} else {
+			Write-FluxerLine '  Backup:     the database dump, the uploads volume, .env, and the stack files'
+		}
 		Write-FluxerLine '  Downtime:   the stack stops for the uploads copy, then again for the recreate'
 	}
 	# The dry run downloads into a temporary directory so it can name the files that actually
@@ -1866,6 +1879,13 @@ function Resolve-FluxerComposeBase([string]$TargetDir, [string]$EnvPath) {
 	}
 }
 
+function Get-FluxerOverlayAbsence([string]$Name) {
+	if ($Name -eq 'external-object-store.compose.yml') {
+		return 'Without it the bundled seaweedfs starts again and api, worker and media-proxy wait for it.'
+	}
+	return "Without $Name the edge container binds 80 and 443 and requests its own certificate."
+}
+
 function Assert-FluxerComposeFiles([string]$TargetDir, [string]$EnvPath) {
 	$setting = Get-FluxerComposeSetting $EnvPath
 	$value = $setting.Value
@@ -1886,7 +1906,7 @@ function Assert-FluxerComposeFiles([string]$TargetDir, [string]$EnvPath) {
 			continue
 		}
 		if ($FluxerStackFiles -contains $name) {
-			Stop-Fluxer "COMPOSE_FILE from $source names $name and $path is not there, so every docker compose command in $TargetDir fails and this run stops before it changes anything. This script downloads $name, and an instance set up before it existed does not hold that file yet. Put it in place and run this again:`n  Invoke-WebRequest -Uri $FluxerRawBase/$Ref/$FluxerStackPath/$name -OutFile $path -UseBasicParsing`nLeave the COMPOSE_FILE line as it is. Without $name the edge container binds 80 and 443 and requests its own certificate." $FluxerExitPrerequisite
+			Stop-Fluxer "COMPOSE_FILE from $source names $name and $path is not there, so every docker compose command in $TargetDir fails and this run stops before it changes anything. This script downloads $name, and an instance set up before it existed does not hold that file yet. Put it in place and run this again:`n  Invoke-WebRequest -Uri $FluxerRawBase/$Ref/$FluxerStackPath/$name -OutFile $path -UseBasicParsing`nLeave the COMPOSE_FILE line as it is. $(Get-FluxerOverlayAbsence $name)" $FluxerExitPrerequisite
 		}
 		Stop-Fluxer "COMPOSE_FILE from $source names $name and $path is not there, so every docker compose command in $TargetDir fails. This script does not download $name. Put that file back, or take it out of the COMPOSE_FILE line." $FluxerExitPrerequisite
 	}
@@ -1924,6 +1944,12 @@ function Invoke-FluxerInstall {
 	}
 	if ($SkipBackupAcceptDataLoss -and $NoVolumeBackup) {
 		Stop-Fluxer '-SkipBackupAcceptDataLoss already skips the volume copy.' $FluxerExitUsage
+	}
+	if ($NoVolumeCompression -and -not $Update) {
+		Stop-Fluxer '-NoVolumeCompression belongs to -Update.' $FluxerExitUsage
+	}
+	if ($NoVolumeCompression -and ($SkipBackupAcceptDataLoss -or $NoVolumeBackup)) {
+		Stop-Fluxer '-NoVolumeCompression changes the volume copy, which this run skips.' $FluxerExitUsage
 	}
 
 	Invoke-FluxerPreflight

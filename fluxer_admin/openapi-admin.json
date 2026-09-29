@@ -2743,7 +2743,7 @@
 						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
 					}
 				},
-				"description": "Create one-use Plutonium gift codes with an explicit positive duration and return their complete redemption links. Lifetime gifts are not supported. Not available on self-hosted instances. Requires GIFT_CODES_GENERATE permission.",
+				"description": "Create one-use premium gift codes with an explicit positive duration and return their complete redemption links. Lifetime gifts are not supported. On self-hosted instances the premium mode must be mirror. Requires GIFT_CODES_GENERATE permission.",
 				"security": [{"adminApiKey": []}],
 				"requestBody": {
 					"required": true,
@@ -6070,6 +6070,69 @@
 				]
 			}
 		},
+		"/admin/users/{user_id}/ban/notes": {
+			"post": {
+				"operationId": "annotate_admin_user_ban",
+				"summary": "Add a note to a user ban",
+				"tags": ["Admin"],
+				"responses": {
+					"204": {"description": "No Content"},
+					"400": {
+						"description": "Bad Request - The request was malformed or contained invalid data",
+						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+					},
+					"401": {
+						"description": "Unauthorized - Authentication is required or the token is invalid",
+						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+					},
+					"403": {
+						"description": "Forbidden - You do not have permission to perform this action",
+						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+					},
+					"429": {
+						"description": "Too Many Requests - You are being rate limited",
+						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/ThrottledError"}}},
+						"headers": {
+							"Retry-After": {
+								"description": "Number of seconds to wait before retrying (only on 429)",
+								"schema": {"type": "integer"}
+							},
+							"X-RateLimit-Limit": {
+								"description": "The number of requests that can be made in the current window",
+								"schema": {"type": "integer"}
+							},
+							"X-RateLimit-Remaining": {
+								"description": "The number of remaining requests that can be made",
+								"schema": {"type": "integer"}
+							},
+							"X-RateLimit-Reset": {
+								"description": "Unix timestamp when the rate limit resets",
+								"schema": {"type": "integer"}
+							}
+						}
+					},
+					"500": {
+						"description": "Internal Server Error - An unexpected error occurred",
+						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
+					}
+				},
+				"description": "Append a note to the current ban of a user. The note is recorded as the reason of a new annotate_ban audit log entry whose metadata names the ban audit log entry. Earlier entries are never changed. Requires USER_TEMP_BAN permission.",
+				"security": [{"adminApiKey": []}],
+				"parameters": [
+					{
+						"name": "user_id",
+						"in": "path",
+						"required": true,
+						"schema": {"description": "The ID of the user", "allOf": [{"$ref": "#/components/schemas/SnowflakeType"}]},
+						"description": "The ID of the user"
+					}
+				],
+				"requestBody": {
+					"required": true,
+					"content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminUserBanNoteRequest"}}}
+				}
+			}
+		},
 		"/admin/users/{user_id}/bot-status": {
 			"put": {
 				"operationId": "set_admin_user_bot_status",
@@ -6329,7 +6392,7 @@
 						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
 					}
 				},
-				"description": "Schedule user account for deletion after grace period. Account will be fully deleted with all content unless cancellation is executed. Creates audit log entry. Requires USER_DELETE permission.",
+				"description": "Schedule user account for deletion after grace period. Account will be fully deleted with all content unless cancellation is executed. When a deletion is already scheduled, the request must name it in replace_pending_deletion_at or it returns 409. Records who scheduled the deletion. Creates audit log entry. Requires USER_DELETE permission.",
 				"security": [{"adminApiKey": []}],
 				"parameters": [
 					{
@@ -6393,7 +6456,7 @@
 						"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
 					}
 				},
-				"description": "Cancel a scheduled account deletion. User account restoration prevents data loss. Creates audit log entry. Requires USER_DELETE permission.",
+				"description": "Cancel the scheduled account deletion named by expected_pending_deletion_at. Returns 409 when a different deletion is pending and 400 when none is. The user is emailed only when notify_user is true, and the email never includes the audit log reason. Creates audit log entry recording the cancelled deletion. Requires USER_DELETE permission.",
 				"security": [{"adminApiKey": []}],
 				"parameters": [
 					{
@@ -6403,7 +6466,11 @@
 						"schema": {"description": "The ID of the user", "allOf": [{"$ref": "#/components/schemas/SnowflakeType"}]},
 						"description": "The ID of the user"
 					}
-				]
+				],
+				"requestBody": {
+					"required": true,
+					"content": {"application/json": {"schema": {"$ref": "#/components/schemas/AdminUserDeletionCancelRequest"}}}
+				}
 			}
 		},
 		"/admin/users/{user_id}/dm-channels": {
@@ -9702,6 +9769,23 @@
 					}
 				]
 			},
+			"AdminUserDeletionCancelRequest": {
+				"type": "object",
+				"properties": {
+					"expected_pending_deletion_at": {
+						"type": "string",
+						"format": "date-time",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$",
+						"description": "pending_deletion_at of the deletion being cancelled, as shown on the account"
+					},
+					"notify_user": {
+						"default": false,
+						"description": "Whether to email the user that the deletion was cancelled",
+						"type": "boolean"
+					}
+				},
+				"required": ["expected_pending_deletion_at"]
+			},
 			"AdminUserDeletionScheduleRequest": {
 				"type": "object",
 				"properties": {
@@ -9716,6 +9800,12 @@
 						"type": "integer",
 						"minimum": 1,
 						"maximum": 365
+					},
+					"replace_pending_deletion_at": {
+						"description": "pending_deletion_at of the deletion this request replaces. Required when a deletion is already scheduled for the account",
+						"type": "string",
+						"format": "date-time",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					}
 				},
 				"required": ["reason_code"]
@@ -9755,6 +9845,20 @@
 				"type": "object",
 				"properties": {"bot": {"type": "boolean", "description": "Whether the user should be marked as a bot"}},
 				"required": ["bot"]
+			},
+			"AdminUserBanNoteRequest": {
+				"type": "object",
+				"properties": {
+					"ban_audit_log_id": {
+						"description": "Audit log entry of the current ban that the note refers to",
+						"allOf": [{"$ref": "#/components/schemas/SnowflakeType"}]
+					},
+					"note": {
+						"description": "Note to append to the ban. Recorded as the reason of a new audit log entry",
+						"type": "string"
+					}
+				},
+				"required": ["ban_audit_log_id", "note"]
 			},
 			"AdminUserBanRequest": {
 				"type": "object",
@@ -9837,7 +9941,7 @@
 				"type": "object",
 				"properties": {
 					"acls": {
-						"maxItems": 111,
+						"maxItems": 108,
 						"type": "array",
 						"items": {"$ref": "#/components/schemas/AdminAclType"},
 						"description": "List of access control permissions to assign"
@@ -10523,9 +10627,9 @@
 						"additionalProperties": false
 					},
 					"gateway_rollout": {"$ref": "#/components/schemas/GatewayRolloutConfigResponse"},
-					"voice_noise_suppression": {"$ref": "#/components/schemas/VoiceNoiseSuppressionConfigResponse"},
-					"push_service_delivery": {"$ref": "#/components/schemas/PushServiceDeliveryConfigResponse"},
+					"push_relay": {"$ref": "#/components/schemas/PushRelayConfigResponse"},
 					"domain_migration": {"$ref": "#/components/schemas/DomainMigrationConfigResponse"},
+					"captcha": {"$ref": "#/components/schemas/CaptchaConfigResponse"},
 					"experiment_delivery": {"$ref": "#/components/schemas/ExperimentDeliveryConfigResponse"},
 					"registration": {
 						"type": "object",
@@ -10637,7 +10741,9 @@
 									"favicon_url": {"nullable": true, "type": "string"},
 									"theme_color": {"nullable": true, "type": "string"},
 									"status_page_url": {"nullable": true, "type": "string"},
-									"status_page_incident_history_url": {"nullable": true, "type": "string"}
+									"status_page_incident_history_url": {"nullable": true, "type": "string"},
+									"premium_product_name": {"type": "string"},
+									"premium_info_url": {"nullable": true, "type": "string"}
 								},
 								"required": [
 									"product_name",
@@ -10648,7 +10754,9 @@
 									"favicon_url",
 									"theme_color",
 									"status_page_url",
-									"status_page_incident_history_url"
+									"status_page_incident_history_url",
+									"premium_product_name",
+									"premium_info_url"
 								],
 								"additionalProperties": false
 							},
@@ -10714,16 +10822,6 @@
 								},
 								"required": ["gif", "youtube", "bluesky"],
 								"additionalProperties": false
-							},
-							"deferred_phone_gate": {
-								"type": "object",
-								"properties": {
-									"enabled": {"type": "boolean"},
-									"window_hours": {"type": "number"},
-									"member_threshold": {"type": "number"}
-								},
-								"required": ["enabled", "window_hours", "member_threshold"],
-								"additionalProperties": false
 							}
 						},
 						"required": [
@@ -10734,8 +10832,7 @@
 							"premium_mode",
 							"services",
 							"services_resolved",
-							"services_available",
-							"deferred_phone_gate"
+							"services_available"
 						],
 						"additionalProperties": false
 					},
@@ -10752,31 +10849,6 @@
 								"type": "object",
 								"properties": {"api_key_set": {"type": "boolean"}, "effective_available": {"type": "boolean"}},
 								"required": ["api_key_set", "effective_available"],
-								"additionalProperties": false
-							},
-							"captcha": {
-								"type": "object",
-								"properties": {
-									"provider": {
-										"nullable": true,
-										"allOf": [{"$ref": "#/components/schemas/InstanceCaptchaProviderSchema"}]
-									},
-									"effective_provider": {"$ref": "#/components/schemas/InstanceCaptchaProviderSchema"},
-									"hcaptcha_site_key": {"nullable": true, "type": "string"},
-									"hcaptcha_secret_key_set": {"type": "boolean"},
-									"turnstile_site_key": {"nullable": true, "type": "string"},
-									"turnstile_secret_key_set": {"type": "boolean"},
-									"effective_enabled": {"type": "boolean"}
-								},
-								"required": [
-									"provider",
-									"effective_provider",
-									"hcaptcha_site_key",
-									"hcaptcha_secret_key_set",
-									"turnstile_site_key",
-									"turnstile_secret_key_set",
-									"effective_enabled"
-								],
 								"additionalProperties": false
 							},
 							"email": {
@@ -10841,7 +10913,7 @@
 								"additionalProperties": false
 							}
 						},
-						"required": ["gif", "youtube", "captcha", "email", "bluesky"],
+						"required": ["gif", "youtube", "email", "bluesky"],
 						"additionalProperties": false
 					},
 					"media": {
@@ -10947,21 +11019,23 @@
 						},
 						"required": ["attachment_decay"],
 						"additionalProperties": false
-					}
+					},
+					"billing": {"$ref": "#/components/schemas/InstanceBillingResponse"}
 				},
 				"required": [
 					"sso",
 					"gateway_rollout",
-					"voice_noise_suppression",
-					"push_service_delivery",
+					"push_relay",
 					"domain_migration",
+					"captcha",
 					"experiment_delivery",
 					"registration",
 					"self_hosted",
 					"app_public",
 					"policy",
 					"integrations",
-					"media"
+					"media",
+					"billing"
 				],
 				"additionalProperties": false
 			},
@@ -11085,18 +11159,12 @@
 						"nullable": true,
 						"allOf": [{"$ref": "#/components/schemas/GatewayRolloutConfigUpdateRequest"}]
 					},
-					"voice_noise_suppression": {
-						"nullable": true,
-						"allOf": [{"$ref": "#/components/schemas/VoiceNoiseSuppressionConfigUpdateRequest"}]
-					},
-					"push_service_delivery": {
-						"nullable": true,
-						"allOf": [{"$ref": "#/components/schemas/PushServiceDeliveryConfigUpdateRequest"}]
-					},
+					"push_relay": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/PushRelayConfigUpdateRequest"}]},
 					"domain_migration": {
 						"nullable": true,
 						"allOf": [{"$ref": "#/components/schemas/DomainMigrationConfigUpdateRequest"}]
 					},
+					"captcha": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/CaptchaConfigUpdateRequest"}]},
 					"experiment_delivery": {
 						"nullable": true,
 						"allOf": [{"$ref": "#/components/schemas/ExperimentDeliveryConfigUpdateRequest"}]
@@ -11144,7 +11212,9 @@
 									"favicon_url": {"nullable": true, "type": "string", "maxLength": 2048},
 									"theme_color": {"nullable": true, "type": "string", "maxLength": 64},
 									"status_page_url": {"nullable": true, "type": "string", "maxLength": 2048},
-									"status_page_incident_history_url": {"nullable": true, "type": "string", "maxLength": 2048}
+									"status_page_incident_history_url": {"nullable": true, "type": "string", "maxLength": 2048},
+									"premium_product_name": {"nullable": true, "type": "string", "minLength": 1, "maxLength": 40},
+									"premium_info_url": {"nullable": true, "type": "string", "maxLength": 2048}
 								}
 							},
 							"setup": {"nullable": true, "type": "object", "properties": {"configured": {"type": "boolean"}}},
@@ -11176,20 +11246,6 @@
 								"nullable": true,
 								"type": "object",
 								"properties": {"api_key": {"nullable": true, "type": "string", "maxLength": 4096}}
-							},
-							"captcha": {
-								"nullable": true,
-								"type": "object",
-								"properties": {
-									"provider": {
-										"nullable": true,
-										"allOf": [{"$ref": "#/components/schemas/InstanceCaptchaProviderSchema"}]
-									},
-									"hcaptcha_site_key": {"nullable": true, "type": "string", "maxLength": 4096},
-									"hcaptcha_secret_key": {"nullable": true, "type": "string", "maxLength": 4096},
-									"turnstile_site_key": {"nullable": true, "type": "string", "maxLength": 4096},
-									"turnstile_secret_key": {"nullable": true, "type": "string", "maxLength": 4096}
-								}
 							},
 							"email": {
 								"nullable": true,
@@ -11301,18 +11357,10 @@
 									"youtube_enabled": {"nullable": true, "type": "boolean"},
 									"bluesky_enabled": {"nullable": true, "type": "boolean"}
 								}
-							},
-							"deferred_phone_gate": {
-								"nullable": true,
-								"type": "object",
-								"properties": {
-									"enabled": {"type": "boolean"},
-									"window_hours": {"type": "number", "minimum": 0, "exclusiveMinimum": true, "maximum": 8760},
-									"member_threshold": {"type": "integer", "minimum": 0, "exclusiveMinimum": true, "maximum": 1000000}
-								}
 							}
 						}
-					}
+					},
+					"billing": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/InstanceBillingUpdateRequest"}]}
 				}
 			},
 			"ListGuildStickersResponse": {
@@ -12311,17 +12359,7 @@
 			},
 			"AdminBlocklistListType": {
 				"type": "string",
-				"enum": [
-					"ip",
-					"email",
-					"email-domain-suspicious",
-					"phrase",
-					"url",
-					"url-domain",
-					"file-sha",
-					"avatar-hash",
-					"profile-substring"
-				],
+				"enum": ["ip", "email", "phrase", "url", "url-domain", "file-sha", "avatar-hash", "profile-substring"],
 				"description": "The blocklist an entry belongs to"
 			},
 			"AdminBlocklistEntryUpdateRequest": {
@@ -12364,7 +12402,6 @@
 				"anyOf": [
 					{"$ref": "#/components/schemas/BanIpRequest"},
 					{"$ref": "#/components/schemas/BanEmailRequest"},
-					{"$ref": "#/components/schemas/SuspiciousEmailDomainRequest"},
 					{"$ref": "#/components/schemas/BanPhraseRequest"},
 					{"$ref": "#/components/schemas/BanUrlRequest"},
 					{"$ref": "#/components/schemas/BanUrlDomainRequest"},
@@ -12741,7 +12778,7 @@
 					},
 					"acls": {
 						"description": "Replacement list of access control permissions for the key",
-						"maxItems": 111,
+						"maxItems": 108,
 						"type": "array",
 						"items": {"$ref": "#/components/schemas/AdminAclType"}
 					}
@@ -12759,7 +12796,7 @@
 						"type": "string"
 					},
 					"acls": {
-						"maxItems": 111,
+						"maxItems": 108,
 						"type": "array",
 						"items": {"type": "string"},
 						"description": "List of access control permissions for the key"
@@ -12789,7 +12826,7 @@
 						"maximum": 365
 					},
 					"acls": {
-						"maxItems": 111,
+						"maxItems": 108,
 						"type": "array",
 						"items": {"$ref": "#/components/schemas/AdminAclType"},
 						"description": "List of access control permissions for the key"
@@ -12810,7 +12847,7 @@
 						"type": "string"
 					},
 					"acls": {
-						"maxItems": 111,
+						"maxItems": 108,
 						"type": "array",
 						"items": {"type": "string"},
 						"description": "List of access control permissions for the key"
@@ -12823,7 +12860,7 @@
 				"type": "object",
 				"properties": {
 					"acls": {
-						"maxItems": 111,
+						"maxItems": 108,
 						"type": "array",
 						"items": {"type": "string", "minLength": 1, "maxLength": 64},
 						"description": "Every admin access control permission the admin API recognises"
@@ -12852,9 +12889,6 @@
 					"ban:email:add",
 					"ban:email:check",
 					"ban:email:remove",
-					"suspicious_email_domain:add",
-					"suspicious_email_domain:check",
-					"suspicious_email_domain:remove",
 					"ban:phrase:add",
 					"ban:phrase:check",
 					"ban:phrase:remove",
@@ -13167,19 +13201,6 @@
 				},
 				"required": ["phrase"]
 			},
-			"SuspiciousEmailDomainRequest": {
-				"type": "object",
-				"properties": {
-					"domain": {
-						"type": "string",
-						"minLength": 1,
-						"maxLength": 253,
-						"pattern": "^[a-zA-Z0-9][a-zA-Z0-9\\-.]*\\.[a-zA-Z]{2,}$",
-						"description": "Email domain to flag as suspicious (e.g. mail.ru). Registrants from this domain will be required to verify a phone number."
-					}
-				},
-				"required": ["domain"]
-			},
 			"BanEmailRequest": {
 				"type": "object",
 				"properties": {
@@ -13422,12 +13443,12 @@
 					{
 						"name": "FORCE_INBOUND_PHONE_VERIFICATION",
 						"value": "2305843009213693952",
-						"description": "User is forced through inbound (expensive-destination) phone verification regardless of phone prefix, for debugging"
+						"description": "User is forced through inbound phone verification, for debugging"
 					},
 					{
 						"name": "NOT_SUSPICIOUS",
 						"value": "4611686018427387904",
-						"description": "User is permanently exempt from automatic suspicious-activity flagging on RPC session start (does not require a prior payment)"
+						"description": "User is permanently exempt from automatic suspicious-activity flagging"
 					}
 				]
 			},
@@ -15171,7 +15192,28 @@
 					{"name": "BANNER_UNSET", "value": "2", "description": "Guild member banner is unset"}
 				]
 			},
-			"InstanceCaptchaProviderSchema": {"type": "string", "enum": ["hcaptcha", "turnstile", "none"]},
+			"InstanceBillingUpdateRequest": {
+				"type": "object",
+				"properties": {
+					"enabled": {"nullable": true, "type": "boolean"},
+					"stripe_secret_key": {"nullable": true, "type": "string", "minLength": 1, "maxLength": 4096},
+					"stripe_webhook_secret": {"nullable": true, "type": "string", "minLength": 1, "maxLength": 4096},
+					"automatic_tax": {"nullable": true, "type": "boolean"},
+					"tax_id_collection": {"nullable": true, "type": "boolean"},
+					"terms_consent_required": {"nullable": true, "type": "boolean"},
+					"default_currency": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/PremiumCurrency"}]},
+					"prices": {
+						"nullable": true,
+						"type": "object",
+						"additionalProperties": {"$ref": "#/components/schemas/BillingPriceSetUpdateRequest"}
+					},
+					"country_currencies": {
+						"nullable": true,
+						"allOf": [{"$ref": "#/components/schemas/BillingCountryCurrenciesSchema"}]
+					},
+					"legacy_prices": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/BillingLegacyPricesSchema"}]}
+				}
+			},
 			"InstanceRegistrationModeSchema": {
 				"description": "Registration mode",
 				"x-enumNames": ["open", "approval", "closed"],
@@ -15190,6 +15232,14 @@
 					"poll_jitter_percent": {"type": "integer", "minimum": 0, "maximum": 50}
 				}
 			},
+			"CaptchaConfigUpdateRequest": {
+				"type": "object",
+				"properties": {
+					"enabled": {"type": "boolean"},
+					"cost": {"type": "integer", "minimum": 1000, "maximum": 20000},
+					"max_counter": {"type": "integer", "minimum": 100, "maximum": 20000}
+				}
+			},
 			"DomainMigrationConfigUpdateRequest": {
 				"type": "object",
 				"properties": {
@@ -15201,6 +15251,12 @@
 						"type": "array",
 						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
 					},
+					"included_guild_ids": {
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"include_premium_users": {"type": "boolean"},
 					"excluded_user_ids": {
 						"maxItems": 1000,
 						"type": "array",
@@ -15210,62 +15266,7 @@
 					"standalone_forwarding": {"type": "boolean"}
 				}
 			},
-			"PushServiceDeliveryConfigUpdateRequest": {
-				"type": "object",
-				"properties": {
-					"enabled": {"type": "boolean"},
-					"rollout_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
-					"rollout_salt": {"type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[\\x20-\\x7e]+$"},
-					"included_user_ids": {
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					},
-					"excluded_user_ids": {
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					}
-				}
-			},
-			"VoiceNoiseSuppressionConfigUpdateRequest": {
-				"type": "object",
-				"properties": {
-					"enabled": {"type": "boolean"},
-					"default_backend": {"allOf": [{"$ref": "#/components/schemas/VoiceNoiseSuppressionBackendSchema"}]},
-					"enabled_backends": {
-						"maxItems": 7,
-						"type": "array",
-						"items": {"$ref": "#/components/schemas/VoiceNoiseSuppressionBackendSchema"}
-					},
-					"allow_user_override": {"type": "boolean"},
-					"rollout_basis_points": {"type": "integer", "minimum": 0, "maximum": 10000},
-					"rollout_salt": {"type": "string", "minLength": 1, "maxLength": 64},
-					"included_user_ids": {
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					},
-					"excluded_user_ids": {
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					},
-					"guild_overrides": {
-						"maxItems": 200,
-						"type": "array",
-						"items": {
-							"type": "object",
-							"properties": {
-								"guild_id": {"type": "string", "pattern": "^\\d{1,20}$"},
-								"backend": {"$ref": "#/components/schemas/VoiceNoiseSuppressionBackendSchema"}
-							},
-							"required": ["guild_id", "backend"]
-						}
-					},
-					"suppression_strength": {"type": "integer", "minimum": 0, "maximum": 100}
-				}
-			},
+			"PushRelayConfigUpdateRequest": {"type": "object", "properties": {"relay_consent_accepted": {"type": "boolean"}}},
 			"GatewayRolloutConfigUpdateRequest": {
 				"type": "object",
 				"properties": {
@@ -15280,9 +15281,84 @@
 					"voice_e2ee_scope": {"type": "string", "enum": ["guild_feature_only", "platform_wide"]}
 				}
 			},
-			"VoiceNoiseSuppressionBackendSchema": {
-				"type": "string",
-				"enum": ["none", "standard", "gate", "speex", "rnnoise", "gtcrn", "deep_filter"]
+			"BillingLegacyPricesSchema": {
+				"type": "object",
+				"additionalProperties": {
+					"maxItems": 32,
+					"type": "array",
+					"items": {"$ref": "#/components/schemas/StripePriceIdSchema"}
+				}
+			},
+			"BillingCountryCurrenciesSchema": {
+				"type": "object",
+				"additionalProperties": {"$ref": "#/components/schemas/PremiumCurrency"}
+			},
+			"BillingPriceSetUpdateRequest": {
+				"type": "object",
+				"properties": {
+					"monthly": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]},
+					"yearly": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]},
+					"gift_1_month": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]},
+					"gift_1_year": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]}
+				}
+			},
+			"PremiumCurrency": {"type": "string", "pattern": "^[A-Z]{3}$"},
+			"StripePriceIdSchema": {"type": "string", "maxLength": 255, "pattern": "^price_[A-Za-z0-9]+$"},
+			"InstanceBillingResponse": {
+				"type": "object",
+				"properties": {
+					"enabled": {"nullable": true, "type": "boolean"},
+					"effective_enabled": {"type": "boolean"},
+					"stripe_secret_key_set": {"type": "boolean"},
+					"stripe_webhook_secret_set": {"type": "boolean"},
+					"stripe_secret_key_stored": {"type": "boolean"},
+					"stripe_webhook_secret_stored": {"type": "boolean"},
+					"automatic_tax": {"nullable": true, "type": "boolean"},
+					"tax_id_collection": {"nullable": true, "type": "boolean"},
+					"terms_consent_required": {"nullable": true, "type": "boolean"},
+					"effective_automatic_tax": {"type": "boolean"},
+					"effective_tax_id_collection": {"type": "boolean"},
+					"effective_terms_consent_required": {"type": "boolean"},
+					"default_currency": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/PremiumCurrency"}]},
+					"prices": {
+						"nullable": true,
+						"type": "object",
+						"additionalProperties": {"$ref": "#/components/schemas/BillingPriceSetResponse"}
+					},
+					"country_currencies": {"nullable": true, "type": "object", "additionalProperties": {"type": "string"}},
+					"legacy_prices": {
+						"nullable": true,
+						"type": "object",
+						"additionalProperties": {"type": "array", "items": {"type": "string"}}
+					},
+					"billing_active": {"type": "boolean"},
+					"stripe_serviceable": {"type": "boolean"},
+					"catalog_mode": {"$ref": "#/components/schemas/BillingCatalogModeSchema"},
+					"webhook_url": {"type": "string"}
+				},
+				"required": [
+					"enabled",
+					"effective_enabled",
+					"stripe_secret_key_set",
+					"stripe_webhook_secret_set",
+					"stripe_secret_key_stored",
+					"stripe_webhook_secret_stored",
+					"automatic_tax",
+					"tax_id_collection",
+					"terms_consent_required",
+					"effective_automatic_tax",
+					"effective_tax_id_collection",
+					"effective_terms_consent_required",
+					"default_currency",
+					"prices",
+					"country_currencies",
+					"legacy_prices",
+					"billing_active",
+					"stripe_serviceable",
+					"catalog_mode",
+					"webhook_url"
+				],
+				"additionalProperties": false
 			},
 			"ExperimentDeliveryConfigResponse": {
 				"type": "object",
@@ -15291,6 +15367,16 @@
 					"poll_jitter_percent": {"default": 15, "type": "integer", "minimum": 0, "maximum": 50}
 				},
 				"required": ["poll_interval_seconds", "poll_jitter_percent"],
+				"additionalProperties": false
+			},
+			"CaptchaConfigResponse": {
+				"type": "object",
+				"properties": {
+					"enabled": {"default": true, "type": "boolean"},
+					"cost": {"default": 5000, "type": "integer", "minimum": 1000, "maximum": 20000},
+					"max_counter": {"default": 1000, "type": "integer", "minimum": 100, "maximum": 20000}
+				},
+				"required": ["enabled", "cost", "max_counter"],
 				"additionalProperties": false
 			},
 			"DomainMigrationConfigResponse": {
@@ -15312,6 +15398,13 @@
 						"type": "array",
 						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
 					},
+					"included_guild_ids": {
+						"default": [],
+						"maxItems": 1000,
+						"type": "array",
+						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
+					},
+					"include_premium_users": {"default": false, "type": "boolean"},
 					"excluded_user_ids": {
 						"default": [],
 						"maxItems": 1000,
@@ -15327,107 +15420,28 @@
 					"rollout_basis_points",
 					"rollout_salt",
 					"included_user_ids",
+					"included_guild_ids",
+					"include_premium_users",
 					"excluded_user_ids",
 					"anonymous_rollout_basis_points",
 					"standalone_forwarding"
 				],
 				"additionalProperties": false
 			},
-			"PushServiceDeliveryConfigResponse": {
+			"PushRelayConfigResponse": {
 				"type": "object",
 				"properties": {
-					"enabled": {"default": false, "type": "boolean"},
-					"config_version": {"default": 0, "type": "integer", "minimum": 0, "maximum": 9007199254740991},
-					"rollout_basis_points": {"default": 0, "type": "integer", "minimum": 0, "maximum": 10000},
-					"rollout_salt": {
-						"default": "push-service-delivery-v1",
+					"relay_consent_accepted": {"default": false, "type": "boolean"},
+					"relay_consent_accepted_at": {
+						"default": null,
+						"nullable": true,
 						"type": "string",
-						"minLength": 1,
-						"maxLength": 64,
-						"pattern": "^[\\x20-\\x7e]+$"
+						"format": "date-time",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
 					},
-					"included_user_ids": {
-						"default": [],
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					},
-					"excluded_user_ids": {
-						"default": [],
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					}
+					"relay_consent_accepted_by": {"default": null, "nullable": true, "type": "string", "pattern": "^\\d{1,20}$"}
 				},
-				"required": [
-					"enabled",
-					"config_version",
-					"rollout_basis_points",
-					"rollout_salt",
-					"included_user_ids",
-					"excluded_user_ids"
-				],
-				"additionalProperties": false
-			},
-			"VoiceNoiseSuppressionConfigResponse": {
-				"type": "object",
-				"properties": {
-					"enabled": {"default": false, "type": "boolean"},
-					"config_version": {"default": 0, "type": "integer", "minimum": 0, "maximum": 9007199254740991},
-					"default_backend": {
-						"default": "standard",
-						"allOf": [{"$ref": "#/components/schemas/VoiceNoiseSuppressionBackendSchema"}]
-					},
-					"enabled_backends": {
-						"default": ["none", "standard", "gate", "speex", "rnnoise", "gtcrn", "deep_filter"],
-						"maxItems": 7,
-						"type": "array",
-						"items": {"$ref": "#/components/schemas/VoiceNoiseSuppressionBackendSchema"}
-					},
-					"allow_user_override": {"default": true, "type": "boolean"},
-					"rollout_basis_points": {"default": 0, "type": "integer", "minimum": 0, "maximum": 10000},
-					"rollout_salt": {"default": "voice-ns-v1", "type": "string", "minLength": 1, "maxLength": 64},
-					"included_user_ids": {
-						"default": [],
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					},
-					"excluded_user_ids": {
-						"default": [],
-						"maxItems": 1000,
-						"type": "array",
-						"items": {"type": "string", "pattern": "^\\d{1,20}$"}
-					},
-					"guild_overrides": {
-						"default": [],
-						"maxItems": 200,
-						"type": "array",
-						"items": {
-							"type": "object",
-							"properties": {
-								"guild_id": {"type": "string", "pattern": "^\\d{1,20}$"},
-								"backend": {"$ref": "#/components/schemas/VoiceNoiseSuppressionBackendSchema"}
-							},
-							"required": ["guild_id", "backend"],
-							"additionalProperties": false
-						}
-					},
-					"suppression_strength": {"default": 80, "type": "integer", "minimum": 0, "maximum": 100}
-				},
-				"required": [
-					"enabled",
-					"config_version",
-					"default_backend",
-					"enabled_backends",
-					"allow_user_override",
-					"rollout_basis_points",
-					"rollout_salt",
-					"included_user_ids",
-					"excluded_user_ids",
-					"guild_overrides",
-					"suppression_strength"
-				],
+				"required": ["relay_consent_accepted", "relay_consent_accepted_at", "relay_consent_accepted_by"],
 				"additionalProperties": false
 			},
 			"GatewayRolloutConfigResponse": {
@@ -15458,6 +15472,18 @@
 					"gateway_dispatch_relay_max_queue",
 					"voice_e2ee_scope"
 				],
+				"additionalProperties": false
+			},
+			"BillingCatalogModeSchema": {"type": "string", "enum": ["env", "operator"]},
+			"BillingPriceSetResponse": {
+				"type": "object",
+				"properties": {
+					"monthly": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]},
+					"yearly": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]},
+					"gift_1_month": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]},
+					"gift_1_year": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/StripePriceIdSchema"}]}
+				},
+				"required": ["monthly", "yearly", "gift_1_month", "gift_1_year"],
 				"additionalProperties": false
 			},
 			"JobLedgerEntrySchema": {
@@ -15556,14 +15582,29 @@
 					"suspicious_activity_flags": {"allOf": [{"$ref": "#/components/schemas/SuspiciousActivityFlags"}]},
 					"phone_verification_deferred": {
 						"type": "boolean",
-						"description": "Whether a stored phone requirement is deferred until the user joins a discoverable or large community"
+						"description": "Whether a stored phone requirement is deferred and not enforced"
 					},
 					"temp_banned_until": {"nullable": true, "type": "string"},
 					"pending_deletion_at": {"nullable": true, "type": "string"},
 					"pending_bulk_message_deletion_at": {"nullable": true, "type": "string"},
 					"deletion_reason_code": {"nullable": true, "allOf": [{"$ref": "#/components/schemas/Int32Type"}]},
 					"deletion_public_reason": {"nullable": true, "type": "string"},
-					"acls": {"maxItems": 111, "type": "array", "items": {"type": "string"}},
+					"deletion_audit_log_reason": {
+						"nullable": true,
+						"description": "Private reason recorded with the pending deletion, null without the audit log view permission",
+						"type": "string"
+					},
+					"deletion_scheduled_by": {
+						"nullable": true,
+						"description": "ID of the account that scheduled the pending deletion, null when it was not recorded",
+						"allOf": [{"$ref": "#/components/schemas/SnowflakeStringType"}]
+					},
+					"deletion_scheduled_at": {
+						"nullable": true,
+						"description": "ISO 8601 timestamp when the pending deletion was scheduled",
+						"type": "string"
+					},
+					"acls": {"maxItems": 108, "type": "array", "items": {"type": "string"}},
 					"traits": {"maxItems": 100, "type": "array", "items": {"type": "string"}},
 					"has_totp": {"type": "boolean"},
 					"authenticator_types": {"maxItems": 10, "type": "array", "items": {"$ref": "#/components/schemas/Int32Type"}},
@@ -15604,6 +15645,9 @@
 					"pending_bulk_message_deletion_at",
 					"deletion_reason_code",
 					"deletion_public_reason",
+					"deletion_audit_log_reason",
+					"deletion_scheduled_by",
+					"deletion_scheduled_at",
 					"acls",
 					"traits",
 					"has_totp",

@@ -194,13 +194,6 @@ function defaultConfig(): MasterConfig {
 				from_name: 'Fluxer',
 				app_base_url: '',
 			},
-			sms: {
-				enabled: false,
-			},
-			captcha: {
-				enabled: false,
-				provider: 'none',
-			},
 			voice: {
 				enabled: false,
 				api_key: '',
@@ -251,12 +244,9 @@ function defaultConfig(): MasterConfig {
 				},
 			},
 			blocklist_feeds: {},
-			tor_exit_list: {},
 			breached_password_check: {},
-			risk_integration: {
-				enabled: false,
-				ipinfo_api_key: '',
-				account_policy_dsl: undefined,
+			ipinfo: {
+				api_key: '',
 			},
 			push: {
 				apns: {
@@ -276,23 +266,6 @@ function defaultConfig(): MasterConfig {
 			},
 			setup: {
 				configured: false,
-			},
-			abuse_policy: {
-				inbound_phone_country_codes: [],
-				phone_flagging: {
-					enabled: true,
-					exempt_country_codes: [],
-				},
-				phone_verification: {
-					inbound_required_prefixes: [],
-				},
-				direct_contact_spam: {
-					enabled: false,
-					country_codes: [],
-					distinct_target_threshold: 25,
-					target_window_ms: 2 * 60 * 60 * 1000,
-					action: 'flag_spammer',
-				},
 			},
 		},
 		dev: {
@@ -448,24 +421,6 @@ function validatePostgresConfig(config: MasterConfig): void {
 	}
 }
 
-function validateCaptchaConfig(config: MasterConfig): void {
-	const captcha = config.integrations.captcha;
-	if (!captcha.enabled) {
-		return;
-	}
-	if (captcha.provider === 'hcaptcha') {
-		requireString(captcha.hcaptcha?.site_key, 'FLUXER_CAPTCHA_HCAPTCHA_SITE_KEY');
-		requireString(captcha.hcaptcha?.secret_key, 'FLUXER_CAPTCHA_HCAPTCHA_SECRET_KEY');
-		return;
-	}
-	if (captcha.provider === 'turnstile') {
-		requireString(captcha.turnstile?.site_key, 'FLUXER_CAPTCHA_TURNSTILE_SITE_KEY');
-		requireString(captcha.turnstile?.secret_key, 'FLUXER_CAPTCHA_TURNSTILE_SECRET_KEY');
-		return;
-	}
-	throw new Error('FLUXER_CAPTCHA_PROVIDER must be hcaptcha or turnstile when FLUXER_CAPTCHA_ENABLED is true');
-}
-
 function validateApiWorkerConfig(config: MasterConfig): void {
 	const worker = config.services.api?.worker;
 	if (!worker) {
@@ -587,16 +542,9 @@ function normalizeConfig(config: MasterConfig): MasterConfig {
 	assertOneOf(config.internal.kv_provider, ['redis'], 'FLUXER_KV_PROVIDER');
 	assertOneOf(config.internal.kv_mode, ['standalone', 'cluster'], 'FLUXER_KV_MODE');
 	assertOneOf(config.integrations.email.provider, ['smtp', 'none'], 'FLUXER_EMAIL_PROVIDER');
-	assertOneOf(config.integrations.captcha.provider, ['hcaptcha', 'turnstile', 'none'], 'FLUXER_CAPTCHA_PROVIDER');
 	assertOneOf(config.integrations.search.engine, ['elasticsearch', 'meilisearch'], 'FLUXER_SEARCH_ENGINE');
 	assertOneOf(config.integrations.cache_purge.adapter, CACHE_PURGE_ADAPTER_NAMES, 'FLUXER_CACHE_PURGE_ADAPTER');
-	assertOneOf(
-		config.instance.abuse_policy.direct_contact_spam.action,
-		['flag_spammer', 'suppress_delivery'],
-		'FLUXER_ABUSE_DIRECT_CONTACT_SPAM_ACTION',
-	);
 	validatePostgresConfig(config);
-	validateCaptchaConfig(config);
 	validateApiWorkerConfig(config);
 	validateStorageChangeFeedConfig(config);
 	validateCachePurgeConfig(config);
@@ -656,7 +604,7 @@ function applyPublicPort(config: MasterConfig, endpoints: DerivedEndpoints): Mas
 	}
 	const {bluesky, passkeys} = config.auth;
 	const {branding} = config.instance;
-	const {email, sms, voice} = config.integrations;
+	const {email, voice} = config.integrations;
 	return {
 		...config,
 		domain: {
@@ -696,7 +644,6 @@ function applyPublicPort(config: MasterConfig, endpoints: DerivedEndpoints): Mas
 		integrations: {
 			...config.integrations,
 			email: {...email, app_base_url: normalize(email.app_base_url)},
-			sms: {...sms, inbound_webhook_public_url: normalizeOptional(sms.inbound_webhook_public_url)},
 			voice: {...voice, url: normalize(voice.url)},
 		},
 		instance: {

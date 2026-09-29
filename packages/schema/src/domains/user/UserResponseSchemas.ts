@@ -90,11 +90,7 @@ export const UserPrivateResponse = UserPartialResponse.extend({
 	bio: z.string().nullable().describe('The user biography text'),
 	pronouns: z.string().nullable().describe('The preferred pronouns of the user'),
 	accent_color: Int32Type.nullable().describe('The user-selected accent color as an integer'),
-	timezone: z
-		.string()
-		.nullable()
-		.optional()
-		.describe('The IANA timezone identifier saved by the user. Omitted unless the user has staff access.'),
+	timezone: z.string().nullable().optional().describe('The IANA timezone identifier saved by the user'),
 	timezone_privacy_flags: createBitflagInt32Type(
 		ProfileFieldPrivacyFlags,
 		ProfileFieldPrivacyFlagsDescriptions,
@@ -102,7 +98,7 @@ export const UserPrivateResponse = UserPartialResponse.extend({
 		'ProfileFieldPrivacyFlags',
 	)
 		.optional()
-		.describe('Bitfield controlling who can see the profile timezone. Omitted unless the user has staff access.'),
+		.describe('Bitfield controlling who can see the profile timezone'),
 	banner: z.string().nullable().describe('The hash of the user profile banner image'),
 	banner_color: Int32Type.nullable().describe('The default banner color if no custom banner is set'),
 	mfa_enabled: z.boolean().describe('Whether multi-factor authentication is enabled'),
@@ -141,9 +137,7 @@ export const UserPrivateResponse = UserPartialResponse.extend({
 	force_inbound_phone_verification: z
 		.boolean()
 		.optional()
-		.describe(
-			'Whether this account is forced through the inbound (expensive-destination) phone verification flow regardless of prefix, for debugging',
-		),
+		.describe('Whether this account is forced through the inbound phone verification flow, for debugging'),
 	password_last_changed_at: z.string().nullable().describe('ISO8601 timestamp of the last password change'),
 	last_voice_activity_sharing_change_at: z
 		.string()
@@ -657,13 +651,9 @@ const PhoneGateEscapeGuildResponse = z.object({
 });
 
 export const PhoneGateEscapePreviewResponse = z.object({
-	available: z.boolean().describe('Whether this account can set the deferred phone verification check aside right now'),
-	guilds: z
-		.array(PhoneGateEscapeGuildResponse)
-		.describe('Communities that trigger the phone check and will be left when the escape runs'),
-	owned_guilds: z
-		.array(PhoneGateEscapeGuildResponse)
-		.describe('Communities that trigger the phone check but are owned by this user, so they are kept'),
+	available: z.boolean().describe('Whether this account can set a due phone verification requirement aside right now'),
+	guilds: z.array(PhoneGateEscapeGuildResponse).describe('Always empty, the escape leaves no community'),
+	owned_guilds: z.array(PhoneGateEscapeGuildResponse).describe('Always empty, the escape leaves no community'),
 });
 
 export type PhoneGateEscapePreviewResponse = z.infer<typeof PhoneGateEscapePreviewResponse>;

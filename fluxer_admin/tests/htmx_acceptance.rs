@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#![recursion_limit = "256"]
+
 use axum::{
     Json, Router,
     body::{Body, to_bytes},
@@ -464,7 +466,6 @@ async fn mutating_admin_pages_render_usable_csrf_tokens() {
             &[
                 "/instance-config?action=update_gateway_rollout",
                 "/instance-config?action=update_sso",
-                "/instance-config?action=update_voice_noise_suppression",
                 "/instance-config?action=update_domain_migration",
                 "/instance-config?action=update_experiment_delivery",
             ][..],
@@ -955,6 +956,9 @@ fn user(id: &str, username: &str) -> Value {
         "pending_bulk_message_deletion_at": null,
         "deletion_reason_code": null,
         "deletion_public_reason": null,
+        "deletion_audit_log_reason": null,
+        "deletion_scheduled_by": null,
+        "deletion_scheduled_at": null,
         "last_active_at": null,
         "last_active_ip": null,
         "last_active_ip_reverse": null,
@@ -1178,27 +1182,6 @@ fn instance_config() -> Value {
             "max_concurrent_session_starts": 16,
             "max_concurrent_guild_starts": 16,
             "voice_e2ee_scope": "guild_feature_only"
-        },
-        "voice_noise_suppression": {
-            "enabled": false,
-            "config_version": 0,
-            "default_backend": "standard",
-            "enabled_backends": [
-                "none",
-                "standard",
-                "gate",
-                "speex",
-                "rnnoise",
-                "gtcrn",
-                "deep_filter"
-            ],
-            "allow_user_override": true,
-            "rollout_basis_points": 0,
-            "rollout_salt": "voice-ns-v1",
-            "included_user_ids": [],
-            "excluded_user_ids": [],
-            "guild_overrides": [],
-            "suppression_strength": 80
         },
         "domain_migration": {
             "enabled": false,
