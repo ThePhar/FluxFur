@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import type {WorkerTaskName} from '@app/api/worker/WorkerLaneConfig';
-import type {CachePurgeAdapterName} from '@fluxer/config/src/MasterConfig';
+import type {CachePurgeAdapterName, StoreProductSlotName} from '@fluxer/config/src/MasterConfig';
 
 export type APIWorkerMode = 'all_lanes' | 'single_lane' | 'single_task';
-export type APIWorkerLaneName = 'realtime' | 'unfurl' | 'lifecycle' | 'batch';
+export type APIWorkerLaneName = 'realtime' | 'unfurl' | 'lifecycle' | 'batch' | 'crosspost';
 export type PushProviderEnvironment = 'production' | 'development';
 
 export interface PushProviderAppConfig {
 	appId: string;
 	topic?: string;
 	environment?: PushProviderEnvironment;
-	projectId?: string;
+}
+
+export interface AppStoreAppConfig {
+	bundleId: string;
+	appAppleId: number;
 }
 
 export interface APICachePurgeConfig {
@@ -69,20 +73,8 @@ export interface APIConfig {
 		backend: 'cassandra' | 'postgres';
 	};
 	kv: {
-		provider: 'redis';
 		url: string;
 		mode: 'standalone' | 'cluster';
-		clusterNodes: Array<{
-			host: string;
-			port: number;
-		}>;
-		clusterNatMap: Record<
-			string,
-			{
-				host: string;
-				port: number;
-			}
-		>;
 	};
 	nats: {
 		coreUrl: string;
@@ -136,22 +128,12 @@ export interface APIConfig {
 		gift: string;
 	};
 	internal: {
-		gateway: string;
 		gatewayRpcAuthToken: string;
 		donationProxyKey: string;
 	};
 	hosts: {
 		marketing: string;
 		unfurlIgnored: Array<string>;
-	};
-	embeds: {
-		oEmbedHtmlEnabled: boolean;
-		oEmbedHtmlAllowUntrustedOnSelfHosted: boolean;
-		oEmbedHtmlAllowedHosts: Array<string>;
-		cacheDefaultTtlSeconds: number;
-		cacheMaxTtlSeconds: number;
-		cacheMinTtlSeconds: number;
-		cacheRespectRemoteTtl: boolean;
 	};
 	s3: {
 		endpoint: string;
@@ -182,23 +164,16 @@ export interface APIConfig {
 			secure: boolean;
 		};
 	};
-	ipinfo: {
-		apiKey?: string;
-	};
 	blocklistFeeds: {
 		enabled: boolean;
 	};
 	breachedPasswordCheck: {
 		enabled: boolean;
 	};
-	contentModeration: {
-		nsfwThreshold: number;
-	};
 	voice: {
 		enabled: boolean;
 		apiKey?: string;
 		apiSecret?: string;
-		webhookUrl?: string;
 		url?: string;
 		internalUrl?: string;
 		defaultRegion?: {
@@ -261,7 +236,6 @@ export interface APIConfig {
 		failOpen: boolean;
 	};
 	admin: {
-		basePath: string;
 		oauthClientSecret?: string;
 	};
 	auth: {
@@ -288,6 +262,7 @@ export interface APIConfig {
 	};
 	instance: {
 		selfHosted: boolean;
+		phoneVerificationEnabled: boolean;
 		autoJoinInviteCode?: string;
 		visionariesGuildId?: string;
 		visionariesGuildVisionaryRoleId?: string;
@@ -305,9 +280,6 @@ export interface APIConfig {
 		setup: {
 			configured: boolean;
 		};
-	};
-	domain: {
-		baseDomain: string;
 	};
 	discovery: {
 		enabled: boolean;
@@ -333,19 +305,33 @@ export interface APIConfig {
 			keyId?: string;
 			privateKey?: string;
 			privateKeyPath?: string;
-			defaultEnvironment: PushProviderEnvironment;
 			apps: Array<PushProviderAppConfig>;
 		};
-		fcm: {
-			enabled: boolean;
-			projectId?: string;
-			clientEmail?: string;
-			privateKey?: string;
-			privateKeyPath?: string;
-			serviceAccountJsonPath?: string;
-			tokenUri: string;
-			apps: Array<PushProviderAppConfig>;
-		};
+	};
+	appStore: {
+		enabled: boolean;
+		issuerId?: string;
+		keyId?: string;
+		privateKey?: string;
+		privateKeyPath?: string;
+		apps: Array<AppStoreAppConfig>;
+		products: Record<string, StoreProductSlotName>;
+	};
+	googlePlay: {
+		enabled: boolean;
+		packages: Array<string>;
+		clientEmail?: string;
+		privateKey?: string;
+		privateKeyPath?: string;
+		serviceAccountJsonPath?: string;
+		tokenUri: string;
+		products: Record<string, StoreProductSlotName>;
+		pushAudience?: string;
+		pushServiceAccountEmail?: string;
+	};
+	storeBilling: {
+		sandboxUserIds: Array<string>;
+		sandboxEntitlesAll: boolean;
 	};
 	worker: {
 		mode: APIWorkerMode;
@@ -357,6 +343,7 @@ export interface APIConfig {
 			unfurl?: number;
 			lifecycle?: number;
 			batch?: number;
+			crosspost?: number;
 		};
 	};
 	ncmec: {

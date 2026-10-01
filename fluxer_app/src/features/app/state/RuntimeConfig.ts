@@ -100,6 +100,7 @@ const DEFAULT_INSTANCE_FEATURES: InstanceFeatures = {
 	self_hosted: false,
 	presigned_attachment_uploads: false,
 	emails_enabled: false,
+	phone_verification_enabled: true,
 };
 
 export const DEFAULT_INSTANCE_REGISTRATION: InstanceRegistration = {
@@ -111,6 +112,7 @@ export const DEFAULT_INSTANCE_COMMUNITY: InstanceCommunity = {
 	single_community: false,
 	single_community_guild_id: null,
 	direct_messages_disabled: false,
+	guild_create_access: true,
 };
 
 export function normalizeInstanceCommunity(community?: InstanceCommunity | null): InstanceCommunity {
@@ -402,6 +404,7 @@ class RuntimeConfig {
 					? config.policy.single_community_guild_id
 					: null,
 				direct_messages_disabled: config.policy.direct_messages_disabled,
+				guild_create_access: config.policy.guild_create_access,
 			});
 			this.services = normalizeInstanceServices({
 				gif_enabled: config.policy.services_resolved.gif_enabled,
@@ -512,6 +515,10 @@ class RuntimeConfig {
 
 	get emailsEnabled(): boolean {
 		return this.features.emails_enabled;
+	}
+
+	get phoneVerificationEnabled(): boolean {
+		return this.features.phone_verification_enabled;
 	}
 
 	get productName(): string {

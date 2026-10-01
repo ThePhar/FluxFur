@@ -12,6 +12,8 @@ import batchGuildAuditLogMessageDeletes from '@app/api/worker/tasks/BatchGuildAu
 import bulkDeleteSelfMessagesImmediate from '@app/api/worker/tasks/BulkDeleteSelfMessagesImmediate';
 import bulkDeleteUserMessages from '@app/api/worker/tasks/BulkDeleteUserMessages';
 import bulkDeleteUserMessagesScoped from '@app/api/worker/tasks/BulkDeleteUserMessagesScoped';
+import crosspostMessage from '@app/api/worker/tasks/CrosspostMessage';
+import crosspostMessageChunk from '@app/api/worker/tasks/CrosspostMessageChunk';
 import deleteUserMessagesInGuildByTime from '@app/api/worker/tasks/DeleteUserMessagesInGuildByTime';
 import drainActivitySpool from '@app/api/worker/tasks/DrainActivitySpool';
 import expireAttachments from '@app/api/worker/tasks/ExpireAttachments';
@@ -26,17 +28,26 @@ import harvestUserData from '@app/api/worker/tasks/HarvestUserData';
 import indexChannelMessages from '@app/api/worker/tasks/IndexChannelMessages';
 import indexGuildMembers from '@app/api/worker/tasks/IndexGuildMembers';
 import messageShred from '@app/api/worker/tasks/MessageShred';
+import pollAppStoreNotificationHistory from '@app/api/worker/tasks/PollAppStoreNotificationHistory';
+import pollGooglePlayVoidedPurchases from '@app/api/worker/tasks/PollGooglePlayVoidedPurchases';
+import processAppStoreNotification from '@app/api/worker/tasks/ProcessAppStoreNotification';
 import processAssetDeletionQueue from '@app/api/worker/tasks/ProcessAssetDeletionQueue';
 import processCachePurgeQueue from '@app/api/worker/tasks/ProcessCachePurgeQueue';
 import processExpiredPremiumSweep from '@app/api/worker/tasks/ProcessExpiredPremiumSweep';
+import processGooglePlayNotification from '@app/api/worker/tasks/ProcessGooglePlayNotification';
 import processInactivityDeletions from '@app/api/worker/tasks/ProcessInactivityDeletions';
 import processPendingBulkMessageDeletions from '@app/api/worker/tasks/ProcessPendingBulkMessageDeletions';
 import processPremiumStateReconciliationQueue from '@app/api/worker/tasks/ProcessPremiumStateReconciliationQueue';
+import processStorePurchaseRefreshQueue from '@app/api/worker/tasks/ProcessStorePurchaseRefreshQueue';
 import processStripeWebhook from '@app/api/worker/tasks/ProcessStripeWebhook';
 import prunePostgresKvTtl from '@app/api/worker/tasks/PrunePostgresKvTtl';
 import reconcileUserPayments from '@app/api/worker/tasks/ReconcileUserPayments';
 import refreshSearchIndex from '@app/api/worker/tasks/RefreshSearchIndex';
+import refreshStorePurchase from '@app/api/worker/tasks/RefreshStorePurchase';
+import removeChannelFollowers from '@app/api/worker/tasks/RemoveChannelFollowers';
 import {sendSystemDm} from '@app/api/worker/tasks/SendSystemDm';
+import syncCrosspostCopies from '@app/api/worker/tasks/SyncCrosspostCopies';
+import syncCrosspostedMessage from '@app/api/worker/tasks/SyncCrosspostedMessage';
 import syncDiscoveryIndex from '@app/api/worker/tasks/SyncDiscoveryIndex';
 import syncFileShaBlocklists from '@app/api/worker/tasks/SyncFileShaBlocklists';
 import syncUrlBlocklists from '@app/api/worker/tasks/SyncUrlBlocklists';
@@ -58,6 +69,8 @@ export const workerTasks: Record<WorkerTaskName, WorkerTaskHandler> = {
 	bulkUpdateGuildFeatures: bulkUpdateGuildFeatures,
 	bulkUpdateSuspiciousActivityFlags: bulkUpdateSuspiciousActivityFlags,
 	bulkUpdateUserFlags: bulkUpdateUserFlags,
+	crosspostMessage,
+	crosspostMessageChunk,
 	deleteUserMessagesInGuildByTime,
 	drainActivitySpool,
 	expireAttachments,
@@ -79,12 +92,21 @@ export const workerTasks: Record<WorkerTaskName, WorkerTaskHandler> = {
 	processPendingBulkMessageDeletions,
 	processPremiumStateReconciliationQueue,
 	reconcileUserPayments,
+	processAppStoreNotification,
+	processGooglePlayNotification,
+	refreshStorePurchase,
+	processStorePurchaseRefreshQueue,
+	pollGooglePlayVoidedPurchases,
+	pollAppStoreNotificationHistory,
 	prunePostgresKvTtl,
 	refreshSearchIndex,
+	removeChannelFollowers,
 	sendSystemDm,
 	syncFileShaBlocklists,
 	syncUrlBlocklists,
 	syncDiscoveryIndex,
+	syncCrosspostCopies,
+	syncCrosspostedMessage,
 	flushUserActivityBuffer,
 	userProcessPendingDeletion,
 	userProcessPendingDeletions,

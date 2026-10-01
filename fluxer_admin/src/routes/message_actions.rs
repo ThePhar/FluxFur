@@ -171,7 +171,8 @@ pub(crate) async fn system_dms_post(
     let flash = if let Some(content) = content.as_deref()
         && !user_ids.is_empty()
     {
-        match client.send_system_dm(&user_ids, content).await {
+        let recipients = (user_ids != ["*"]).then_some(user_ids.as_slice());
+        match client.send_system_dm(recipients, content).await {
             Ok(_) => FlashData::success("System DM sent"),
             Err(error) => {
                 tracing::warn!(%error, "admin API request failed: send system DM");
@@ -261,12 +262,14 @@ pub(crate) async fn bulk_actions_post(
                 );
             };
             let public_reason = form.clean("public_reason");
+            let notify_user = form.opt_out_value("notify_user");
             client
                 .bulk_schedule_user_deletion(
                     &user_ids,
                     reason_code.unwrap_or(2),
                     days.unwrap_or(14),
                     public_reason.as_deref(),
+                    notify_user,
                     audit_log_reason.as_deref(),
                 )
                 .await

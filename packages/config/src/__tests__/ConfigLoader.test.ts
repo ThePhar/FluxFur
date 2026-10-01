@@ -22,8 +22,6 @@ const MINIMAL_ENV: Record<string, string> = {
 	FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=',
 	FLUXER_ADMIN_SECRET_KEY_BASE: 'test-admin-secret',
 	FLUXER_ADMIN_OAUTH_CLIENT_SECRET: 'test-admin-oauth-secret',
-	FLUXER_APP_PROXY_PORT: '8773',
-	FLUXER_GATEWAY_MEDIA_PROXY_ENDPOINT: 'http://127.0.0.1:8088/media',
 	FLUXER_GATEWAY_RPC_AUTH_TOKEN: 'test-gateway-token',
 	FLUXER_SUDO_MODE_SECRET: 'test-sudo-secret',
 	FLUXER_CONNECTION_INITIATION_SECRET: 'test-connection-secret',
@@ -243,9 +241,9 @@ describe('ConfigLoader', () => {
 		},
 	);
 
-	test('rejects an empty client API endpoint override', async () => {
+	test('an empty client API endpoint override falls back to the derived endpoint', async () => {
 		stubMinimalEnv({FLUXER_API_CLIENT_ENDPOINT: ''});
-		await expect(loadConfig()).rejects.toThrow('FLUXER_API_CLIENT_ENDPOINT is required');
+		expect((await loadConfig()).endpoints.api_client).toBe('http://localhost:8088/api');
 	});
 
 	test('defaults the passkey relying party to the deployment domain', async () => {
@@ -260,17 +258,36 @@ describe('ConfigLoader', () => {
 		expect(config.auth.passkeys.rp_id).toBe('chat.example.com');
 	});
 
-	test('uses only the app origin when the operator clears the default list', async () => {
+	test('a blank origin list keeps the built-in origins', async () => {
 		stubMinimalEnv({
 			FLUXER_BASE_DOMAIN: 'chat.example.com',
 			FLUXER_PUBLIC_SCHEME: 'https',
 			FLUXER_PUBLIC_PORT: '443',
-			FLUXER_PASSKEY_ADDITIONAL_ALLOWED_ORIGINS: '',
+			FLUXER_PASSKEY_ADDITIONAL_ALLOWED_ORIGINS: ' ',
 		});
 
 		const config = await loadConfig();
 
-		expect(config.auth.passkeys.additional_allowed_origins).toEqual(['https://chat.example.com']);
+		expect(config.auth.passkeys.additional_allowed_origins).toContain('https://web.fluxer.app');
+		expect(config.auth.passkeys.additional_allowed_origins).toContain('https://chat.example.com');
+	});
+
+	test('blank values fall back to the code defaults', async () => {
+		stubMinimalEnv({
+			FLUXER_API_PORT: '',
+			FLUXER_EMAIL_FROM_NAME: '',
+			FLUXER_KV_URL: ' ',
+			FLUXER_S3_FORCE_PATH_STYLE: '',
+			FLUXER_API_STORAGE_CHANGE_FEED_SKIP_BUCKETS: '',
+		});
+
+		const config = await loadConfig();
+
+		expect(config.services.api.port).toBe(8080);
+		expect(config.integrations.email.from_name).toBe('Fluxer');
+		expect(config.internal.kv).toBe('redis://localhost:6379/0');
+		expect(config.s3?.force_path_style).toBe(false);
+		expect(config.services.api.storage_change_feed?.skip_buckets).toBeUndefined();
 	});
 
 	test('keeps explicit passkey relying party values', async () => {
@@ -324,6 +341,22 @@ describe('ConfigLoader', () => {
 		const config = await loadConfig();
 
 		expect(config.services.gateway).not.toHaveProperty('push_enabled');
+	});
+
+	test('accepts the crosspost worker lane', async () => {
+		stubMinimalEnv({
+			FLUXER_API_WORKER_MODE: 'single_lane',
+			FLUXER_API_WORKER_LANE: 'crosspost',
+			FLUXER_API_WORKER_LANE_CONCURRENCY_OVERRIDES: '{"crosspost":4}',
+		});
+		const config = await loadConfig();
+		expect(config.services.api.worker?.lane).toBe('crosspost');
+		expect(config.services.api.worker?.lane_concurrency_overrides?.crosspost).toBe(4);
+	});
+
+	test('rejects an unknown worker lane', async () => {
+		stubMinimalEnv({FLUXER_API_WORKER_MODE: 'single_lane', FLUXER_API_WORKER_LANE: 'publishing'});
+		await expect(loadConfig()).rejects.toThrow('FLUXER_API_WORKER_LANE');
 	});
 
 	test('rejects single task worker mode without task env', async () => {
@@ -507,6 +540,86 @@ describe('ConfigLoader', () => {
 		expect(config.instance.setup.configured).toBe(true);
 	});
 
+	test('leaves both stores off with no apps, packages or products by default', async () => {
+		stubMinimalEnv();
+		const config = await loadConfig();
+		expect(config.integrations.app_store).toEqual({enabled: false, apps: [], products: {}});
+		expect(config.integrations.google_play).toEqual({
+			enabled: false,
+			packages: [],
+			token_uri: 'https://oauth2.googleapis.com/token',
+			products: {},
+		});
+		expect(config.integrations.store_billing).toEqual({sandbox_user_ids: [], sandbox_entitles_all: false});
+	});
+
+	test('loads a valid store catalogue', async () => {
+		stubMinimalEnv({
+			FLUXER_APP_STORE_ENABLED: 'true',
+			FLUXER_APP_STORE_APPS: '[{"bundle_id":"com.fluxer","app_apple_id":1234567890}]',
+			FLUXER_APP_STORE_PRODUCTS: '{"com.fluxer.plutonium.monthly":"monthly","com.fluxer.gift.1month":"gift_1_month"}',
+			FLUXER_GOOGLE_PLAY_ENABLED: 'true',
+			FLUXER_GOOGLE_PLAY_PACKAGES: 'com.fluxer',
+			FLUXER_GOOGLE_PLAY_PRODUCTS: '{"plutonium:yearly":"yearly","gift_1_year":"gift_1_year"}',
+			FLUXER_STORE_BILLING_SANDBOX_USER_IDS: '1234567890123456',
+		});
+		const config = await loadConfig();
+		expect(config.integrations.app_store.apps).toEqual([{bundle_id: 'com.fluxer', app_apple_id: 1234567890}]);
+		expect(config.integrations.google_play.products).toEqual({
+			'plutonium:yearly': 'yearly',
+			gift_1_year: 'gift_1_year',
+		});
+		expect(config.integrations.store_billing.sandbox_user_ids).toEqual(['1234567890123456']);
+	});
+
+	test('rejects an App Store app without a numeric app_apple_id', async () => {
+		for (const apps of [
+			'[{"bundle_id":"com.fluxer"}]',
+			'[{"bundle_id":"com.fluxer","app_apple_id":"1234567890"}]',
+			'[{"bundle_id":"com.fluxer","app_apple_id":0}]',
+		]) {
+			resetConfig();
+			stubMinimalEnv({FLUXER_APP_STORE_APPS: apps});
+			await expect(loadConfig()).rejects.toThrow('FLUXER_APP_STORE_APPS entry 1 must have a numeric app_apple_id');
+		}
+	});
+
+	test('rejects an App Store app without a bundle id', async () => {
+		stubMinimalEnv({FLUXER_APP_STORE_APPS: '[{"app_apple_id":1234567890}]'});
+		await expect(loadConfig()).rejects.toThrow('FLUXER_APP_STORE_APPS entry 1 must have a bundle_id');
+	});
+
+	test('rejects an App Store product mapped to an unknown slot', async () => {
+		stubMinimalEnv({FLUXER_APP_STORE_PRODUCTS: '{"com.fluxer.visionary":"visionary"}'});
+		await expect(loadConfig()).rejects.toThrow(
+			'Invalid FLUXER_APP_STORE_PRODUCTS slot for com.fluxer.visionary: visionary',
+		);
+	});
+
+	test('rejects a Google Play product mapped to an unknown slot', async () => {
+		stubMinimalEnv({FLUXER_GOOGLE_PLAY_PRODUCTS: '{"plutonium:weekly":"weekly"}'});
+		await expect(loadConfig()).rejects.toThrow('Invalid FLUXER_GOOGLE_PLAY_PRODUCTS slot for plutonium:weekly: weekly');
+	});
+
+	test('rejects a Google Play product key that does not fit its slot kind', async () => {
+		stubMinimalEnv({FLUXER_GOOGLE_PLAY_PRODUCTS: '{"plutonium":"monthly"}'});
+		await expect(loadConfig()).rejects.toThrow(
+			'FLUXER_GOOGLE_PLAY_PRODUCTS key plutonium does not match its monthly slot',
+		);
+		resetConfig();
+		stubMinimalEnv({FLUXER_GOOGLE_PLAY_PRODUCTS: '{"gift:one":"gift_1_month"}'});
+		await expect(loadConfig()).rejects.toThrow(
+			'FLUXER_GOOGLE_PLAY_PRODUCTS key gift:one does not match its gift_1_month slot',
+		);
+	});
+
+	test('rejects a sandbox user id that is not a snowflake', async () => {
+		stubMinimalEnv({FLUXER_STORE_BILLING_SANDBOX_USER_IDS: '123,abc'});
+		await expect(loadConfig()).rejects.toThrow(
+			'FLUXER_STORE_BILLING_SANDBOX_USER_IDS must be a comma separated list of user ids',
+		);
+	});
+
 	test('defaults the cache purge adapter to none', async () => {
 		stubMinimalEnv();
 		expect((await loadConfig()).integrations.cache_purge).toEqual({
@@ -618,14 +731,6 @@ describe('ConfigLoader', () => {
 		expect(config.integrations.breached_password_check.enabled).toBe(false);
 	});
 
-	test('reads the IPinfo key from its current name before the previous one', async () => {
-		stubMinimalEnv({FLUXER_RISK_IPINFO_API_KEY: 'previous'});
-		expect((await loadConfig()).integrations.ipinfo.api_key).toBe('previous');
-		resetConfig();
-		stubMinimalEnv({FLUXER_IPINFO_API_KEY: 'current', FLUXER_RISK_IPINFO_API_KEY: 'previous'});
-		expect((await loadConfig()).integrations.ipinfo.api_key).toBe('current');
-	});
-
 	test('leaves Bluesky login off with no legal URLs by default', async () => {
 		stubMinimalEnv();
 
@@ -665,13 +770,11 @@ describe('ConfigLoader', () => {
 		expect((await loadConfig()).services.media_proxy.upload_relay.max_body_bytes).toBe(524_288_000);
 	});
 
-	test('rejects a missing upload relay secret in upload mode', async () => {
+	test('rejects a missing upload relay secret', async () => {
 		stubMinimalEnv();
 		vi.stubEnv('FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64', '');
 
-		await expect(loadConfig()).rejects.toThrow(
-			'FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64 is required in upload mode',
-		);
+		await expect(loadConfig()).rejects.toThrow('FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64 is required');
 	});
 
 	test('rejects a non-base64 upload relay secret', async () => {
@@ -684,15 +787,6 @@ describe('ConfigLoader', () => {
 		await expect(loadConfig()).rejects.toThrow(
 			'FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64 must decode to at least 32 bytes',
 		);
-	});
-
-	test('leaves the upload relay secret optional outside upload mode', async () => {
-		stubMinimalEnv({FLUXER_MEDIA_PROXY_MODE: 'mp'});
-		vi.stubEnv('FLUXER_MEDIA_PROXY_UPLOAD_RELAY_SECRET_BASE64', '');
-
-		const config = await loadConfig();
-
-		expect(config.services.media_proxy.upload_relay.secret_base64).toBe('');
 	});
 
 	test('rejects a VAPID public key that is not a 65-byte uncompressed point', async () => {
@@ -753,7 +847,6 @@ describe('ConfigLoader', () => {
 
 	test('inserts the public port into every other public url the config carries', async () => {
 		stubMinimalEnv({
-			FLUXER_GATEWAY_MEDIA_PROXY_ENDPOINT: 'http://localhost/media',
 			FLUXER_S3_PUBLIC_ENDPOINT: 'http://localhost/s3',
 			FLUXER_EMAIL_APP_BASE_URL: 'http://localhost',
 			FLUXER_AUTH_BLUESKY_CLIENT_URI: 'http://localhost',
@@ -764,7 +857,6 @@ describe('ConfigLoader', () => {
 
 		const config = await loadConfig();
 
-		expect(config.services.gateway.media_proxy_endpoint).toBe('http://localhost:8088/media');
 		expect(config.s3?.presigned_url_base).toBe('http://localhost:8088/s3');
 		expect(config.integrations.email.app_base_url).toBe('http://localhost:8088');
 		expect(config.auth.bluesky.client_uri).toBe('http://localhost:8088');

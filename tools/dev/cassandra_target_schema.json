@@ -3545,6 +3545,68 @@
 			"options": ""
 		},
 		{
+			"name": "crosspost_sources_by_channel",
+			"columns": [
+				{
+					"name": "source_channel_id",
+					"type": "bigint"
+				},
+				{
+					"name": "source_message_id",
+					"type": "bigint"
+				}
+			],
+			"primary_key": "((source_channel_id), source_message_id)",
+			"options": ""
+		},
+		{
+			"name": "crossposted_messages",
+			"columns": [
+				{
+					"name": "source_message_id",
+					"type": "bigint"
+				},
+				{
+					"name": "webhook_id",
+					"type": "bigint"
+				},
+				{
+					"name": "source_channel_id",
+					"type": "bigint"
+				},
+				{
+					"name": "target_guild_id",
+					"type": "bigint"
+				},
+				{
+					"name": "target_channel_id",
+					"type": "bigint"
+				},
+				{
+					"name": "target_message_id",
+					"type": "bigint"
+				},
+				{
+					"name": "state",
+					"type": "text"
+				},
+				{
+					"name": "reserved_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "source_fingerprint",
+					"type": "text"
+				},
+				{
+					"name": "created_at",
+					"type": "timestamp"
+				}
+			],
+			"primary_key": "((source_message_id), webhook_id)",
+			"options": ""
+		},
+		{
 			"name": "data_service_search_index_files",
 			"columns": [
 				{
@@ -4844,6 +4906,14 @@
 					"type": "text"
 				},
 				{
+					"name": "revoked_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "premium_reversed_seconds",
+					"type": "int"
+				},
+				{
 					"name": "duration_type",
 					"type": "text"
 				},
@@ -5943,120 +6013,6 @@
 			],
 			"primary_key": "((token_), user_id)",
 			"options": "default_time_to_live = 1800 AND gc_grace_seconds = 864000 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'HOURS', 'compaction_window_size': '1'}"
-		},
-		{
-			"name": "ipinfo_cache",
-			"columns": [
-				{
-					"name": "cache_key",
-					"type": "text"
-				},
-				{
-					"name": "payload",
-					"type": "text"
-				}
-			],
-			"primary_key": "(cache_key)",
-			"options": "default_time_to_live = 1209600 AND gc_grace_seconds = 864000 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'HOURS', 'compaction_window_size': '12'}"
-		},
-		{
-			"name": "ipinfo_requests_by_hour",
-			"columns": [
-				{
-					"name": "bucket_date",
-					"type": "text"
-				},
-				{
-					"name": "bucket_hour",
-					"type": "tinyint"
-				},
-				{
-					"name": "requested_at",
-					"type": "timestamp"
-				},
-				{
-					"name": "event_id",
-					"type": "uuid"
-				},
-				{
-					"name": "source",
-					"type": "text"
-				},
-				{
-					"name": "reason",
-					"type": "text"
-				},
-				{
-					"name": "ip",
-					"type": "text"
-				},
-				{
-					"name": "cache_key",
-					"type": "text"
-				},
-				{
-					"name": "request_url",
-					"type": "text"
-				},
-				{
-					"name": "http_status",
-					"type": "int"
-				},
-				{
-					"name": "outcome",
-					"type": "text"
-				},
-				{
-					"name": "available",
-					"type": "boolean"
-				},
-				{
-					"name": "risk_note",
-					"type": "text"
-				},
-				{
-					"name": "latency_ms",
-					"type": "int"
-				},
-				{
-					"name": "response_ip",
-					"type": "text"
-				},
-				{
-					"name": "country_code",
-					"type": "text"
-				},
-				{
-					"name": "asn",
-					"type": "int"
-				},
-				{
-					"name": "is_anonymous",
-					"type": "boolean"
-				},
-				{
-					"name": "is_tor",
-					"type": "boolean"
-				},
-				{
-					"name": "is_vpn",
-					"type": "boolean"
-				},
-				{
-					"name": "is_proxy",
-					"type": "boolean"
-				},
-				{
-					"name": "is_residential_proxy",
-					"type": "boolean"
-				},
-				{
-					"name": "metadata_json",
-					"type": "text"
-				}
-			],
-			"primary_key": "((bucket_date, bucket_hour), requested_at, event_id)",
-			"options": "CLUSTERING ORDER BY (requested_at DESC, event_id ASC) AND default_time_to_live = 7776000 AND gc_grace_seconds = 864000 AND compaction = {'class': 'TimeWindowCompactionStrategy', 'compaction_window_unit': 'DAYS', 'compaction_window_size': '3'}"
 		},
 		{
 			"name": "jobs_active",
@@ -7259,6 +7215,222 @@
 			"options": "CLUSTERING ORDER BY (message_id DESC)"
 		},
 		{
+			"name": "store_account_tokens",
+			"columns": [
+				{
+					"name": "token_",
+					"type": "text"
+				},
+				{
+					"name": "user_id",
+					"type": "bigint"
+				},
+				{
+					"name": "created_at",
+					"type": "timestamp"
+				}
+			],
+			"primary_key": "((token_))",
+			"options": ""
+		},
+		{
+			"name": "store_account_tokens_by_user",
+			"columns": [
+				{
+					"name": "user_id",
+					"type": "bigint"
+				},
+				{
+					"name": "token_",
+					"type": "text"
+				},
+				{
+					"name": "created_at",
+					"type": "timestamp"
+				}
+			],
+			"primary_key": "((user_id))",
+			"options": ""
+		},
+		{
+			"name": "store_purchases",
+			"columns": [
+				{
+					"name": "store_key",
+					"type": "text"
+				},
+				{
+					"name": "id",
+					"type": "bigint"
+				},
+				{
+					"name": "provider",
+					"type": "text"
+				},
+				{
+					"name": "kind",
+					"type": "text"
+				},
+				{
+					"name": "slot",
+					"type": "text"
+				},
+				{
+					"name": "environment",
+					"type": "text"
+				},
+				{
+					"name": "app_id",
+					"type": "text"
+				},
+				{
+					"name": "product_id",
+					"type": "text"
+				},
+				{
+					"name": "base_plan_id",
+					"type": "text"
+				},
+				{
+					"name": "store_reference",
+					"type": "text"
+				},
+				{
+					"name": "latest_transaction_id",
+					"type": "text"
+				},
+				{
+					"name": "app_transaction_id",
+					"type": "text"
+				},
+				{
+					"name": "user_id",
+					"type": "bigint"
+				},
+				{
+					"name": "bound_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "released_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "account_token",
+					"type": "text"
+				},
+				{
+					"name": "ownership_type",
+					"type": "text"
+				},
+				{
+					"name": "state",
+					"type": "text"
+				},
+				{
+					"name": "store_state",
+					"type": "text"
+				},
+				{
+					"name": "entitled",
+					"type": "boolean"
+				},
+				{
+					"name": "expires_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "grace_ends_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "auto_renew",
+					"type": "boolean"
+				},
+				{
+					"name": "auto_renew_product_id",
+					"type": "text"
+				},
+				{
+					"name": "started_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "purchased_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "revoked_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "revocation_reason",
+					"type": "text"
+				},
+				{
+					"name": "linked_store_key",
+					"type": "text"
+				},
+				{
+					"name": "superseded_by_store_key",
+					"type": "text"
+				},
+				{
+					"name": "acknowledged",
+					"type": "boolean"
+				},
+				{
+					"name": "gift_code",
+					"type": "text"
+				},
+				{
+					"name": "region",
+					"type": "text"
+				},
+				{
+					"name": "last_event_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "synced_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "created_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "updated_at",
+					"type": "timestamp"
+				},
+				{
+					"name": "version",
+					"type": "int"
+				}
+			],
+			"primary_key": "((store_key))",
+			"options": ""
+		},
+		{
+			"name": "store_purchases_by_user",
+			"columns": [
+				{
+					"name": "user_id",
+					"type": "bigint"
+				},
+				{
+					"name": "store_key",
+					"type": "text"
+				},
+				{
+					"name": "created_at",
+					"type": "timestamp"
+				}
+			],
+			"primary_key": "((user_id), store_key)",
+			"options": ""
+		},
+		{
 			"name": "user_connections",
 			"columns": [
 				{
@@ -8415,6 +8587,14 @@
 					"type": "text"
 				},
 				{
+					"name": "source_guild_id",
+					"type": "bigint"
+				},
+				{
+					"name": "source_channel_id",
+					"type": "bigint"
+				},
+				{
 					"name": "version",
 					"type": "int"
 				}
@@ -8450,6 +8630,25 @@
 				}
 			],
 			"primary_key": "((guild_id), webhook_id)",
+			"options": ""
+		},
+		{
+			"name": "webhooks_by_source_channel_id",
+			"columns": [
+				{
+					"name": "source_channel_id",
+					"type": "bigint"
+				},
+				{
+					"name": "webhook_id",
+					"type": "bigint"
+				},
+				{
+					"name": "guild_id",
+					"type": "bigint"
+				}
+			],
+			"primary_key": "((source_channel_id), webhook_id)",
 			"options": ""
 		}
 	],

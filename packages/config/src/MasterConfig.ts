@@ -7,6 +7,8 @@ export type DatabaseBackend = 'postgres' | 'cassandra';
 export type PublicScheme = 'http' | 'https';
 export const CACHE_PURGE_ADAPTER_NAMES = ['none', 'http'] as const;
 export type CachePurgeAdapterName = (typeof CACHE_PURGE_ADAPTER_NAMES)[number];
+export const STORE_PRODUCT_SLOT_NAMES = ['monthly', 'yearly', 'gift_1_month', 'gift_1_year'] as const;
+export type StoreProductSlotName = (typeof STORE_PRODUCT_SLOT_NAMES)[number];
 
 export interface InstanceBrandingConfig {
 	product_name: string;
@@ -26,9 +28,7 @@ export interface MasterConfig {
 		base_domain: string;
 		public_origin: string;
 		public_scheme: PublicScheme;
-		internal_scheme: PublicScheme;
 		public_port: number;
-		internal_port: number;
 		static_cdn_domain: string;
 		invite_domain: string;
 		gift_domain: string;
@@ -37,12 +37,7 @@ export interface MasterConfig {
 	endpoints: DerivedEndpoints;
 	internal: {
 		kv: string;
-		kv_provider: 'redis';
 		kv_mode: 'standalone' | 'cluster';
-		kv_cluster_nodes: Array<{host: string; port: number}>;
-		kv_cluster_nat_map: Record<string, {host: string; port: number}>;
-		api: string;
-		gateway?: string;
 		media_proxy: string;
 	};
 	database: {
@@ -95,21 +90,9 @@ export interface MasterConfig {
 			presigned_harvest_downloads_enabled: boolean;
 			unfurl_ignored_hosts: Array<string>;
 			app_origin_aliases: Array<string>;
-			embeds: {
-				oembed_html_enabled: boolean;
-				oembed_html_allow_untrusted_on_self_hosted: boolean;
-				oembed_html_allowed_hosts: Array<string>;
-				cache_default_ttl_seconds: number;
-				cache_max_ttl_seconds: number;
-				cache_min_ttl_seconds: number;
-				cache_respect_remote_ttl: boolean;
-			};
-			content_moderation?: {
-				nsfw_threshold?: number;
-			};
 			worker?: {
 				mode?: 'all_lanes' | 'single_lane' | 'single_task';
-				lane?: 'realtime' | 'unfurl' | 'lifecycle' | 'batch';
+				lane?: 'realtime' | 'unfurl' | 'lifecycle' | 'batch' | 'crosspost';
 				task?: string;
 				enable_cron_scheduler?: boolean;
 				lane_concurrency_overrides?: {
@@ -117,6 +100,7 @@ export interface MasterConfig {
 					unfurl?: number;
 					lifecycle?: number;
 					batch?: number;
+					crosspost?: number;
 				};
 			};
 			storage_change_feed?: {
@@ -131,10 +115,7 @@ export interface MasterConfig {
 			auth_token?: string;
 		};
 		media_proxy: {
-			host: string;
-			port: number;
 			secret_key: string;
-			mode: string;
 			upload_relay: {
 				endpoint: string;
 				secret_base64: string;
@@ -147,20 +128,11 @@ export interface MasterConfig {
 			};
 		};
 		gateway: {
-			port: number;
 			rpc_auth_token?: string;
-			media_proxy_endpoint?: string;
-			api_rpc_endpoint?: string;
 		};
 		admin: {
-			port: number;
-			base_path: string;
 			secret_key_base: string;
 			oauth_client_secret: string;
-		};
-		app_proxy: {
-			port: number;
-			assets_dir: string;
 		};
 	};
 	auth: {
@@ -213,7 +185,6 @@ export interface MasterConfig {
 			api_secret: string;
 			url: string;
 			internal_url: string;
-			webhook_url: string;
 			default_region?: {
 				id: string;
 				name: string;
@@ -270,9 +241,6 @@ export interface MasterConfig {
 		breached_password_check: {
 			enabled?: boolean;
 		};
-		ipinfo: {
-			api_key: string;
-		};
 		push: {
 			apns: {
 				enabled: boolean;
@@ -280,33 +248,45 @@ export interface MasterConfig {
 				key_id?: string;
 				private_key?: string;
 				private_key_path?: string;
-				default_environment?: 'production' | 'development';
 				apps?: Array<{
 					app_id?: string;
 					topic?: string;
 					environment?: 'production' | 'development';
-					project_id?: string;
 				}>;
 			};
-			fcm: {
-				enabled: boolean;
-				project_id?: string;
-				client_email?: string;
-				private_key?: string;
-				private_key_path?: string;
-				service_account_json_path?: string;
-				token_uri?: string;
-				apps?: Array<{
-					app_id?: string;
-					topic?: string;
-					environment?: 'production' | 'development';
-					project_id?: string;
-				}>;
-			};
+		};
+		app_store: {
+			enabled: boolean;
+			issuer_id?: string;
+			key_id?: string;
+			private_key?: string;
+			private_key_path?: string;
+			apps?: Array<{
+				bundle_id: string;
+				app_apple_id: number;
+			}>;
+			products?: Record<string, StoreProductSlotName>;
+		};
+		google_play: {
+			enabled: boolean;
+			packages?: Array<string>;
+			client_email?: string;
+			private_key?: string;
+			private_key_path?: string;
+			service_account_json_path?: string;
+			token_uri?: string;
+			products?: Record<string, StoreProductSlotName>;
+			push_audience?: string;
+			push_service_account_email?: string;
+		};
+		store_billing: {
+			sandbox_user_ids?: Array<string>;
+			sandbox_entitles_all: boolean;
 		};
 	};
 	instance: {
 		self_hosted: boolean;
+		phone_verification_enabled?: boolean;
 		auto_join_invite_code?: string;
 		visionaries_guild_id?: string;
 		visionaries_guild_visionary_role_id?: string;

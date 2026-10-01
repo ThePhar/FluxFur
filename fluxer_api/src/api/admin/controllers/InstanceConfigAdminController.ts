@@ -37,6 +37,7 @@ import {
 } from '@fluxer/schema/src/domains/admin/AdminSchemas';
 import {DomainMigrationConfigSchema} from '@fluxer/schema/src/domains/admin/DomainMigrationSchemas';
 import {GatewayRolloutConfigSchema} from '@fluxer/schema/src/domains/admin/GatewayRolloutSchemas';
+import {PlutoniumPageConfigSchema} from '@fluxer/schema/src/domains/admin/PlutoniumPageSchemas';
 import type {PushRelayConfig, PushRelayConfigUpdateRequest} from '@fluxer/schema/src/domains/admin/PushRelaySchemas';
 import {UserIdParam} from '@fluxer/schema/src/domains/common/CommonParamSchemas';
 import {ExperimentDeliveryConfigSchema} from '@fluxer/schema/src/domains/experiment/ExperimentSchemas';
@@ -66,6 +67,7 @@ async function buildInstanceConfigResponse(): Promise<InstanceConfigResponse> {
 		gatewayRollout,
 		pushRelay,
 		domainMigration,
+		plutoniumPage,
 		captcha,
 		experimentDelivery,
 		registrationConfig,
@@ -76,6 +78,7 @@ async function buildInstanceConfigResponse(): Promise<InstanceConfigResponse> {
 		instanceConfigRepository.getGatewayRolloutConfig(),
 		instanceConfigRepository.getPushRelayConfig(),
 		instanceConfigRepository.getDomainMigrationConfig(),
+		instanceConfigRepository.getPlutoniumPageConfig(),
 		instanceConfigRepository.getCaptchaConfig(),
 		instanceConfigRepository.getExperimentDeliveryConfig(),
 		instanceConfigRepository.getRegistrationConfig(),
@@ -110,6 +113,7 @@ async function buildInstanceConfigResponse(): Promise<InstanceConfigResponse> {
 		gateway_rollout: gatewayRollout,
 		push_relay: pushRelay,
 		domain_migration: domainMigration,
+		plutonium_page: plutoniumPage,
 		captcha,
 		experiment_delivery: experimentDelivery,
 		registration: {
@@ -124,6 +128,7 @@ async function buildInstanceConfigResponse(): Promise<InstanceConfigResponse> {
 			single_community_guild_id: policy.single_community_guild_id,
 			direct_messages_disabled: policy.direct_messages_disabled,
 			direct_messages_locked: policy.direct_messages_locked,
+			guild_create_access: policy.guild_create_access,
 			premium_mode: policy.premium_mode,
 			services: {
 				gif_enabled: policy.gif_enabled,
@@ -380,6 +385,18 @@ export function InstanceConfigAdminController(app: HonoApp) {
 				if (Object.keys(patch).length > 0) {
 					await instanceConfigRepository.updateDomainMigrationConfig((current) =>
 						DomainMigrationConfigSchema.parse({
+							...current,
+							...patch,
+							config_version: current.config_version + 1,
+						}),
+					);
+				}
+			}
+			if (data.plutonium_page) {
+				const patch = omitUndefinedFields(data.plutonium_page);
+				if (Object.keys(patch).length > 0) {
+					await instanceConfigRepository.updatePlutoniumPageConfig((current) =>
+						PlutoniumPageConfigSchema.parse({
 							...current,
 							...patch,
 							config_version: current.config_version + 1,
@@ -830,6 +847,9 @@ function planInstancePolicyPatch(
 		if (!policy.direct_messages_disabled) {
 			patch.direct_messages_locked = true;
 		}
+	}
+	if (policy.guild_create_access !== undefined && policy.guild_create_access !== current.guild_create_access) {
+		patch.guild_create_access = policy.guild_create_access;
 	}
 	if (policy.services) {
 		if (policy.services.gif_enabled !== undefined) {

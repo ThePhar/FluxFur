@@ -467,6 +467,7 @@ async fn mutating_admin_pages_render_usable_csrf_tokens() {
                 "/instance-config?action=update_gateway_rollout",
                 "/instance-config?action=update_sso",
                 "/instance-config?action=update_domain_migration",
+                "/instance-config?action=update_plutonium_page",
                 "/instance-config?action=update_experiment_delivery",
             ][..],
         ),
@@ -1193,6 +1194,14 @@ fn instance_config() -> Value {
             "anonymous_rollout_basis_points": 0,
             "standalone_forwarding": false
         },
+        "plutonium_page": {
+            "enabled": false,
+            "config_version": 0,
+            "rollout_basis_points": 0,
+            "rollout_salt": "plutonium-page-v1",
+            "included_user_ids": [],
+            "excluded_user_ids": []
+        },
         "experiment_delivery": {
             "poll_interval_seconds": 300,
             "poll_jitter_percent": 15
@@ -1298,12 +1307,10 @@ fn test_config(api_endpoint: String) -> AdminConfig {
         static_cdn_endpoint: "https://static.example.test".to_owned(),
         admin_endpoint: "https://admin.example.test".to_owned(),
         web_app_endpoint: "https://app.example.test".to_owned(),
-        kv_url: String::new(),
         oauth_client_id: "admin-client".to_owned(),
         oauth_client_secret: "admin-secret".to_owned(),
         oauth_redirect_uri: "https://admin.example.test/callback".to_owned(),
         build_version: "test".to_owned(),
-        release_channel: "test".to_owned(),
         self_hosted: false,
         proxy: ProxyConfig {
             trust_client_ip_header: false,

@@ -129,6 +129,10 @@ import {
 	CHANNELS_BY_GUILD_COLUMNS,
 	type ChannelRow,
 	type ChannelsByGuildRow,
+	CROSSPOST_SOURCE_BY_CHANNEL_COLUMNS,
+	CROSSPOSTED_MESSAGE_COLUMNS,
+	type CrosspostedMessageRow,
+	type CrosspostSourceByChannelRow,
 	DM_STATE_COLUMNS,
 	type DmStateRow,
 	INVITE_COLUMNS,
@@ -136,7 +140,9 @@ import {
 	PRIVATE_CHANNEL_COLUMNS,
 	type PrivateChannelRow,
 	WEBHOOK_COLUMNS,
+	WEBHOOKS_BY_SOURCE_CHANNEL_COLUMNS,
 	type WebhookRow,
+	type WebhooksBySourceChannelRow,
 } from '@app/api/database/types/ChannelTypes';
 import {USER_CONNECTION_STORAGE_COLUMNS, type UserConnectionStorageRow} from '@app/api/database/types/ConnectionTypes';
 import {
@@ -250,6 +256,16 @@ import {
 	MESSAGE_REPORT_SUBMISSION_BY_REPORTER_COLUMNS,
 	type MessageReportSubmissionByReporterRow,
 } from '@app/api/database/types/ReportTypes';
+import {
+	STORE_ACCOUNT_TOKEN_BY_USER_COLUMNS,
+	STORE_ACCOUNT_TOKEN_COLUMNS,
+	STORE_PURCHASE_BY_USER_COLUMNS,
+	STORE_PURCHASE_COLUMNS,
+	type StoreAccountTokenByUserRow,
+	type StoreAccountTokenRow,
+	type StorePurchaseByUserRow,
+	type StorePurchaseRow,
+} from '@app/api/database/types/StoreBillingTypes';
 import {
 	FAVORITE_MEME_COLUMNS,
 	type FavoriteMemeRow,
@@ -703,6 +719,27 @@ export const GiftCodesByRedeemer = defineTable<GiftCodeByRedeemerRow, 'redeemed_
 	columns: GIFT_CODE_BY_REDEEMER_COLUMNS,
 	primaryKey: ['redeemed_by_user_id', 'code'],
 });
+export const StorePurchases = defineTable<StorePurchaseRow, 'store_key'>({
+	name: 'store_purchases',
+	columns: STORE_PURCHASE_COLUMNS,
+	primaryKey: ['store_key'],
+});
+export const StorePurchasesByUser = defineTable<StorePurchaseByUserRow, 'user_id' | 'store_key', 'user_id'>({
+	name: 'store_purchases_by_user',
+	columns: STORE_PURCHASE_BY_USER_COLUMNS,
+	primaryKey: ['user_id', 'store_key'],
+	partitionKey: ['user_id'],
+});
+export const StoreAccountTokens = defineTable<StoreAccountTokenRow, 'token_'>({
+	name: 'store_account_tokens',
+	columns: STORE_ACCOUNT_TOKEN_COLUMNS,
+	primaryKey: ['token_'],
+});
+export const StoreAccountTokensByUser = defineTable<StoreAccountTokenByUserRow, 'user_id'>({
+	name: 'store_account_tokens_by_user',
+	columns: STORE_ACCOUNT_TOKEN_BY_USER_COLUMNS,
+	primaryKey: ['user_id'],
+});
 export const AdminArchivesBySubject = defineTable<AdminArchiveRow, 'subject_type' | 'subject_id' | 'archive_id'>({
 	name: 'admin_archives_by_subject',
 	columns: ADMIN_ARCHIVE_COLUMNS,
@@ -1057,6 +1094,36 @@ export const WebhooksByGuild = defineTable<WebhooksByGuildRow, 'guild_id' | 'web
 	name: 'webhooks_by_guild_id',
 	columns: WEBHOOKS_BY_GUILD_COLUMNS,
 	primaryKey: ['guild_id', 'webhook_id'],
+});
+export const WebhooksBySourceChannel = defineTable<
+	WebhooksBySourceChannelRow,
+	'source_channel_id' | 'webhook_id',
+	'source_channel_id'
+>({
+	name: 'webhooks_by_source_channel_id',
+	columns: WEBHOOKS_BY_SOURCE_CHANNEL_COLUMNS,
+	primaryKey: ['source_channel_id', 'webhook_id'],
+	partitionKey: ['source_channel_id'],
+});
+export const CrosspostedMessages = defineTable<
+	CrosspostedMessageRow,
+	'source_message_id' | 'webhook_id',
+	'source_message_id'
+>({
+	name: 'crossposted_messages',
+	columns: CROSSPOSTED_MESSAGE_COLUMNS,
+	primaryKey: ['source_message_id', 'webhook_id'],
+	partitionKey: ['source_message_id'],
+});
+export const CrosspostSourcesByChannel = defineTable<
+	CrosspostSourceByChannelRow,
+	'source_channel_id' | 'source_message_id',
+	'source_channel_id'
+>({
+	name: 'crosspost_sources_by_channel',
+	columns: CROSSPOST_SOURCE_BY_CHANNEL_COLUMNS,
+	primaryKey: ['source_channel_id', 'source_message_id'],
+	partitionKey: ['source_channel_id'],
 });
 export const InstanceConfiguration = defineTable<InstanceConfigurationRow, 'key'>({
 	name: 'instance_configuration',

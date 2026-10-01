@@ -39,28 +39,6 @@ function resolveEmailAppBaseUrl(master: MasterConfig): string {
 	}
 }
 
-function resolveGatewayInternalUrl(master: MasterConfig): string {
-	const configuredInternalGateway = (
-		master.internal as {
-			gateway?: string;
-		}
-	).gateway;
-	if (typeof configuredInternalGateway === 'string' && configuredInternalGateway.length > 0) {
-		return trimTrailingSlash(configuredInternalGateway);
-	}
-	try {
-		const gatewayUrl = new URL(master.endpoints.gateway);
-		if (gatewayUrl.protocol === 'ws:') {
-			gatewayUrl.protocol = 'http:';
-		} else if (gatewayUrl.protocol === 'wss:') {
-			gatewayUrl.protocol = 'https:';
-		}
-		return trimTrailingSlash(gatewayUrl.toString());
-	} catch {
-		throw new Error(`Invalid gateway endpoint URL: ${master.endpoints.gateway}`);
-	}
-}
-
 function isBoolean(value: unknown): value is boolean {
 	return typeof value === 'boolean';
 }
@@ -100,26 +78,23 @@ function normalizeIpBanExemptIps(values: Array<string>): Array<string> {
 	return Array.from(normalized);
 }
 
-function mapPushProviderApps(
+function mapApnsApps(
 	apps:
 		| Array<{
 				app_id?: string;
 				topic?: string;
 				environment?: 'production' | 'development';
-				project_id?: string;
 		  }>
 		| undefined,
-	configName: string,
 ): APIConfig['push']['apns']['apps'] {
 	return (apps ?? []).map((app) => {
 		if (!app.app_id) {
-			throw new Error(`${configName} contains an entry with no app_id`);
+			throw new Error('FLUXER_PUSH_APNS_APPS contains an entry with no app_id');
 		}
 		return {
 			appId: app.app_id,
 			topic: app.topic,
 			environment: app.environment,
-			projectId: app.project_id,
 		};
 	});
 }
@@ -194,34 +169,8 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			backend: master.database.backend,
 		},
 		kv: {
-			provider: 'redis' as const,
 			url: master.internal.kv,
-			mode: ((
-				master.internal as {
-					kv_mode?: string;
-				}
-			).kv_mode ?? 'standalone') as 'standalone' | 'cluster',
-			clusterNodes:
-				(
-					master.internal as {
-						kv_cluster_nodes?: Array<{
-							host: string;
-							port: number;
-						}>;
-					}
-				).kv_cluster_nodes ?? [],
-			clusterNatMap:
-				(
-					master.internal as {
-						kv_cluster_nat_map?: Record<
-							string,
-							{
-								host: string;
-								port: number;
-							}
-						>;
-					}
-				).kv_cluster_nat_map ?? {},
+			mode: master.internal.kv_mode,
 		},
 		nats: {
 			coreUrl: master.services.nats?.core_url ?? 'nats://127.0.0.1:4222',
@@ -277,22 +226,12 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			staticCdn: master.endpoints.static_cdn,
 		},
 		internal: {
-			gateway: resolveGatewayInternalUrl(master),
 			gatewayRpcAuthToken: master.services.gateway.rpc_auth_token ?? '',
 			donationProxyKey,
 		},
 		hosts: {
 			marketing: extractHostname(master.endpoints.marketing),
 			unfurlIgnored: master.services.api.unfurl_ignored_hosts,
-		},
-		embeds: {
-			oEmbedHtmlEnabled: master.services.api.embeds.oembed_html_enabled,
-			oEmbedHtmlAllowUntrustedOnSelfHosted: master.services.api.embeds.oembed_html_allow_untrusted_on_self_hosted,
-			oEmbedHtmlAllowedHosts: master.services.api.embeds.oembed_html_allowed_hosts,
-			cacheDefaultTtlSeconds: master.services.api.embeds.cache_default_ttl_seconds,
-			cacheMaxTtlSeconds: master.services.api.embeds.cache_max_ttl_seconds,
-			cacheMinTtlSeconds: master.services.api.embeds.cache_min_ttl_seconds,
-			cacheRespectRemoteTtl: master.services.api.embeds.cache_respect_remote_ttl,
 		},
 		s3: {
 			endpoint: s3Config.endpoint,
@@ -320,23 +259,16 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 					}
 				: undefined,
 		},
-		ipinfo: {
-			apiKey: master.integrations.ipinfo.api_key || undefined,
-		},
 		blocklistFeeds: {
 			enabled: master.integrations.blocklist_feeds.enabled ?? !master.instance.self_hosted,
 		},
 		breachedPasswordCheck: {
 			enabled: master.integrations.breached_password_check.enabled ?? !master.instance.self_hosted,
 		},
-		contentModeration: {
-			nsfwThreshold: master.services.api.content_moderation?.nsfw_threshold ?? 0.7,
-		},
 		voice: {
 			enabled: master.integrations.voice.enabled,
 			apiKey: master.integrations.voice.api_key,
 			apiSecret: master.integrations.voice.api_secret,
-			webhookUrl: master.integrations.voice.webhook_url,
 			url: master.integrations.voice.url,
 			internalUrl: master.integrations.voice.internal_url,
 			defaultRegion: master.integrations.voice.default_region,
@@ -409,7 +341,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			reporterEmail: master.integrations.ncmec.reporter_email ?? '',
 		},
 		admin: {
-			basePath: master.services.admin.base_path,
 			oauthClientSecret: master.services.admin.oauth_client_secret,
 		},
 		auth: {
@@ -436,6 +367,7 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 		},
 		instance: {
 			selfHosted: master.instance.self_hosted,
+			phoneVerificationEnabled: master.instance.phone_verification_enabled ?? !master.instance.self_hosted,
 			autoJoinInviteCode: master.instance.auto_join_invite_code,
 			visionariesGuildId: master.instance.visionaries_guild_id,
 			visionariesGuildVisionaryRoleId: master.instance.visionaries_guild_visionary_role_id,
@@ -453,9 +385,6 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 			setup: {
 				configured: master.instance.setup.configured,
 			},
-		},
-		domain: {
-			baseDomain: master.domain.base_domain,
 		},
 		discovery: {
 			enabled: master.discovery.enabled,
@@ -481,19 +410,36 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 				keyId: master.integrations.push.apns.key_id,
 				privateKey: master.integrations.push.apns.private_key,
 				privateKeyPath: master.integrations.push.apns.private_key_path,
-				defaultEnvironment: master.integrations.push.apns.default_environment ?? 'production',
-				apps: mapPushProviderApps(master.integrations.push.apns.apps, 'FLUXER_PUSH_APNS_APPS'),
+				apps: mapApnsApps(master.integrations.push.apns.apps),
 			},
-			fcm: {
-				enabled: master.integrations.push.fcm.enabled,
-				projectId: master.integrations.push.fcm.project_id,
-				clientEmail: master.integrations.push.fcm.client_email,
-				privateKey: master.integrations.push.fcm.private_key,
-				privateKeyPath: master.integrations.push.fcm.private_key_path,
-				serviceAccountJsonPath: master.integrations.push.fcm.service_account_json_path,
-				tokenUri: master.integrations.push.fcm.token_uri ?? 'https://oauth2.googleapis.com/token',
-				apps: mapPushProviderApps(master.integrations.push.fcm.apps, 'FLUXER_PUSH_FCM_APPS'),
-			},
+		},
+		appStore: {
+			enabled: master.integrations.app_store.enabled,
+			issuerId: master.integrations.app_store.issuer_id,
+			keyId: master.integrations.app_store.key_id,
+			privateKey: master.integrations.app_store.private_key,
+			privateKeyPath: master.integrations.app_store.private_key_path,
+			apps: (master.integrations.app_store.apps ?? []).map((app) => ({
+				bundleId: app.bundle_id,
+				appAppleId: app.app_apple_id,
+			})),
+			products: master.integrations.app_store.products ?? {},
+		},
+		googlePlay: {
+			enabled: master.integrations.google_play.enabled,
+			packages: master.integrations.google_play.packages ?? [],
+			clientEmail: master.integrations.google_play.client_email,
+			privateKey: master.integrations.google_play.private_key,
+			privateKeyPath: master.integrations.google_play.private_key_path,
+			serviceAccountJsonPath: master.integrations.google_play.service_account_json_path,
+			tokenUri: master.integrations.google_play.token_uri ?? 'https://oauth2.googleapis.com/token',
+			products: master.integrations.google_play.products ?? {},
+			pushAudience: master.integrations.google_play.push_audience,
+			pushServiceAccountEmail: master.integrations.google_play.push_service_account_email,
+		},
+		storeBilling: {
+			sandboxUserIds: master.integrations.store_billing.sandbox_user_ids ?? [],
+			sandboxEntitlesAll: master.integrations.store_billing.sandbox_entitles_all,
 		},
 		worker: {
 			mode: apiWorkerConfig?.mode ?? 'all_lanes',
@@ -505,6 +451,7 @@ export function buildAPIConfigFromMaster(master: MasterConfig): APIConfig {
 				unfurl: apiWorkerConfig?.lane_concurrency_overrides?.unfurl,
 				lifecycle: apiWorkerConfig?.lane_concurrency_overrides?.lifecycle,
 				batch: apiWorkerConfig?.lane_concurrency_overrides?.batch,
+				crosspost: apiWorkerConfig?.lane_concurrency_overrides?.crosspost,
 			},
 		},
 	};

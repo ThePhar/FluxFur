@@ -10,83 +10,24 @@ import {
 	type TestAccount,
 } from '@app/api/auth/tests/AuthTestUtils';
 import {createUserID} from '@app/api/BrandedTypes';
-import {setInjectedIpInfoService} from '@app/api/middleware/ServiceMiddleware';
 import {getAdminRepository} from '@app/api/middleware/ServiceSingletons';
 import {type ApiTestHarness, createApiTestHarness} from '@app/api/test/ApiTestHarness';
 import {HTTP_STATUS} from '@app/api/test/TestConstants';
 import {createBuilder} from '@app/api/test/TestRequestBuilder';
 import {UserRepository} from '@app/api/user/repositories/UserRepository';
 import {DeletionReasons} from '@fluxer/constants/src/Core';
-import type {IpInfoLookupResult} from '@pkgs/geoip/src/IpInfoService';
 import {afterEach, beforeEach, describe, expect, test} from 'vitest';
 
 function createUniqueTestIp(): string {
 	return `198.51.${randomInt(0, 256)}.${randomInt(1, 255)}`;
 }
 
-function ipInfoResult(ip: string, overrides: Partial<IpInfoLookupResult> = {}): IpInfoLookupResult {
-	return {
-		ip,
-		available: true,
-		note: 'test',
-		geo: {
-			countryCode: 'US',
-			countryName: 'United States',
-			continent: 'North America',
-			continentCode: 'NA',
-			region: null,
-			regionCode: null,
-			city: null,
-			postalCode: null,
-			timezone: null,
-			latitude: null,
-			longitude: null,
-			accuracyRadiusKm: null,
-		},
-		asn: {
-			asn: 'AS64500',
-			number: 64500,
-			name: 'Test ISP',
-			domain: null,
-			type: null,
-		},
-		mobile: {
-			name: null,
-			mcc: null,
-			mnc: null,
-		},
-		anonymous: {
-			isAnonymous: false,
-			providerName: null,
-			isVpn: false,
-			isProxy: false,
-			isResidentialProxy: false,
-			isTor: false,
-			isRelay: false,
-			percentDaysSeen: null,
-		},
-		flags: {
-			isAnycast: false,
-			isHosting: false,
-			isMobile: false,
-			isSatellite: false,
-		},
-		...overrides,
-	};
-}
-
 describe('Admin Deletion Queue', () => {
 	let harness: ApiTestHarness;
 	beforeEach(async () => {
 		harness = await createApiTestHarness();
-		setInjectedIpInfoService({
-			async lookup(ip: string) {
-				return ipInfoResult(ip);
-			},
-		});
 	});
 	afterEach(async () => {
-		setInjectedIpInfoService(undefined);
 		await harness?.shutdown();
 	});
 	test('admin scheduling queues deletion and rescheduling replaces the old Cassandra row', async () => {
@@ -380,7 +321,7 @@ describe('Admin Deletion Queue', () => {
 				.expect(HTTP_STATUS.OK)
 				.execute();
 			expect(
-				findLastTestEmail(await listTestEmails(harness, {recipient: target.email}), 'unban_notification'),
+				findLastTestEmail(await listTestEmails(harness, {recipient: target.email}), 'account_deletion_cancelled'),
 			).toBeNull();
 			const logs = await getAdminRepository().listAllAuditLogsPaginated(1000);
 			const log = logs.find(
@@ -390,6 +331,7 @@ describe('Admin Deletion Queue', () => {
 			expect(log?.metadata.get('cancelled_scheduled_by')).toBe(scheduler.userId);
 			expect(log?.metadata.get('cancelled_reason_code')).toBe(DeletionReasons.SPAM.toString());
 			expect(log?.metadata.get('notify_user')).toBe('false');
+			expect(log?.metadata.get('notification_sent')).toBe('false');
 			const rescheduled = await scheduleAs(scheduler, target, DeletionReasons.SPAM, 'Review again');
 			await createBuilder(harness, canceller.token)
 				.delete(`/admin/users/${target.userId}/deletion`)
@@ -397,9 +339,11 @@ describe('Admin Deletion Queue', () => {
 				.body({expected_pending_deletion_at: rescheduled.user.pending_deletion_at, notify_user: true})
 				.expect(HTTP_STATUS.OK)
 				.execute();
-			const email = findLastTestEmail(await listTestEmails(harness, {recipient: target.email}), 'unban_notification');
+			const emails = await listTestEmails(harness, {recipient: target.email});
+			const email = findLastTestEmail(emails, 'account_deletion_cancelled');
 			expect(email).not.toBeNull();
 			expect(JSON.stringify(email)).not.toContain('Private cancel note');
+			expect(findLastTestEmail(emails, 'unban_notification')).toBeNull();
 		});
 	});
 });

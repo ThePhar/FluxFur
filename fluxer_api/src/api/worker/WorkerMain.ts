@@ -17,6 +17,7 @@ import type {InstanceConfigRepository} from '@app/api/instance/InstanceConfigRep
 import {JobLedgerRepository} from '@app/api/jobs/JobLedgerRepository';
 import {Logger} from '@app/api/Logger';
 import type {LimitConfigService} from '@app/api/limits/LimitConfigService';
+import {startContentBlocklistCaches, stopContentBlocklistCaches} from '@app/api/middleware/ContentBlocklistCaches';
 import {
 	closeOwnedKVClient,
 	createSnowflakeService,
@@ -68,6 +69,15 @@ function registerCronJobs(cron: CronScheduler, jobsStreamMaxAgeMs: number): void
 		ledger: false,
 	});
 	cron.upsert('processExpiredPremiumSweep', 'processExpiredPremiumSweep', {}, '0 0 * * * *', {ledger: false});
+	if (!Config.instance.selfHosted) {
+		cron.upsert('processStorePurchaseRefreshQueue', 'processStorePurchaseRefreshQueue', {}, '0 */5 * * * *', {
+			ledger: false,
+		});
+		cron.upsert('pollGooglePlayVoidedPurchases', 'pollGooglePlayVoidedPurchases', {}, '0 30 4 * * *', {ledger: false});
+		cron.upsert('pollAppStoreNotificationHistory', 'pollAppStoreNotificationHistory', {}, '0 45 4 * * *', {
+			ledger: false,
+		});
+	}
 	cron.upsert('processInactivityDeletions', 'processInactivityDeletions', {}, '0 0 */6 * * *', {ledger: false});
 	cron.upsert('expireAttachments', 'expireAttachments', {}, '0 0 */12 * * *', {ledger: false});
 	if (jobsStreamMaxAgeMs > 0 && jobsStreamMaxAgeMs <= JOBS_STREAM_MAX_AGE_MS) {
@@ -139,6 +149,7 @@ export async function startWorkerMain(): Promise<void> {
 			await jsConnectionManager?.drain();
 			jsConnectionManager = null;
 		});
+		await cleanupStep('content blocklist caches', stopContentBlocklistCaches);
 		await cleanupStep('worker dependencies', () => {
 			dependencies = null;
 			clearWorkerDependencies();
@@ -259,6 +270,8 @@ export async function startWorkerMain(): Promise<void> {
 		}
 		dependencies = await initializeWorkerDependencies(snowflakeService);
 		setWorkerDependencies(dependencies);
+		await startContentBlocklistCaches({kvClient: dependencies.kvClient, storageService: dependencies.storageService});
+		Logger.info('Content blocklist caches initialised for worker backend');
 		await queueBlocklistFeedStartupJobs(dependencies.kvClient, workerService, Config.blocklistFeeds.enabled);
 		setActivityProcessChannel('worker');
 		await startActivityEvents({

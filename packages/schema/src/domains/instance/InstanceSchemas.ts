@@ -113,6 +113,9 @@ export const InstanceFeaturesSchema = z
 		self_hosted: z.boolean().describe('Whether this is a self-hosted instance'),
 		presigned_attachment_uploads: z.boolean().describe('Whether clients can request presigned attachment upload URLs'),
 		emails_enabled: z.boolean().describe('Whether the instance sends emails (verification, password reset, etc.)'),
+		phone_verification_enabled: z
+			.boolean()
+			.describe('Whether users can verify a phone number, so the very high guild verification level applies'),
 	})
 	.describe('Feature flags for this instance');
 export type InstanceFeatures = z.infer<typeof InstanceFeaturesSchema>;
@@ -160,6 +163,11 @@ export const InstanceCommunitySchema = z
 		direct_messages_disabled: z
 			.boolean()
 			.describe('Whether direct messages and friend requests are disabled instance-wide'),
+		guild_create_access: z
+			.boolean()
+			.describe(
+				'Whether every account can create communities. When false, only admins and accounts granted the feature_guild_create limit can',
+			),
 	})
 	.describe('Community topology and direct-message policy for this instance');
 export type InstanceCommunity = z.infer<typeof InstanceCommunitySchema>;
