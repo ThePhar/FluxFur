@@ -135,6 +135,14 @@ export interface ThemeDirectoryCssFile {
 	css: string;
 }
 
+export type ThemeLinkedFileError = 'not_allowed' | 'missing' | 'not_file' | 'too_large' | 'too_many' | 'read_failed';
+
+export interface ThemeLinkedFileChange {
+	path: string;
+	css?: string;
+	error?: ThemeLinkedFileError;
+}
+
 export type VoiceBackgroundMediaKind = 'static' | 'animated' | 'video';
 
 export interface VoiceBackgroundMediaCacheRequest {
@@ -648,6 +656,9 @@ export interface ElectronAPI {
 	readThemeLocalFiles: (paths: Array<string>) => Promise<Array<ThemeLocalFileReadResult>>;
 	clearThemeLocalFiles: () => Promise<void>;
 	importThemeDirectory: () => Promise<Array<ThemeDirectoryCssFile>>;
+	pickThemeLinkedFiles: (options?: {multiple?: boolean}) => Promise<Array<ThemeDirectoryCssFile>>;
+	watchThemeLinkedFiles: (paths: Array<string>) => Promise<void>;
+	onThemeLinkedFileChange: (callback: (change: ThemeLinkedFileChange) => void) => () => void;
 	cacheVoiceBackgroundMedia: (options: VoiceBackgroundMediaCacheRequest) => Promise<VoiceBackgroundMediaCacheResult>;
 	readVoiceBackgroundMedia: (id: string) => Promise<VoiceBackgroundMediaReadResult | null>;
 	deleteVoiceBackgroundMedia: (id: string) => Promise<void>;
@@ -752,6 +763,7 @@ export interface ElectronAPI {
 	onGlobalKeyEvent: (callback: (event: GlobalKeyEvent) => void) => () => void;
 	onGlobalMouseEvent: (callback: (event: GlobalMouseEvent) => void) => () => void;
 	onGlobalKeybindTriggered: (callback: (event: GlobalKeybindTriggeredEvent) => void) => () => void;
+	globalShortcuts: GlobalShortcutsApi;
 	spellcheckGetState: () => Promise<SpellcheckState>;
 	spellcheckSetState: (state: Partial<SpellcheckState>) => Promise<SpellcheckState>;
 	spellcheckGetAvailableLanguages: () => Promise<Array<string>>;
@@ -782,6 +794,117 @@ export interface ElectronAPI {
 	selectDisplayMediaSource: (requestId: string, sourceId: string | null, withAudio: boolean) => void;
 	setDisplayMediaPortalPreference: (preference: DisplayMediaPortalSurfacePreference) => Promise<void>;
 	getAppMetrics?: () => Promise<AppMetricsSnapshot>;
+}
+
+export type GlobalShortcutsBackend = 'portal' | 'x11' | 'evdev' | 'windows' | 'macos' | 'none';
+
+export type GlobalShortcutsPortalState =
+	| 'unknown'
+	| 'probing'
+	| 'unsupported'
+	| 'not-set-up'
+	| 'binding'
+	| 'bound'
+	| 'declined'
+	| 'error';
+
+export interface GlobalShortcutsPortalShortcut {
+	action: string;
+	triggerDescription: string | null;
+}
+
+export interface GlobalShortcutsPortalStatus {
+	state: GlobalShortcutsPortalState;
+	version: number | null;
+	canConfigure: boolean;
+	recovering: boolean;
+	canRecheck: boolean;
+	portalAppId: string | null;
+	shortcuts: Array<GlobalShortcutsPortalShortcut>;
+	error: string | null;
+}
+
+export type LinuxSessionType = 'wayland' | 'x11' | 'unknown';
+
+export type LinuxDesktopKind = 'kde' | 'gnome' | 'hyprland' | 'other';
+
+export interface GlobalShortcutsLinuxStatus {
+	session: LinuxSessionType;
+	sandbox: 'flatpak' | 'none';
+	desktop: LinuxDesktopKind;
+	portal: GlobalShortcutsPortalStatus | null;
+	directInput: {available: boolean; enabled: boolean; locked: boolean};
+}
+
+export interface GlobalShortcutsStatus {
+	backend: GlobalShortcutsBackend;
+	platform: 'linux' | 'windows' | 'macos';
+	linux: GlobalShortcutsLinuxStatus | null;
+	hooksActive: boolean;
+	hookError: 'permission' | 'start-failed' | null;
+	supportsMouseButtons: boolean;
+	supportsModifierOnly: boolean;
+}
+
+export interface GlobalShortcutCombo {
+	code?: string;
+	key: string;
+	ctrl: boolean;
+	alt: boolean;
+	shift: boolean;
+	meta: boolean;
+	mouseButton?: number;
+	modifierOnly?: boolean;
+	bothSides?: boolean;
+}
+
+export interface GlobalShortcutBinding {
+	sourceId: string;
+	action: string;
+	combo: GlobalShortcutCombo;
+}
+
+export interface GlobalShortcutActionDefinition {
+	action: string;
+	description: string;
+	preferredCombo: GlobalShortcutCombo | null;
+}
+
+export interface GlobalShortcutsSyncPayload {
+	bindings: Array<GlobalShortcutBinding>;
+	actions: Array<GlobalShortcutActionDefinition>;
+}
+
+export interface GlobalShortcutEvent {
+	action: string;
+	sourceId: string;
+	phase: 'press' | 'release';
+}
+
+export interface GlobalShortcutCaptureEvent {
+	type: 'keydown' | 'keyup' | 'mousedown' | 'mouseup';
+	code: string | null;
+	key: string | null;
+	button: number | null;
+	ctrl: boolean;
+	alt: boolean;
+	shift: boolean;
+	meta: boolean;
+}
+
+export interface GlobalShortcutsApi {
+	sync: (payload: GlobalShortcutsSyncPayload) => Promise<void>;
+	setPaused: (paused: boolean) => Promise<void>;
+	getStatus: () => Promise<GlobalShortcutsStatus>;
+	onStatus: (callback: (status: GlobalShortcutsStatus) => void) => () => void;
+	onEvent: (callback: (event: GlobalShortcutEvent) => void) => () => void;
+	setUp: () => Promise<GlobalShortcutsStatus>;
+	recheck: () => Promise<GlobalShortcutsStatus>;
+	configure: () => Promise<void>;
+	setDirectInputEnabled: (enabled: boolean) => Promise<GlobalShortcutsStatus>;
+	startCapture: () => Promise<number | null>;
+	stopCapture: (captureId: number) => Promise<void>;
+	onCapture: (callback: (event: GlobalShortcutCaptureEvent) => void) => () => void;
 }
 
 export interface GlobalKeyHookRegisterOptions {

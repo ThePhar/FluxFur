@@ -5,6 +5,7 @@ import {GenericErrorModal} from '@app/features/app/components/alerts/GenericErro
 import {TemporaryInviteRequiresPresenceModal} from '@app/features/app/components/alerts/TemporaryInviteRequiresPresenceModal';
 import {Endpoints} from '@app/features/app/constants/Endpoints';
 import Authentication from '@app/features/auth/state/Authentication';
+import {isAbortError} from '@app/features/auth/state/SudoPrompt';
 import {GuildAtCapacityModal} from '@app/features/guild/components/alerts/GuildAtCapacityModal';
 import {MaxGuildsModal} from '@app/features/guild/components/alerts/MaxGuildsModal';
 import {InviteAcceptFailedModal} from '@app/features/invite/components/alerts/InviteAcceptFailedModal';
@@ -19,10 +20,11 @@ import * as NavigationCommands from '@app/features/navigation/commands/Navigatio
 import {http} from '@app/features/platform/transport/RestTransport';
 import {HttpError} from '@app/features/platform/types/EndpointError';
 import {Logger} from '@app/features/platform/utils/AppLogger';
-import {failureCode} from '@app/features/platform/utils/ResponseInspection';
+import {failureCode, failureMessage} from '@app/features/platform/utils/ResponseInspection';
 import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
 import {modal} from '@app/features/ui/commands/ModalCommands';
 import Users from '@app/features/user/state/Users';
+import {blockIfAccountLimited, showAccountLimitedModal} from '@app/features/user/utils/AccountLimitUtils';
 import {APIErrorCodes} from '@fluxer/constants/src/ApiErrorCodes';
 import {ME} from '@fluxer/constants/src/AppConstants';
 import {ChannelTypes} from '@fluxer/constants/src/ChannelConstants';
@@ -88,13 +90,9 @@ function showGuildInviteAcceptFailure(
 	responseErr: HttpError | null,
 ): void {
 	const isRaidDetected = guildInviteFeatures(invite).includes(GuildFeatures.RAID_DETECTED);
-	if (
-		errorCode === APIErrorCodes.ACCOUNT_SUSPICIOUS_ACTIVITY &&
-		(Users.currentUser?.requiredActions?.length ?? 0) > 0
-	) {
-		return;
-	}
-	if (errorCode === APIErrorCodes.INVITES_DISABLED) {
+	if (errorCode === APIErrorCodes.ACCOUNT_LIMITED) {
+		showAccountLimitedModal(responseErr ? failureMessage(responseErr) : undefined);
+	} else if (errorCode === APIErrorCodes.INVITES_DISABLED) {
 		ModalCommands.push(
 			modal(() => (
 				<InvitesDisabledModal
@@ -172,6 +170,9 @@ export async function fetchWithCoalescing(code: string): Promise<Invite> {
 }
 
 const accept = async (code: string): Promise<Invite> => {
+	if (blockIfAccountLimited()) {
+		throw new DOMException('Invite accept skipped', 'AbortError');
+	}
 	try {
 		logger.debug(`Accepting invite with code ${code}`);
 		const response = await http.post<Invite>(Endpoints.INVITE(code), {body: ACCEPT_INVITE_BODY});
@@ -223,6 +224,7 @@ export async function acceptAndTransitionToChannel(code: string, i18n: I18n): Pr
 		);
 		NavigationCommands.selectChannel(guildId, targetChannelId);
 	} catch (error) {
+		if (isAbortError(error)) throw error;
 		const responseErr = error instanceof HttpError ? error : null;
 		const errorCode = failureCode(error);
 		logger.error(`Failed to accept invite and transition for code ${code}:`, error);

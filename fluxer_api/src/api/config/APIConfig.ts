@@ -155,6 +155,7 @@ export interface APIConfig {
 		webhookSecret?: string;
 		fromEmail: string;
 		fromName: string;
+		replyToEmail: string;
 		appBaseUrl: string;
 		smtp?: {
 			host: string;
@@ -262,7 +263,6 @@ export interface APIConfig {
 	};
 	instance: {
 		selfHosted: boolean;
-		phoneVerificationEnabled: boolean;
 		autoJoinInviteCode?: string;
 		visionariesGuildId?: string;
 		visionariesGuildVisionaryRoleId?: string;

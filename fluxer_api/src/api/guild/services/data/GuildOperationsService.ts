@@ -2,7 +2,6 @@
 
 import type {ChannelID, GuildID, RoleID, UserID} from '@app/api/BrandedTypes';
 import {createChannelID, createGuildID, createRoleID, guildIdToRoleId} from '@app/api/BrandedTypes';
-import {Config} from '@app/api/Config';
 import type {IChannelRepository} from '@app/api/channel/IChannelRepository';
 import {
 	type ChannelFollowerRemovalCopyMode,
@@ -55,6 +54,7 @@ import {
 	MAX_GUILD_ROLES,
 	VOICE_CHANNEL_BITRATE_DEFAULT,
 	VOICE_CHANNEL_CONNECTION_LIMIT_DEFAULT,
+	VOICE_CHANNEL_USER_LIMIT_MAX,
 } from '@fluxer/constants/src/LimitConstants';
 import {DEFAULT_GUILD_FOLDER_ICON} from '@fluxer/constants/src/UserConstants';
 import {ValidationErrorCodes} from '@fluxer/constants/src/ValidationErrorCodes';
@@ -481,17 +481,6 @@ export class GuildOperationsService {
 				'verification_level',
 				ValidationErrorCodes.DISCOVERABLE_GUILD_VERIFICATION_LEVEL_TOO_LOW,
 			);
-		}
-		if (
-			data.verification_level === GuildVerificationLevel.VERY_HIGH &&
-			data.verification_level !== currentGuild.verificationLevel &&
-			!Config.instance.phoneVerificationEnabled
-		) {
-			throw InputValidationError.fromCode('verification_level', ValidationErrorCodes.VALUE_MUST_BE_INTEGER_IN_RANGE, {
-				name: 'verification_level',
-				minValue: GuildVerificationLevel.NONE,
-				maxValue: GuildVerificationLevel.HIGH,
-			});
 		}
 		const isMfaLevelChange = data.mfa_level !== undefined && data.mfa_level !== currentGuild.mfaLevel;
 		if (isMfaLevelChange) {
@@ -1077,7 +1066,7 @@ export class GuildOperationsService {
 					content_warning_text: null,
 					rate_limit_per_user: channel.rate_limit_per_user ?? 0,
 					bitrate: isVoice ? resolveVoiceChannelBitrate(channel.bitrate, null) : null,
-					user_limit: isVoice ? (channel.user_limit ?? 0) : null,
+					user_limit: isVoice ? Math.min(channel.user_limit ?? 0, VOICE_CHANNEL_USER_LIMIT_MAX) : null,
 					voice_connection_limit: isVoice
 						? (channel.voice_connection_limit ?? VOICE_CHANNEL_CONNECTION_LIMIT_DEFAULT)
 						: null,
@@ -1192,7 +1181,7 @@ export class GuildOperationsService {
 			verificationLevel: this.clampTemplateSetting(
 				template?.verification_level,
 				GuildVerificationLevel.NONE,
-				Config.instance.phoneVerificationEnabled ? GuildVerificationLevel.VERY_HIGH : GuildVerificationLevel.HIGH,
+				GuildVerificationLevel.HIGH,
 				GuildVerificationLevel.NONE,
 			),
 			explicitContentFilter: this.clampTemplateSetting(template?.explicit_content_filter, 0, 2, 0),

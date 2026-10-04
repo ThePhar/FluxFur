@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import Accessibility from '@app/features/accessibility/state/Accessibility';
+import {showDmActionErrorModal} from '@app/features/app/components/alerts/DmActionErrorModal';
 import {FeatureTemporarilyDisabledModal} from '@app/features/app/components/alerts/FeatureTemporarilyDisabledModal';
 import {showGenericErrorModal} from '@app/features/app/components/alerts/GenericErrorModalCommands';
 import {ConfirmModal} from '@app/features/app/components/dialogs/ConfirmModal';
@@ -61,6 +62,7 @@ import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
 import {modal} from '@app/features/ui/commands/ModalCommands';
 import * as ToastCommands from '@app/features/ui/commands/ToastCommands';
 import {Switch} from '@app/features/ui/components/form/FormSwitch';
+import {blockIfAccountLimited, handleAccountLimitedError} from '@app/features/user/utils/AccountLimitUtils';
 import {APIErrorCodes} from '@fluxer/constants/src/ApiErrorCodes';
 import {MessageFlags, Permissions} from '@fluxer/constants/src/ChannelConstants';
 import type {JumpType} from '@fluxer/constants/src/JumpConstants';
@@ -679,6 +681,9 @@ function showPublishedEditLimitModal(error: unknown): boolean {
 }
 
 function showEditFailureModal(error: unknown): void {
+	if (handleAccountLimitedError(error)) {
+		return;
+	}
 	if (showPublishedEditLimitModal(error)) {
 		return;
 	}
@@ -710,6 +715,10 @@ function showEditFailureModal(error: unknown): void {
 			);
 			return;
 		}
+	}
+	if (failureCode(error) === APIErrorCodes.NEW_CONVERSATIONS_LIMITED) {
+		showDmActionErrorModal(error);
+		return;
 	}
 	ModalCommands.push(
 		modal(() => <MessageEditFailedModal data-flx="messaging.message-commands.message-edit-failed-modal" />),
@@ -848,6 +857,9 @@ export function confirmPublishedMessageEdit(i18n: I18n, message: MessageModel, s
 }
 
 function showCrosspostFailure(i18n: I18n, error: unknown): void {
+	if (handleAccountLimitedError(error)) {
+		return;
+	}
 	const errorCode = failureCode(error);
 	if (
 		error instanceof HttpError &&
@@ -896,6 +908,7 @@ function showCrosspostFailure(i18n: I18n, error: unknown): void {
 
 export async function crosspost(i18n: I18n, channelId: string, messageId: string): Promise<boolean> {
 	logger.debug(`Publishing message ${messageId} in channel ${channelId}`);
+	if (blockIfAccountLimited()) return false;
 	try {
 		await http.post<WireMessage>(Endpoints.CHANNEL_MESSAGE_CROSSPOST(channelId, messageId), {
 			mode: 'strict',
@@ -1075,7 +1088,7 @@ export async function toggleSuppressEmbeds(channelId: string, messageId: string,
 		logger.debug(`Successfully ${isSuppressed ? 'unsuppressed' : 'suppressed'} embeds for message ${messageId}`);
 	} catch (error) {
 		logger.error('Failed to toggle suppress embeds:', error);
-		if (showPublishedEditLimitModal(error)) {
+		if (handleAccountLimitedError(error) || showPublishedEditLimitModal(error)) {
 			return;
 		}
 		throw error;

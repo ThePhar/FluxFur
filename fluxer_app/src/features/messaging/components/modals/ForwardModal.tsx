@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {showDmActionErrorModal} from '@app/features/app/components/alerts/DmActionErrorModal';
 import * as Modal from '@app/features/app/components/dialogs/Modal';
 import type {ForwardDestination} from '@app/features/app/components/dialogs/shared/ForwardDefaultDestinations';
 import {MAX_FORWARD_DESTINATIONS} from '@app/features/app/components/dialogs/shared/ForwardDestinationSelection';
@@ -31,6 +32,7 @@ import type {MentionSegment} from '@app/features/messaging/utils/TextareaSegment
 import * as NavigationCommands from '@app/features/navigation/commands/NavigationCommands';
 import {Logger} from '@app/features/platform/utils/AppLogger';
 import {shouldDisableAutofocusOnMobile} from '@app/features/platform/utils/AutofocusUtils';
+import {failureCode} from '@app/features/platform/utils/ResponseInspection';
 import {Button} from '@app/features/ui/button/Button';
 import {Checkbox} from '@app/features/ui/checkbox/Checkbox';
 import * as ModalCommands from '@app/features/ui/commands/ModalCommands';
@@ -42,6 +44,8 @@ import FocusRing from '@app/features/ui/focus_ring/FocusRing';
 import {Popout} from '@app/features/ui/popover/PopoverPopout';
 import MobileLayout from '@app/features/ui/state/MobileLayout';
 import type {User} from '@app/features/user/models/User';
+import Users from '@app/features/user/state/Users';
+import {blockIfAccountLimited, showAccountLimitedModal} from '@app/features/user/utils/AccountLimitUtils';
 import {MAX_MESSAGE_LENGTH_PREMIUM} from '@fluxer/constants/src/LimitConstants';
 import type {I18n} from '@lingui/core';
 import {msg} from '@lingui/core/macro';
@@ -269,6 +273,7 @@ export const ForwardModal = observer(
 		const isCommentCounterVisible = actualOptionalMessage.length > user.maxMessageLength * 0.8;
 		const handleForward = async (skipNavigation = false) => {
 			if (selected.length === 0) return;
+			if (blockIfAccountLimited()) return;
 			if (isForwarding) return;
 			if (isSendBlockedBySlowmode) return;
 			if (!isCommentComposerDisabled && isCommentOverLimit) {
@@ -302,6 +307,9 @@ export const ForwardModal = observer(
 					actualMessage,
 				);
 				if (!forwarded) {
+					if (Users.currentUser?.accountLimited === true) {
+						showAccountLimitedModal();
+					}
 					return;
 				}
 				ToastCommands.createToast({
@@ -328,6 +336,10 @@ export const ForwardModal = observer(
 				}
 			} catch (error) {
 				logger.error('Failed to forward message:', error);
+				if (failureCode(error)) {
+					showDmActionErrorModal(error);
+					return;
+				}
 				ModalCommands.push(
 					modal(() => (
 						<MessageForwardFailedModal data-flx="messaging.forward-modal.handle-forward.message-forward-failed-modal" />

@@ -169,6 +169,7 @@ export interface MasterConfig {
 			provider: 'smtp' | 'none';
 			from_email: string;
 			from_name: string;
+			reply_to_email: string;
 			app_base_url: string;
 			webhook_secret?: string;
 			smtp?: {
@@ -286,7 +287,6 @@ export interface MasterConfig {
 	};
 	instance: {
 		self_hosted: boolean;
-		phone_verification_enabled?: boolean;
 		auto_join_invite_code?: string;
 		visionaries_guild_id?: string;
 		visionaries_guild_visionary_role_id?: string;
